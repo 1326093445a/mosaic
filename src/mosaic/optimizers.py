@@ -5,7 +5,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Array, Float, Int, PyTree
+from jaxtyping import Array, Bool, Float, Int, PyTree
 from scipy.special import log_softmax, softmax
 
 from mosaic.common import LinearCombination, LossTerm
@@ -476,6 +476,59 @@ def _topb_unseen_mutations(seq, g, seen, b):
     return np.stack(cands), np.asarray(deltas)
 
 
+def _topb_unseen_feasible_mutations(
+    seq, g, seen, b, parent, designable_mask, budget
+):
+    """Like `_topb_unseen_mutations` but enforces a hard edit-distance budget against `parent`.
+
+    A candidate is feasible iff hamming(candidate, parent) <= budget. Reverts toward parent
+    (Δedits=-1) and swaps within the already-edited set (Δedits=0) are always feasible;
+    only mutations that introduce a *new* deviation from parent count against the budget.
+    Mutations at non-designable positions are filtered out as well.
+
+    Returns None if no feasible unseen 1-hop neighbour exists.
+    """
+    N, K = g.shape
+    a0 = seq.astype(np.int64)
+    parent = np.asarray(parent, dtype=np.int64)
+    designable_mask = np.asarray(designable_mask, dtype=bool)
+    current_edits = int(((a0 != parent) & designable_mask).sum())
+    slack = int(budget) - current_edits  # how many more "new edits" we can afford
+
+    delta = g - g[np.arange(N), a0][:, None]
+    delta[np.arange(N), a0] = np.inf  # mask no-ops
+    # Forbid mutations at non-designable positions
+    delta[~designable_mask, :] = np.inf
+
+    order = np.argsort(delta.ravel(), kind="stable")
+
+    cands = []
+    deltas = []
+    for idx in order:
+        d = delta.ravel()[idx]
+        if not np.isfinite(d):
+            break
+        pos, aa = divmod(int(idx), K)
+        # Net change in edit count if we apply this single-position change
+        was_edit = int(a0[pos] != parent[pos])
+        will_be_edit = int(aa != parent[pos])
+        d_edits = will_be_edit - was_edit  # in {-1, 0, +1}
+        if d_edits > 0 and slack <= 0:
+            continue  # would push us over budget
+        cand = seq.copy()
+        cand[pos] = aa
+        if cand.tobytes() in seen:
+            continue
+        cands.append(cand)
+        deltas.append(float(d))
+        if len(cands) == b:
+            break
+
+    if not cands:
+        return None
+    return np.stack(cands), np.asarray(deltas)
+
+
 def batch_greedy_descent(
     loss: AbstractLoss,
     sequence: Int[Array, "N"],
@@ -562,3 +615,148 @@ def batch_greedy_descent(
         )
 
     return best_seq, best_val
+
+
+def edit_budgeted_greedy_descent(
+    loss: AbstractLoss,
+    sequence: Int[Array, "N"],
+    *,
+    parent: Int[Array, "N"],
+    budget: int,
+    designable_mask: Bool[Array, "N"] | None = None,
+    batch_size: int = 16,
+    steps: int = 200,
+    alphabet_size: int = 20,
+    key: jax.Array | None = None,
+):
+    """Greedy hill-climb with a hard edit-distance budget against a reference sequence.
+
+    Each step proposes single-position mutations ranked by predicted Δloss, but filters
+    to only those that keep `hamming(candidate, parent) <= budget`. Reverts (Δedits=-1)
+    and swaps (Δedits=0) within the already-edited positions are always feasible; only
+    mutations that introduce a NEW deviation from parent consume budget.
+
+    Records a Pareto front {edit_count: (loss, sequence)} so the user can see the best
+    sequence at each edit count from 0..budget and pick a trade-off.
+
+    Args:
+        loss: composite mosaic loss; called as loss(one_hot_seq, key=...) -> (value, aux).
+        sequence: starting discrete sequence (e.g. argmax of guided-diffusion output).
+        parent: reference sequence; budget is enforced as hamming(_, parent) <= budget.
+        budget: maximum allowed edits from parent (e.g. 7).
+        designable_mask: positions allowed to change. If None, all positions are designable.
+        batch_size: number of candidate mutations evaluated per step.
+        steps: maximum step budget (loop usually terminates earlier when no improving
+            feasible mutation exists).
+        alphabet_size: token alphabet size (default 20).
+        key: jax random key (held fixed across all evals for deterministic comparison).
+
+    Returns:
+        best_seq: best feasible sequence found.
+        best_val: loss at best feasible sequence.
+        pareto: dict {edit_count: (loss, seq_array)} of best sequence at each edit count.
+    """
+    sequence = np.asarray(sequence, dtype=np.int32).copy()
+    parent = np.asarray(parent, dtype=np.int32).copy()
+    assert sequence.shape == parent.shape, "sequence and parent must have same shape"
+    assert sequence.ndim == 1, f"sequence must be 1D [N], got {sequence.ndim}D"
+
+    if designable_mask is None:
+        designable_mask = np.ones(sequence.shape, dtype=bool)
+    else:
+        designable_mask = np.asarray(designable_mask, dtype=bool).copy()
+
+    if key is None:
+        key = jax.random.key(np.random.randint(0, 10000))
+
+    B = int(batch_size)
+
+    def _hamming(s):
+        return int(((s != parent) & designable_mask).sum())
+
+    init_edits = _hamming(sequence)
+    if init_edits > budget:
+        # Starting sequence already violates budget; project back to nearest feasible
+        # by reverting the positions with smallest |gradient toward parent| (cheap heuristic).
+        # In practice the diffusion guidance should keep us within budget; this is a safety net.
+        violating = np.where((sequence != parent) & designable_mask)[0]
+        # Revert arbitrary surplus positions until within budget.
+        surplus = init_edits - budget
+        sequence[violating[:surplus]] = parent[violating[:surplus]]
+        init_edits = _hamming(sequence)
+        print(
+            f"warn: starting sequence had {init_edits + surplus} edits > budget {budget}; "
+            f"reverted {surplus} positions before starting greedy descent."
+        )
+
+    # initial eval
+    x0 = jax.nn.one_hot(jnp.asarray(sequence[None]), alphabet_size)
+    vals, aux0, grads = batched_eval(
+        loss, x0, jnp.broadcast_to(key, (x0.shape[0], *key.shape))
+    )
+    v = float(np.asarray(vals)[0])
+    g = np.asarray(grads)[0]
+    aux = jax.tree.map(lambda a: a[0], aux0)
+
+    _print_iter("init", {"": aux, "edits": float(init_edits)}, v)
+
+    best_seq = sequence.copy()
+    best_val = v
+    seen: set[bytes] = {sequence.tobytes()}
+
+    # Pareto front: best sequence at each edit count 0..budget
+    pareto: dict[int, tuple[float, np.ndarray]] = {init_edits: (v, sequence.copy())}
+
+    for it in range(steps):
+        start_time = time.time()
+
+        picked = _topb_unseen_feasible_mutations(
+            sequence, g, seen, B, parent, designable_mask, budget
+        )
+        if picked is None:
+            print(f"step {it}: feasible neighbourhood exhausted, stopping")
+            break
+        cands, _ = picked
+        m = cands.shape[0]
+
+        xs = jax.nn.one_hot(jnp.asarray(cands), alphabet_size)
+        vals, auxs, grads_batch = batched_eval(
+            loss, xs, jnp.broadcast_to(key, (xs.shape[0], *key.shape))
+        )
+        vals_np = np.asarray(vals)
+
+        for c in cands:
+            seen.add(c.tobytes())
+
+        # Update Pareto front with every feasible candidate's loss
+        for i in range(m):
+            cand_edits = _hamming(cands[i])
+            cand_v = float(vals_np[i])
+            existing = pareto.get(cand_edits)
+            if existing is None or cand_v < existing[0]:
+                pareto[cand_edits] = (cand_v, cands[i].copy())
+
+        best_in_batch = int(np.argmin(vals_np[:m]))
+        v_best = float(vals_np[best_in_batch])
+
+        if v_best < v:
+            sequence = cands[best_in_batch].copy()
+            v = v_best
+            g = np.asarray(grads_batch)[best_in_batch]
+            aux = jax.tree.map(lambda a: a[best_in_batch], auxs)
+
+        if v < best_val:
+            best_val = v
+            best_seq = sequence.copy()
+
+        _print_iter(
+            it,
+            {"": aux, "edits": float(_hamming(sequence)), "time": time.time() - start_time},
+            v,
+        )
+
+    # Final invariant check
+    assert _hamming(best_seq) <= budget, (
+        f"internal error: best_seq has {_hamming(best_seq)} edits, exceeds budget {budget}"
+    )
+    return best_seq, best_val, pareto

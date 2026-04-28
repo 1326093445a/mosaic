@@ -134,6 +134,40 @@ class FixedPositionsPenalty(LossTerm):
         return FixedPositionsPenalty(jnp.array(position_mask), jnp.array(target))
 
 
+class EditBudget(LossTerm):
+    """Soft hinge penalty on edit distance from a reference sequence over a designable subset.
+
+    The continuous relaxation of Hamming distance for soft `s` against one-hot `s_ref`
+    over positions where `designable=True` is `E(s) = sum((1 - <s, s_ref>) * designable)`.
+    This is linear in `s` (so convex on the simplex) and equals 0 at native, lower-bounding
+    the rounded Hamming distance. The hinge `relu(E(s) - budget)` is zero within budget
+    and pulls toward `s_ref` only when the budget is exceeded — exactly the soft-barrier
+    behavior we want during gradient optimization or classifier-guided diffusion.
+    """
+
+    s_ref: Float[Array, "N 20"] = eqx.field(converter=jnp.array)
+    designable: Bool[Array, "N"] = eqx.field(converter=jnp.array)
+    budget: float = eqx.field(converter=jnp.array)
+
+    def __call__(self, seq: Float[Array, "N 20"], *, key=None):
+        deviation = (1.0 - (seq * self.s_ref).sum(-1)) * self.designable
+        E = deviation.sum()
+        violation = jax.nn.relu(E - self.budget)
+        return violation, {"E_soft": E, "edit_violation": violation}
+
+    @staticmethod
+    def from_residues(parent_sequence: str, designable_indices, budget: float):
+        """Build from a parent sequence string and a list/array of designable position indices."""
+        n = len(parent_sequence)
+        s_ref = np.zeros((n, len(TOKENS)), dtype=np.float32)
+        for i, AA in enumerate(parent_sequence):
+            if AA in TOKENS:
+                s_ref[i, TOKENS.index(AA)] = 1.0
+        designable = np.zeros(n, dtype=bool)
+        designable[np.asarray(designable_indices)] = True
+        return EditBudget(jnp.array(s_ref), jnp.array(designable), float(budget))
+
+
 @jax.custom_vjp
 def clip_gradient(threshold, x):
     return x
