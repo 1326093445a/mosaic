@@ -430,6 +430,7 @@ class BinderPTMLoss(LossTerm):
 
 class BinderTargetIPSAE(LossTerm):
     reduce: Callable = jnp.max
+    pae_cutoff: float = 10.0
 
     def __call__(
         self,
@@ -448,7 +449,7 @@ class BinderTargetIPSAE(LossTerm):
                 asym_id=asym_id,
                 logits=output.pae_logits,
                 bin_centers=output.pae_bins,
-                pae_cutoff=10.0,
+                pae_cutoff=self.pae_cutoff,
             )[:binder_len]
         )
         return -bt_ipsae, {"bt_ipsae": bt_ipsae}
@@ -456,6 +457,7 @@ class BinderTargetIPSAE(LossTerm):
 
 class TargetBinderIPSAE(LossTerm):
     reduce: Callable = jnp.max
+    pae_cutoff: float = 10.0
 
     def __call__(
         self,
@@ -474,13 +476,15 @@ class TargetBinderIPSAE(LossTerm):
                 asym_id=asym_id,
                 logits=output.pae_logits,
                 bin_centers=output.pae_bins,
-                pae_cutoff=10.0,
+                pae_cutoff=self.pae_cutoff,
             )[binder_len:]
         )
         return -tb_ipsae, {"tb_ipsae": tb_ipsae}
 
 
 class IPSAE_min(LossTerm):
+    pae_cutoff: float = 10.0
+
     def __call__(
         self,
         sequence: Float[Array, "N 20"],
@@ -490,7 +494,7 @@ class IPSAE_min(LossTerm):
         bt_ipsae = (
             -1
             * (
-                BinderTargetIPSAE()(
+                BinderTargetIPSAE(pae_cutoff=self.pae_cutoff)(
                     sequence=sequence,
                     output=output,
                     key=key,
@@ -500,7 +504,7 @@ class IPSAE_min(LossTerm):
         tb_ipsae = (
             -1
             * (
-                TargetBinderIPSAE()(
+                TargetBinderIPSAE(pae_cutoff=self.pae_cutoff)(
                     sequence=sequence,
                     output=output,
                     key=key,

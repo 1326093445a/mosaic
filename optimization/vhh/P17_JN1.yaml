@@ -1,0 +1,42 @@
+# P17_JN1: Nanobody CDR redesign for JN.1 RBD
+# CDR1: res 26..33, CDR2: res 51..58, CDR3: res 97..109
+#
+# Hotspot residues on JN.1 RBD (chain T) — 5 mutated epitope positions (CA-CA 10A):
+#   T115 (D) <- N450D  [CDR3]           (9IU1: B450)
+#   T117 (W) <- L452W  [CDR3]           (9IU1: B452)
+#   T146 (K) <- N481K  [CDR1,CDR2]      (9IU1: B481)
+#   T148 (K) <- E484K  [CDR1,CDR2,CDR3] (9IU1: B483)
+#   T150 (P) <- F486P  [CDR2,CDR3]      (9IU1: B485)
+# Also V483del (CDR1,CDR2) — deletion, cannot be hotspot
+
+entities:
+  - file:
+      path: P17_JN1.pdb
+
+      include:
+        - chain:
+            id: T  # JN.1 RBD target
+        - chain:
+            id: B  # Nanobody P17
+
+      structure_groups:
+        - group:
+            visibility: 1
+            id: T
+        - group:
+            visibility: 1
+            id: B
+        - group:
+            visibility: 0
+            id: B
+            res_index: 26..33,51..58,97..109
+
+      design:
+        - chain:
+            id: B
+            res_index: 26..33,51..58,97..109
+
+      binding_types:
+        - chain:
+            id: T
+            binding: 115,117,146,148,150

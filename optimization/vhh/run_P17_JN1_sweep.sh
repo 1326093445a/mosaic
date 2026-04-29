@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Convenience sweep wrapper for P17/JN1.
+#
+# NUM_DESIGNS is per START_SIGMA_FRAC value. Example:
+#   NUM_DESIGNS=1000 bash optimization/vhh/run_P17_JN1_sweep.sh /path/to/out
+#
+# Optional:
+#   START_SIGMA_FRACS="0.2 0.3 0.4 0.5" NUM_DESIGNS=1000 \
+#     bash optimization/vhh/run_P17_JN1_sweep.sh /path/to/out
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+OUT_ROOT="${1:-${SCRIPT_DIR}/P17_JN1_sweep}"
+NUM_DESIGNS="${NUM_DESIGNS:-1000}"
+START_SEED="${START_SEED:-0}"
+DEVICES="${DEVICES:-}"
+START_SIGMA_FRACS="${START_SIGMA_FRACS:-0.2 0.3 0.4 0.5}"
+START_SIGMA_FRACS="${START_SIGMA_FRACS//,/ }"
+
+# Production-ish v4 defaults. Override any of these from the environment.
+MODE="${MODE:-v4}"
+NUM_SAMPLING_STEPS="${NUM_SAMPLING_STEPS:-200}"
+N_OUTER_ITERATIONS="${N_OUTER_ITERATIONS:-3}"
+RECYCLING_STEPS="${RECYCLING_STEPS:-3}"
+REFOLD_SAMPLING_STEPS="${REFOLD_SAMPLING_STEPS:-200}"
+REFOLD_NUM_SAMPLES="${REFOLD_NUM_SAMPLES:-5}"
+REFOLD_BATCH_SIZE="${REFOLD_BATCH_SIZE:-${REFOLD_NUM_SAMPLES}}"
+IPSAE_PAE_CUTOFF="${IPSAE_PAE_CUTOFF:-12.0}"
+REFOLD_RMSD_THRESHOLD="${REFOLD_RMSD_THRESHOLD:-2.5}"
+
+BUDGET="${BUDGET:-7}"
+NOISE_SCALE="${NOISE_SCALE:-0.88}"
+STEP_SCALE="${STEP_SCALE:-2.0}"
+LAMBDA_MAX="${LAMBDA_MAX:-1.0}"
+LAMBDA_SCHEDULE="${LAMBDA_SCHEDULE:-sigma_squared}"
+WEIGHT_EDIT_BUDGET="${WEIGHT_EDIT_BUDGET:-10.0}"
+WEIGHT_ESMC="${WEIGHT_ESMC:-0.10}"
+WEIGHT_ABLANG="${WEIGHT_ABLANG:-0.10}"
+POLISH_STEPS="${POLISH_STEPS:-200}"
+POLISH_BATCH_SIZE="${POLISH_BATCH_SIZE:-16}"
+
+N_SIGMAS=$(set -- ${START_SIGMA_FRACS}; echo "$#")
+TOTAL=$((NUM_DESIGNS * N_SIGMAS))
+
+mkdir -p "${OUT_ROOT}"
+
+echo "========================================"
+echo "P17/JN1 sweep"
+echo "========================================"
+echo "Output root:        ${OUT_ROOT}"
+echo "Sigma values:       ${START_SIGMA_FRACS}"
+echo "Designs per sigma:  ${NUM_DESIGNS}"
+echo "Total runs:         ${TOTAL}"
+echo "Start seed:         ${START_SEED}"
+if [[ -n "${DEVICES}" ]]; then
+  echo "Devices:            ${DEVICES}"
+fi
+echo "Mode:               ${MODE}"
+echo "Sampling/refold:    ${NUM_SAMPLING_STEPS} design steps, ${REFOLD_NUM_SAMPLES} x ${REFOLD_SAMPLING_STEPS} refold, batch ${REFOLD_BATCH_SIZE}"
+echo "RMSD filter:        binder CA <= ${REFOLD_RMSD_THRESHOLD} A"
+echo ""
+
+for sigma in ${START_SIGMA_FRACS}; do
+  sigma_label="${sigma//-/m}"
+  sigma_label="${sigma_label//./p}"
+  out_dir="${OUT_ROOT}/sigma_${sigma_label}"
+
+  echo "== sigma=${sigma}: ${NUM_DESIGNS} design(s) =="
+  MODE="${MODE}" \
+  SEED="${START_SEED}" \
+  START_SEED="${START_SEED}" \
+  NUM_DESIGNS="${NUM_DESIGNS}" \
+  DEVICES="${DEVICES:-}" \
+  START_SIGMA_FRAC="${sigma}" \
+  NUM_SAMPLING_STEPS="${NUM_SAMPLING_STEPS}" \
+  NOISE_SCALE="${NOISE_SCALE}" \
+  STEP_SCALE="${STEP_SCALE}" \
+  LAMBDA_MAX="${LAMBDA_MAX}" \
+  LAMBDA_SCHEDULE="${LAMBDA_SCHEDULE}" \
+  N_OUTER_ITERATIONS="${N_OUTER_ITERATIONS}" \
+  RECYCLING_STEPS="${RECYCLING_STEPS}" \
+  REFOLD_SAMPLING_STEPS="${REFOLD_SAMPLING_STEPS}" \
+  REFOLD_NUM_SAMPLES="${REFOLD_NUM_SAMPLES}" \
+  REFOLD_BATCH_SIZE="${REFOLD_BATCH_SIZE}" \
+  IPSAE_PAE_CUTOFF="${IPSAE_PAE_CUTOFF}" \
+  REFOLD_RMSD_THRESHOLD="${REFOLD_RMSD_THRESHOLD}" \
+  BUDGET="${BUDGET}" \
+  WEIGHT_EDIT_BUDGET="${WEIGHT_EDIT_BUDGET}" \
+  WEIGHT_ESMC="${WEIGHT_ESMC}" \
+  WEIGHT_ABLANG="${WEIGHT_ABLANG}" \
+  POLISH_STEPS="${POLISH_STEPS}" \
+  POLISH_BATCH_SIZE="${POLISH_BATCH_SIZE}" \
+  bash "${SCRIPT_DIR}/run_P17_JN1.sh" "${out_dir}"
+done
+
+echo ""
+echo "Sweep done: ${OUT_ROOT}"
