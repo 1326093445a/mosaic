@@ -1,0 +1,36 @@
+# VHH72 WT / SARS-CoV-2 WT RBD benchmark.
+# CDRs are ANARCI Kabat mapped to BoltzGen chain-order res_index values.
+# Paper benchmark design set: H30-H31, H52-H64, H96-H100G.
+# Known optimized substitutions to recover/rank: S56M, L97W, T99V.
+
+entities:
+  - file:
+      path: VHH72_WT_SARS-CoV-2_RBD_relaxed.pdb
+
+      include:
+        - chain:
+            id: E  # SARS-CoV-2 RBD target
+        - chain:
+            id: A  # VHH72 binder
+
+      structure_groups:
+        - group:
+            visibility: 1
+            id: E
+        - group:
+            visibility: 1
+            id: A
+        - group:
+            visibility: 0
+            id: A
+            res_index: 30..31,52..65,100..111
+
+      design:
+        - chain:
+            id: A
+            res_index: 30..31,52..65,100..111
+
+      binding_types:
+        - chain:
+            id: E
+            binding: 36..46,50..52,71..72,74..75,170..171,175

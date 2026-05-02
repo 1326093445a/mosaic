@@ -1,36 +1,33 @@
 #!/usr/bin/env bash
-# P17 nanobody CDR redesign against JN.1 RBD using mosaic-guided BoltzGen.
+# VHH72 CDR redesign benchmark against SARS-CoV-2 WT RBD.
 #
-# Defaults are chosen for a first smoke run. For the full end-to-end pipeline:
-#   MODE=v4 NUM_SAMPLING_STEPS=200 RECYCLING_STEPS=3 N_OUTER_ITERATIONS=3 \
-#     REFOLD_SAMPLING_STEPS=200 REFOLD_NUM_SAMPLES=5 REFOLD_BATCH_SIZE=5 \
-#     IPSAE_PAE_CUTOFF=12 \
-#     bash optimization/vhh/run_P17_JN1.sh
+# Defaults are benchmark-ready and intentionally mirror the real VHH workflow:
+#   MODE=v4, BUDGET=7, refold 5 samples in one batch.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-YAML_FILE="${SCRIPT_DIR}/P17_JN1.yaml"
-PDB_FILE="${SCRIPT_DIR}/P17_JN1.pdb"
+YAML_FILE="${SCRIPT_DIR}/VHH72_WT_SARS-CoV-2_RBD.yaml"
+PDB_FILE="${SCRIPT_DIR}/VHH72_WT_SARS-CoV-2_RBD_relaxed.pdb"
 
-MODE="${MODE:-v1}"
+MODE="${MODE:-v4}"
 SEED="${SEED:-0}"
 START_SEED="${START_SEED:-${SEED}}"
 NUM_DESIGNS="${NUM_DESIGNS:-1}"
 DEVICES="${DEVICES:-}"
-START_SIGMA_FRAC="${START_SIGMA_FRAC:-0.35}"
-NUM_SAMPLING_STEPS="${NUM_SAMPLING_STEPS:-80}"
+START_SIGMA_FRAC="${START_SIGMA_FRAC:-0.25}"
+NUM_SAMPLING_STEPS="${NUM_SAMPLING_STEPS:-200}"
 STEP_SCALE="${STEP_SCALE:-2.0}"
 NOISE_SCALE="${NOISE_SCALE:-0.88}"
 LAMBDA_MAX="${LAMBDA_MAX:-1.0}"
 LAMBDA_SCHEDULE="${LAMBDA_SCHEDULE:-sigma_squared}"
-N_OUTER_ITERATIONS="${N_OUTER_ITERATIONS:-1}"
-RECYCLING_STEPS="${RECYCLING_STEPS:-1}"
-REFOLD_SAMPLING_STEPS="${REFOLD_SAMPLING_STEPS:-25}"
-REFOLD_NUM_SAMPLES="${REFOLD_NUM_SAMPLES:-1}"
-REFOLD_BATCH_SIZE="${REFOLD_BATCH_SIZE:-${REFOLD_NUM_SAMPLES}}"
+N_OUTER_ITERATIONS="${N_OUTER_ITERATIONS:-3}"
+RECYCLING_STEPS="${RECYCLING_STEPS:-3}"
+REFOLD_SAMPLING_STEPS="${REFOLD_SAMPLING_STEPS:-200}"
+REFOLD_NUM_SAMPLES="${REFOLD_NUM_SAMPLES:-5}"
+REFOLD_BATCH_SIZE="${REFOLD_BATCH_SIZE:-5}"
 IPSAE_PAE_CUTOFF="${IPSAE_PAE_CUTOFF:-12.0}"
 REFOLD_RMSD_THRESHOLD="${REFOLD_RMSD_THRESHOLD:-2.5}"
 
@@ -41,21 +38,23 @@ WEIGHT_ABLANG2="${WEIGHT_ABLANG2:-${WEIGHT_ABLANG:-0.10}}"
 ESM2_MODEL="${ESM2_MODEL:-esm2_t33_650M_UR50D}"
 CLIP_GRADIENT_NORM="${CLIP_GRADIENT_NORM:-1.0}"
 
-POLISH_STEPS="${POLISH_STEPS:-80}"
-POLISH_BATCH_SIZE="${POLISH_BATCH_SIZE:-8}"
+POLISH_STEPS="${POLISH_STEPS:-200}"
+POLISH_BATCH_SIZE="${POLISH_BATCH_SIZE:-16}"
 
-OUTPUT_DIR="${1:-${SCRIPT_DIR}/P17_JN1_mosaic_${MODE}_b${BUDGET}_seed${SEED}_sigma${START_SIGMA_FRAC}}"
+OUTPUT_DIR="${1:-${SCRIPT_DIR}/VHH72_WT_mosaic_${MODE}_b${BUDGET}_seed${SEED}_sigma${START_SIGMA_FRAC}}"
 
+# ANARCI Kabat paper design set mapped to BoltzGen/Mosaic 1-based chain-order
+# positions. See VHH72_WT_SARS-CoV-2_RBD_cdr_map.csv.
 CDR_INDICES=(
-  26 27 28 29 30 31 32 33
-  51 52 53 54 55 56 57 58
-  97 98 99 100 101 102 103 104 105 106 107 108 109
+  30 31
+  52 53 54 55 56 57 58 59 60 61 62 63 64 65
+  100 101 102 103 104 105 106 107 108 109 110 111
 )
 
 cd "${ROOT_DIR}"
 
 echo "========================================"
-echo "P17 nanobody - JN.1 RBD guided redesign"
+echo "VHH72 WT - SARS-CoV-2 WT RBD benchmark"
 echo "========================================"
 echo "Mode:              ${MODE}"
 echo "YAML:              ${YAML_FILE}"
@@ -91,8 +90,8 @@ uv run python examples/boltzgen_vhh_guided.py \
   --mode "${MODE}" \
   --boltzgen-yaml "${YAML_FILE}" \
   --complex-cif "${PDB_FILE}" \
-  --binder-chain B \
-  --target-chains T \
+  --binder-chain A \
+  --target-chains E \
   --cdr-indices "${CDR_INDICES[@]}" \
   --budget "${BUDGET}" \
   --output-dir "${OUTPUT_DIR}" \

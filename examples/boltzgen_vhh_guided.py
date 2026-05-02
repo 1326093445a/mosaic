@@ -2,7 +2,7 @@
 
 Pipeline (per outer-loop iteration):
   1. guided_partial_diffusion: BoltzGen partial diffusion with classifier guidance
-     from ESMC/AbLang/MPNN/EditBudget, perturbing CDR atoms only.
+     from ESM2/AbLang2/MPNN/EditBudget, perturbing CDR atoms only.
   2. differentiable_inverse_fold(temp=0.001): decode guided coords to a soft sequence.
   3. edit_budgeted_greedy_descent: polish the discrete sequence under the full
      multi-model loss with a hard <=budget edit constraint vs the parent.
@@ -46,8 +46,8 @@ import yaml
 from jaxtyping import Array, Bool, Float, Int
 
 from mosaic.common import TOKENS, LossTerm
-from mosaic.losses.ablang import AbLangPseudoLikelihood, load_ablang
-from mosaic.losses.esmc import ESMCPseudoLikelihood, load_esmc
+from mosaic.losses.ablang2 import Ablang2PseudoLikelihood, load_ablang2
+from mosaic.losses.esm import ESM2PseudoLikelihood, load_esm2
 from mosaic.losses.protein_mpnn import InverseFoldingSequenceRecovery
 from mosaic.losses.transformations import (
     ClippedGradient,
@@ -87,11 +87,12 @@ class VHHDesignConfig:
     edit_budget: int = 7
 
     # ---- Guidance composite loss weights ----
-    weight_esmc: float = 0.10
-    weight_ablang: float = 0.10
+    weight_esm2: float = 0.10
+    weight_ablang2: float = 0.10
     weight_mpnn_recovery: float = 0.50
     weight_edit_budget: float = 5.00
     clip_gradient_norm: float = 1.0  # per-term gradient clip for balance
+    esm2_model_name: str = "esm2_t33_650M_UR50D"
 
     # ---- Diffusion ----
     num_sampling_steps: int = 200
@@ -498,10 +499,13 @@ def target_aligned_rmsd_metrics(
     }
 
     if cdr_residue_indices:
-        cdr_set = set(cdr_residue_indices)
+        # Mosaic/BoltzGen YAML `res_index` values are 1-based chain-order
+        # positions, not necessarily PDB author residue numbers. This matters
+        # for VHHs with Kabat insertion codes such as H52A or H100A-H.
+        cdr_set = {int(i) for i in cdr_residue_indices}
         cdr_positions = [
-            i for i, key in enumerate(orig_binder_keys)
-            if key[1] in cdr_set and i < len(ref_binder_aligned)
+            i for i in range(min(len(orig_binder_keys), len(ref_binder_aligned)))
+            if (i + 1) in cdr_set
         ]
         if cdr_positions:
             metrics["cdr_ca_rmsd_target_aligned"] = _rmsd(
@@ -608,8 +612,9 @@ def build_single_design_command(args, *, seed: int, output_dir: Path) -> list[st
     _append_option(cmd, "--refold-batch-size", args.refold_batch_size)
     _append_option(cmd, "--ipsae-pae-cutoff", args.ipsae_pae_cutoff)
     _append_option(cmd, "--refold-rmsd-threshold", args.refold_rmsd_threshold)
-    _append_option(cmd, "--weight-esmc", args.weight_esmc)
-    _append_option(cmd, "--weight-ablang", args.weight_ablang)
+    _append_option(cmd, "--esm2-model", args.esm2_model)
+    _append_option(cmd, "--weight-esm2", args.weight_esm2)
+    _append_option(cmd, "--weight-ablang2", args.weight_ablang2)
     _append_option(cmd, "--weight-edit-budget", args.weight_edit_budget)
     _append_option(cmd, "--clip-gradient-norm", args.clip_gradient_norm)
     return cmd
@@ -699,8 +704,9 @@ def run_many_from_cli(args):
 class LoadedModels:
     boltzgen: any
     mpnn: any
-    esmc_pll: any = None
-    ablang_pll: any = None
+    esm2_pll: any = None
+    ablang2_model: any = None
+    ablang2_tokenizer: any = None
 
 
 def load_all_models(cfg: VHHDesignConfig) -> LoadedModels:
@@ -709,23 +715,26 @@ def load_all_models(cfg: VHHDesignConfig) -> LoadedModels:
     boltzgen = load_boltzgen()
     mpnn = load_abmpnn()
 
-    esmc_pll = None
-    ablang_pll = None
+    esm2_pll = None
+    ablang2_model = None
+    ablang2_tokenizer = None
 
     # stop_grad=False on the language models because we need gradients to flow
     # back to coords through the differentiable IF bridge during guidance.
-    if cfg.weight_esmc > 0:
-        esmc = load_esmc("esmc_300m")
-        esmc_pll = ESMCPseudoLikelihood(esmc, stop_grad=False)
+    if cfg.weight_esm2 > 0:
+        esm2 = load_esm2(cfg.esm2_model_name)
+        esm2_pll = ESM2PseudoLikelihood(esm2, stop_grad=False)
 
-    if cfg.weight_ablang > 0:
-        ablang_model, ablang_tokenizer = load_ablang("heavy")
-        ablang_pll = AbLangPseudoLikelihood(
-            model=ablang_model, tokenizer=ablang_tokenizer, stop_grad=False
-        )
+    if cfg.weight_ablang2 > 0:
+        ablang2_model, ablang2_tokenizer = load_ablang2()
 
-    return LoadedModels(boltzgen=boltzgen, mpnn=mpnn, esmc_pll=esmc_pll,
-                        ablang_pll=ablang_pll)
+    return LoadedModels(
+        boltzgen=boltzgen,
+        mpnn=mpnn,
+        esm2_pll=esm2_pll,
+        ablang2_model=ablang2_model,
+        ablang2_tokenizer=ablang2_tokenizer,
+    )
 
 
 # =============================================================================
@@ -741,6 +750,22 @@ class SequenceSubsetLoss(LossTerm):
 
     def __call__(self, seq: Float[Array, "N 20"], *, key):
         return self.loss(seq[self.indices], key=key)
+
+
+def make_ablang2_loss(
+    models: LoadedModels,
+    sequence_loss_indices: Int[Array, "M"],
+    *,
+    stop_grad: bool,
+) -> Ablang2PseudoLikelihood:
+    if models.ablang2_model is None or models.ablang2_tokenizer is None:
+        raise ValueError("AbLang2 model was not loaded; check weight_ablang2")
+    return Ablang2PseudoLikelihood(
+        model=models.ablang2_model,
+        tokenizer=models.ablang2_tokenizer,
+        heavy_len=int(sequence_loss_indices.shape[0]),
+        stop_grad=stop_grad,
+    )
 
 
 def build_guidance_loss(cfg: VHHDesignConfig, models: LoadedModels,
@@ -769,19 +794,22 @@ def build_guidance_loss(cfg: VHHDesignConfig, models: LoadedModels,
     # trajectory is biased to stay near parent, regardless of other terms.
     aux_terms = [cfg.weight_edit_budget * edit_budget_term]
 
-    if cfg.weight_esmc > 0:
+    if cfg.weight_esm2 > 0:
         aux_terms.append(
-            cfg.weight_esmc
+            cfg.weight_esm2
             * SequenceSubsetLoss(
-                ClippedGradient(models.esmc_pll, cfg.clip_gradient_norm),
+                ClippedGradient(models.esm2_pll, cfg.clip_gradient_norm),
                 sequence_loss_indices,
             )
         )
-    if cfg.weight_ablang > 0:
+    if cfg.weight_ablang2 > 0:
+        ablang2_pll = make_ablang2_loss(
+            models, sequence_loss_indices, stop_grad=False
+        )
         aux_terms.append(
-            cfg.weight_ablang
+            cfg.weight_ablang2
             * SequenceSubsetLoss(
-                ClippedGradient(models.ablang_pll, cfg.clip_gradient_norm),
+                ClippedGradient(ablang2_pll, cfg.clip_gradient_norm),
                 sequence_loss_indices,
             )
         )
@@ -809,14 +837,17 @@ def build_polish_loss(cfg: VHHDesignConfig, models: LoadedModels,
         budget=cfg.edit_budget,
     )
     terms = [cfg.weight_edit_budget * edit_term]
-    if cfg.weight_esmc > 0:
+    if cfg.weight_esm2 > 0:
         terms.append(
-            cfg.weight_esmc * SequenceSubsetLoss(models.esmc_pll, sequence_loss_indices)
+            cfg.weight_esm2 * SequenceSubsetLoss(models.esm2_pll, sequence_loss_indices)
         )
-    if cfg.weight_ablang > 0:
+    if cfg.weight_ablang2 > 0:
+        ablang2_pll = make_ablang2_loss(
+            models, sequence_loss_indices, stop_grad=False
+        )
         terms.append(
-            cfg.weight_ablang
-            * SequenceSubsetLoss(models.ablang_pll, sequence_loss_indices)
+            cfg.weight_ablang2
+            * SequenceSubsetLoss(ablang2_pll, sequence_loss_indices)
         )
     return sum(terms[1:], start=terms[0])
 
@@ -1315,8 +1346,12 @@ if __name__ == "__main__":
     p.add_argument("--ipsae-pae-cutoff", type=float)
     p.add_argument("--refold-rmsd-threshold", type=float,
                    help="Binder CA RMSD filter after target alignment; <=0 disables")
-    p.add_argument("--weight-esmc", type=float)
-    p.add_argument("--weight-ablang", type=float)
+    p.add_argument("--esm2-model", default=None,
+                   help="ESM2 checkpoint name in esm.pretrained, e.g. esm2_t33_650M_UR50D")
+    p.add_argument("--weight-esm2", "--weight-esmc", dest="weight_esm2",
+                   type=float, help="ESM2 PLL weight; --weight-esmc is a deprecated alias")
+    p.add_argument("--weight-ablang2", "--weight-ablang", dest="weight_ablang2",
+                   type=float, help="AbLang2 PLL weight; --weight-ablang is a deprecated alias")
     p.add_argument("--weight-edit-budget", type=float)
     p.add_argument("--clip-gradient-norm", type=float)
     args = p.parse_args()
@@ -1367,8 +1402,9 @@ if __name__ == "__main__":
         "refold_batch_size": args.refold_batch_size,
         "ipsae_pae_cutoff": args.ipsae_pae_cutoff,
         "refold_rmsd_threshold": args.refold_rmsd_threshold,
-        "weight_esmc": args.weight_esmc,
-        "weight_ablang": args.weight_ablang,
+        "esm2_model_name": args.esm2_model,
+        "weight_esm2": args.weight_esm2,
+        "weight_ablang2": args.weight_ablang2,
         "weight_edit_budget": args.weight_edit_budget,
         "clip_gradient_norm": args.clip_gradient_norm,
     }
@@ -1381,15 +1417,15 @@ if __name__ == "__main__":
         cfg.skip_guidance = True
         cfg.skip_polish = True
         cfg.skip_refold = True
-        cfg.weight_esmc = 0.0
-        cfg.weight_ablang = 0.0
+        cfg.weight_esm2 = 0.0
+        cfg.weight_ablang2 = 0.0
     elif args.mode == "v1":
         # EditBudget-only guidance; zero-out other guidance terms.
         cfg.skip_guidance = False
         cfg.skip_polish = True
         cfg.skip_refold = True
-        cfg.weight_esmc = 0.0
-        cfg.weight_ablang = 0.0
+        cfg.weight_esm2 = 0.0
+        cfg.weight_ablang2 = 0.0
     elif args.mode == "v2":
         cfg.skip_guidance = False
         cfg.skip_polish = True

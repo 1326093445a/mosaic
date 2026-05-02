@@ -61,8 +61,8 @@ def make_plan(args) -> int:
         args.start_sigma_fracs,
         args.lambda_max_values,
         args.edit_budget_weights,
-        args.weight_esmc_values,
-        args.weight_ablang_values,
+        args.weight_esm2_values,
+        args.weight_ablang2_values,
         args.noise_scales,
         args.seeds,
     )
@@ -72,8 +72,8 @@ def make_plan(args) -> int:
         start_sigma_frac,
         lambda_max,
         edit_weight,
-        weight_esmc,
-        weight_ablang,
+        weight_esm2,
+        weight_ablang2,
         noise_scale,
         seed,
     ) in grid:
@@ -81,8 +81,8 @@ def make_plan(args) -> int:
             f"sigma{label_float(start_sigma_frac)}"
             f"_lam{label_float(lambda_max)}"
             f"_editw{label_float(edit_weight)}"
-            f"_esm{label_float(weight_esmc)}"
-            f"_abl{label_float(weight_ablang)}"
+            f"_esm2{label_float(weight_esm2)}"
+            f"_abl2{label_float(weight_ablang2)}"
             f"_noise{label_float(noise_scale)}"
             f"_seed{seed}"
         )
@@ -104,8 +104,9 @@ def make_plan(args) -> int:
             "REFOLD_RMSD_THRESHOLD": args.refold_rmsd_threshold,
             "BUDGET": args.budget,
             "WEIGHT_EDIT_BUDGET": edit_weight,
-            "WEIGHT_ESMC": weight_esmc,
-            "WEIGHT_ABLANG": weight_ablang,
+            "ESM2_MODEL": args.esm2_model,
+            "WEIGHT_ESM2": weight_esm2,
+            "WEIGHT_ABLANG2": weight_ablang2,
             "POLISH_STEPS": args.polish_steps,
             "POLISH_BATCH_SIZE": args.polish_batch_size,
         }
@@ -186,8 +187,11 @@ def summarize(args) -> int:
                 "lambda_max": cfg.get("lambda_max", ""),
                 "lambda_schedule": cfg.get("lambda_schedule", ""),
                 "weight_edit_budget": cfg.get("weight_edit_budget", ""),
-                "weight_esmc": cfg.get("weight_esmc", ""),
-                "weight_ablang": cfg.get("weight_ablang", ""),
+                "esm2_model_name": cfg.get("esm2_model_name", ""),
+                "weight_esm2": cfg.get("weight_esm2", cfg.get("weight_esmc", "")),
+                "weight_ablang2": cfg.get(
+                    "weight_ablang2", cfg.get("weight_ablang", "")
+                ),
                 "budget": cfg.get("edit_budget", ""),
                 "ipsae_pae_cutoff": cfg.get("ipsae_pae_cutoff", ""),
                 "refold_rmsd_threshold": cfg.get("refold_rmsd_threshold", ""),
@@ -224,9 +228,12 @@ def build_parser() -> argparse.ArgumentParser:
                         default=parse_float_list("0.5,1.0"))
     parser.add_argument("--edit-budget-weights", type=parse_float_list,
                         default=parse_float_list("10.0,20.0"))
-    parser.add_argument("--weight-esmc-values", type=parse_float_list,
+    parser.add_argument("--esm2-model", default="esm2_t33_650M_UR50D")
+    parser.add_argument("--weight-esm2-values", "--weight-esmc-values",
+                        dest="weight_esm2_values", type=parse_float_list,
                         default=parse_float_list("0.10"))
-    parser.add_argument("--weight-ablang-values", type=parse_float_list,
+    parser.add_argument("--weight-ablang2-values", "--weight-ablang-values",
+                        dest="weight_ablang2_values", type=parse_float_list,
                         default=parse_float_list("0.10"))
     parser.add_argument("--noise-scales", type=parse_float_list,
                         default=parse_float_list("0.88"))

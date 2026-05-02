@@ -22,6 +22,26 @@ from esm2quinox._esm2 import _alphabet as ESM_TOKENS
 from ..common import LossTerm, TOKENS
 
 
+def load_esm2(model_name: str = "esm2_t33_650M_UR50D"):
+    """Load an ESM2 torch checkpoint and convert it to the JAX/Equinox wrapper."""
+    try:
+        import esm
+        import esm2quinox
+    except ImportError as exc:
+        raise ImportError(
+            "ESM2 loading requires the `esm` package from fair-esm. "
+            "Install it with `uv pip install fair-esm` or add fair-esm to the env."
+        ) from exc
+
+    loader = getattr(esm.pretrained, model_name, None)
+    if loader is None:
+        raise ValueError(f"Unknown ESM2 model '{model_name}' in esm.pretrained")
+
+    torch_model, _ = loader()
+    torch_model.eval()
+    return esm2quinox.from_torch(torch_model)
+
+
 def boltz_to_esm_matrix():
     """Converts from standard tokenization (Boltz ... plus two???) to ESM2QUINOX tokenization"""
     T = np.zeros((len(TOKENS), len(ESM_TOKENS)))
@@ -88,6 +108,5 @@ class ESM2PseudoLikelihood(LossTerm):
             masked_log_likelihoods = jax.lax.stop_gradient(masked_log_likelihoods)
         pll =  (masked_log_likelihoods * esm_toks_unpadded).sum(-1).mean()
         return -pll, {"esm_pll": pll}
-
 
 
