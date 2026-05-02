@@ -601,7 +601,10 @@ def load_mpnn(backbone_noise=0.0):
     )
 
 def load_abmpnn(backbone_noise=0.0):
-    return ProteinMPNN.from_pretrained(
+    print("[load_abmpnn] loading ABMPNN weights", flush=True)
+    model = ProteinMPNN.from_pretrained(
         importlib.resources.files(__package__) / "weights/abmpnn.pt",
         backbone_noise=backbone_noise,
     )
+    print("[load_abmpnn] ready", flush=True)
+    return model

@@ -37,6 +37,17 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Optional
 
+
+_STAGE_T0 = time.time()
+
+
+def stage_log(message: str) -> None:
+    """Print an elapsed-time stage marker for long cluster runs."""
+    print(f"[stage {time.time() - _STAGE_T0:8.1f}s] {message}", flush=True)
+
+
+stage_log("importing heavy dependencies")
+
 import equinox as eqx
 import gemmi
 import jax
@@ -66,6 +77,8 @@ from mosaic.models.boltzgen import (
 from mosaic.optimizers import edit_budgeted_greedy_descent
 from mosaic.proteinmpnn.mpnn import load_abmpnn
 from mosaic.util import fold_in
+
+stage_log("finished importing heavy dependencies")
 
 
 # =============================================================================
@@ -582,6 +595,28 @@ def parse_device_ids(raw: Optional[str]) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def resolve_child_cuda_visible_devices(device: Optional[str]) -> Optional[str]:
+    """Map a requested child device through the parent's visible-device list.
+
+    If the parent was launched with CUDA_VISIBLE_DEVICES=1,2,3 and the user passes
+    --devices 0,1,2, the child jobs should land on physical GPUs 1,2,3 rather
+    than accidentally escaping to physical GPU 0.
+    """
+    if device is None:
+        return None
+
+    parent_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if not parent_visible or parent_visible in {"NoDevFiles", "-1"}:
+        return device
+
+    visible = [part.strip() for part in parent_visible.split(",") if part.strip()]
+    if device.isdigit():
+        idx = int(device)
+        if 0 <= idx < len(visible):
+            return visible[idx]
+    return device
+
+
 def write_combined_refold_ranking(root: Path, manifest_rows: list[dict]) -> int:
     """Combine per-seed refold_ranked.csv files into one root-level ranking CSV."""
     combined_rows = []
@@ -663,7 +698,7 @@ def _append_option(cmd: list[str], flag: str, value):
 
 def build_single_design_command(args, *, seed: int, output_dir: Path) -> list[str]:
     """Reconstruct the CLI for one child design job."""
-    cmd = [sys.executable, str(Path(__file__).resolve()), "--mode", args.mode]
+    cmd = [sys.executable, "-u", str(Path(__file__).resolve()), "--mode", args.mode]
 
     _append_option(cmd, "--complex-cif", args.complex_cif)
     _append_option(cmd, "--boltzgen-yaml", args.boltzgen_yaml)
@@ -721,6 +756,9 @@ def run_many_from_cli(args):
     print(f"[multi] output root: {root}")
     print(f"[multi] num_designs: {num_designs}")
     print(f"[multi] start_seed: {start_seed}")
+    parent_visible = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
+    if parent_visible:
+        print(f"[multi] parent CUDA_VISIBLE_DEVICES: {parent_visible}")
     print(f"[multi] devices: {','.join(device_ids) if device_ids else 'inherited'}")
     print(f"[multi] max_parallel: {max_parallel}")
 
@@ -738,11 +776,18 @@ def run_many_from_cli(args):
             log_path = out_dir / "driver.log"
             cmd = build_single_design_command(args, seed=seed, output_dir=out_dir)
             env = os.environ.copy()
-            if device is not None:
-                env["CUDA_VISIBLE_DEVICES"] = device
+            env["PYTHONUNBUFFERED"] = "1"
+            child_cuda_visible = resolve_child_cuda_visible_devices(device)
+            if child_cuda_visible is not None:
+                env["CUDA_VISIBLE_DEVICES"] = child_cuda_visible
 
             log_handle = log_path.open("w")
-            print(f"[multi] start seed={seed} device={device or 'inherited'} -> {out_dir}")
+            print(
+                f"[multi] start seed={seed} device={device or 'inherited'} "
+                f"cuda_visible={env.get('CUDA_VISIBLE_DEVICES', 'inherited')} "
+                f"-> {out_dir}",
+                flush=True,
+            )
             proc = subprocess.Popen(
                 cmd,
                 cwd=Path(__file__).resolve().parents[1],
@@ -750,16 +795,21 @@ def run_many_from_cli(args):
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
             )
-            launched.append((proc, log_handle, seed, device, out_dir, log_path))
+            launched.append(
+                (proc, log_handle, seed, device, child_cuda_visible, out_dir, log_path)
+            )
 
-        for proc, log_handle, seed, device, out_dir, log_path in launched:
+        for proc, log_handle, seed, device, child_cuda_visible, out_dir, log_path in launched:
             ret = proc.wait()
             log_handle.close()
             status = "ok" if ret == 0 else "failed"
-            print(f"[multi] done seed={seed} status={status} log={log_path}")
+            print(f"[multi] done seed={seed} status={status} log={log_path}", flush=True)
             row = {
                 "seed": seed,
                 "device": device if device is not None else "",
+                "cuda_visible_devices": (
+                    child_cuda_visible if child_cuda_visible is not None else ""
+                ),
                 "output_dir": str(out_dir),
                 "log": str(log_path),
                 "returncode": ret,
@@ -799,8 +849,13 @@ class LoadedModels:
 def load_all_models(cfg: VHHDesignConfig) -> LoadedModels:
     """Load every model the driver uses, ONCE. JIT compile cost amortizes across
     the outer loop's iterations because we keep the same loss objects."""
+    stage_log("loading BoltzGen model")
     boltzgen = load_boltzgen()
+    stage_log("loaded BoltzGen model")
+
+    stage_log("loading ABMPNN inverse-folding model")
     mpnn = load_abmpnn()
+    stage_log("loaded ABMPNN inverse-folding model")
 
     esm2_pll = None
     ablang2_model = None
@@ -809,11 +864,19 @@ def load_all_models(cfg: VHHDesignConfig) -> LoadedModels:
     # stop_grad=False on the language models because we need gradients to flow
     # back to coords through the differentiable IF bridge during guidance.
     if cfg.weight_esm2 > 0:
+        stage_log(f"loading ESM2 model {cfg.esm2_model_name}")
         esm2 = load_esm2(cfg.esm2_model_name)
         esm2_pll = ESM2PseudoLikelihood(esm2, stop_grad=False)
+        stage_log(f"loaded ESM2 model {cfg.esm2_model_name}")
+    else:
+        stage_log("skipping ESM2 model because weight_esm2 <= 0")
 
     if cfg.weight_ablang2 > 0:
+        stage_log("loading AbLang2 model")
         ablang2_model, ablang2_tokenizer = load_ablang2()
+        stage_log("loaded AbLang2 model")
+    else:
+        stage_log("skipping AbLang2 model because weight_ablang2 <= 0")
 
     return LoadedModels(
         boltzgen=boltzgen,
@@ -946,19 +1009,23 @@ def build_polish_loss(cfg: VHHDesignConfig, models: LoadedModels,
 
 def run(cfg: VHHDesignConfig):
     """End-to-end VHH redesign driver. See module docstring for pipeline overview."""
+    stage_log(f"starting run seed={cfg.seed} output_dir={cfg.output_dir}")
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     with open(cfg.output_dir / "config.json", "w") as f:
         json.dump({k: (str(v) if isinstance(v, Path) else v)
                    for k, v in asdict(cfg).items()}, f, indent=2)
+    stage_log("wrote config.json")
 
     # ---- 1. One-time setup: load models, parse YAML, build features ----
-    print("[setup] loading models...")
+    print("[setup] loading models...", flush=True)
     models = load_all_models(cfg)
 
     if cfg.boltzgen_yaml_path is not None:
+        stage_log(f"reading BoltzGen YAML {cfg.boltzgen_yaml_path}")
         yaml_string = cfg.boltzgen_yaml_path.read_text()
         input_files = boltzgen_yaml_files(cfg.boltzgen_yaml_path, yaml_string)
     else:
+        stage_log("building BoltzGen YAML from CLI inputs")
         cif_filename = cfg.complex_cif_path.name
         yaml_string = build_complex_yaml(
             cif_filename=cif_filename,
@@ -968,7 +1035,8 @@ def run(cfg: VHHDesignConfig):
         )
         input_files = {cif_filename: cfg.complex_cif_path}
 
-    print("[setup] parsing YAML and featurizing complex...")
+    print("[setup] parsing YAML and featurizing complex...", flush=True)
+    stage_log("loading and featurizing complex")
     features, writer = load_features_and_structure_writer(
         yaml_string=yaml_string,
         files=input_files,
@@ -978,11 +1046,13 @@ def run(cfg: VHHDesignConfig):
         mask_backbone=False,
         mask_disto=True,
     )
+    stage_log("finished loading and featurizing complex")
 
     # Extract everything we need from features. Keep arrays UNBATCHED throughout
     # the driver — guided_partial_diffusion auto-batches as needed. For backbone
     # extraction inside guidance_fn we use the token-to-backbone mapping that
     # BoltzGenOutput.backbone_coordinates already exercises.
+    stage_log("building parent sequence and design masks")
     parent_one_hot = parent_one_hot_from_features(features)
     designable_token_mask = cdr_token_mask_from_features(features)
     initial_coords = jnp.array(features["coords"][0])               # (M, 3)
@@ -1001,10 +1071,12 @@ def run(cfg: VHHDesignConfig):
     print(f"[setup] complex has {n_total_tokens} tokens, "
           f"{n_binder_tokens} binder tokens, "
           f"{n_designable} designable (CDR) positions, "
-          f"edit budget = {cfg.edit_budget}")
+          f"edit budget = {cfg.edit_budget}", flush=True)
+    stage_log("finished parent sequence and design masks")
 
     # ---- 2. Run trunk ONCE; reuse Sampler across outer iterations ----
-    print("[setup] running BoltzGen trunk + diffusion conditioning...")
+    print("[setup] running BoltzGen trunk + diffusion conditioning...", flush=True)
+    stage_log("starting BoltzGen sampler/trunk conditioning")
     sampler = Sampler.from_features(
         model=models.boltzgen,
         features=features,
@@ -1012,8 +1084,10 @@ def run(cfg: VHHDesignConfig):
         deterministic=True,
         recycling_steps=cfg.recycling_steps,
     )
+    stage_log("finished BoltzGen sampler/trunk conditioning")
 
     # ---- 3. Build composite losses ----
+    stage_log("building guidance and polish losses")
     guidance_loss = build_guidance_loss(
         cfg, models, parent_one_hot, designable_token_mask, binder_token_indices
     )
@@ -1021,6 +1095,7 @@ def run(cfg: VHHDesignConfig):
         cfg, models, parent_one_hot, designable_token_mask, binder_token_indices
     )
     lambda_fn = lambda_schedule_fn(cfg.lambda_schedule, cfg.lambda_max)
+    stage_log("finished building guidance and polish losses")
 
     # ---- 4. Outer loop ----
     parent_seq_ids = jnp.argmax(parent_one_hot, axis=-1)
@@ -1034,7 +1109,7 @@ def run(cfg: VHHDesignConfig):
         t0 = time.time()
         print(f"\n[outer {outer}] guided partial diffusion "
               f"(start_sigma_frac={cfg.start_sigma_frac}, "
-              f"steps={cfg.num_sampling_steps})...")
+              f"steps={cfg.num_sampling_steps})...", flush=True)
 
         # ----- Stage 1: guided partial diffusion -----
         if guidance_loss is not None:
@@ -1057,6 +1132,7 @@ def run(cfg: VHHDesignConfig):
         else:
             guidance_fn = None
 
+        stage_log(f"outer {outer}: starting guided partial diffusion")
         x_final = guided_partial_diffusion(
             sampler=sampler,
             structure_module=models.boltzgen.structure_module,
@@ -1071,9 +1147,11 @@ def run(cfg: VHHDesignConfig):
             guidance_lambda_fn=lambda_fn if guidance_fn is not None else None,
             key=jax.random.key(cfg.seed + 1000 * outer),
         )
+        stage_log(f"outer {outer}: finished guided partial diffusion")
 
         # ----- Stage 1.5: decode to discrete sequence -----
         # x_final is unbatched (M, 3); extract backbone for IF.
+        stage_log(f"outer {outer}: decoding final structure with ABMPNN")
         bb_final = x_final[bb_atom_inds]
         soft_seq_decoded = differentiable_inverse_fold(
             models.mpnn, bb_final,
@@ -1088,7 +1166,11 @@ def run(cfg: VHHDesignConfig):
         diffusion_seq = jnp.argmax(soft_seq_decoded, axis=-1)
         diffusion_edits = int(((diffusion_seq != parent_seq_ids)
                                & designable_token_mask).sum())
-        print(f"[outer {outer}] diffusion produced {diffusion_edits} edits vs parent")
+        print(
+            f"[outer {outer}] diffusion produced {diffusion_edits} edits vs parent",
+            flush=True,
+        )
+        stage_log(f"outer {outer}: finished ABMPNN decode")
 
         # ----- Stage 2: edit-budgeted greedy polish -----
         if cfg.skip_polish:
@@ -1097,7 +1179,9 @@ def run(cfg: VHHDesignConfig):
             iter_pareto = {diffusion_edits: (float("nan"), polished_seq)}
         else:
             print(f"[outer {outer}] edit-budgeted greedy polish "
-                  f"(budget={cfg.edit_budget}, steps<={cfg.polish_steps})...")
+                  f"(budget={cfg.edit_budget}, steps<={cfg.polish_steps})...",
+                  flush=True)
+            stage_log(f"outer {outer}: starting edit-budgeted greedy polish")
             polished_seq, polished_val, iter_pareto = edit_budgeted_greedy_descent(
                 loss=polish_loss,
                 sequence=np.asarray(diffusion_seq),
@@ -1108,6 +1192,7 @@ def run(cfg: VHHDesignConfig):
                 steps=cfg.polish_steps,
                 key=jax.random.key(cfg.seed + 31337 * outer),
             )
+            stage_log(f"outer {outer}: finished edit-budgeted greedy polish")
 
         # ----- Update global Pareto front -----
         for k, (loss_v, seq) in iter_pareto.items():
@@ -1125,7 +1210,10 @@ def run(cfg: VHHDesignConfig):
             current_initial_coords = x_final
             converged = same_as_parent
             if same_as_parent:
-                print(f"[outer {outer}] no further improving edits — converged.")
+                print(
+                    f"[outer {outer}] no further improving edits — converged.",
+                    flush=True,
+                )
 
         all_iterations.append({
             "outer": outer,
@@ -1141,7 +1229,8 @@ def run(cfg: VHHDesignConfig):
             break
 
     # ---- 5. Write outputs ----
-    print("\n[output] writing Pareto front and per-iteration log...")
+    print("\n[output] writing Pareto front and per-iteration log...", flush=True)
+    stage_log("writing Pareto front and iterations CSV")
     binder_token_indices_np = np.asarray(binder_token_indices)
     pareto_rows = [
         {
@@ -1157,10 +1246,13 @@ def run(cfg: VHHDesignConfig):
 
     # ---- 6. Refold (task #15) ----
     if not cfg.skip_refold:
-        print("[refold] refolding Pareto candidates with Boltz2...")
+        print("[refold] refolding Pareto candidates with Boltz2...", flush=True)
+        stage_log("starting Boltz2 refold")
         refold_pareto_with_boltz2(global_pareto, cfg, binder_token_indices)
+        stage_log("finished Boltz2 refold")
 
-    print(f"[done] outputs in {cfg.output_dir}")
+    print(f"[done] outputs in {cfg.output_dir}", flush=True)
+    stage_log("run complete")
     return global_pareto, all_iterations
 
 
@@ -1180,6 +1272,7 @@ def refold_pareto_with_boltz2(
     `examples/boltzgen_pipeline.py`. We import them lazily here so v0/v1/v2 runs
     don't pay the Boltz2 import cost when refolding is disabled.
     """
+    stage_log("refold: importing Boltz2 helpers")
     from mosaic.models.boltz2 import Boltz2
     from mosaic.losses.boltz2 import boltz2_trunk, boltz2_forward_from_trunk
     from mosaic.losses.structure_prediction import (
@@ -1187,7 +1280,10 @@ def refold_pareto_with_boltz2(
     )
     from mosaic.structure_prediction import TargetChain
 
+    stage_log("refold: loading Boltz2 model")
     boltz2 = Boltz2()
+    stage_log("refold: loaded Boltz2 model")
+    stage_log(f"refold: reading complex {cfg.complex_cif_path}")
     target_struct = gemmi.read_structure(str(cfg.complex_cif_path))
     target_struct.setup_entities()
     target_chains = []
@@ -1195,6 +1291,7 @@ def refold_pareto_with_boltz2(
         chain = target_struct[0][cid]
         seq = gemmi.one_letter_code([r.name for r in chain])
         target_chains.append(TargetChain(seq, use_msa=False, template_chain=chain))
+    stage_log("refold: built target chain templates/features")
 
     iptm_loss = IPTMLoss()
     bt_ipsae_loss = BinderTargetIPSAE(pae_cutoff=cfg.ipsae_pae_cutoff)
@@ -1215,7 +1312,8 @@ def refold_pareto_with_boltz2(
     refold_batch_size = min(cfg.refold_batch_size, cfg.refold_num_samples)
     print(
         f"[refold] using sample batch size {refold_batch_size} "
-        f"for {cfg.refold_num_samples} sample(s) per candidate"
+        f"for {cfg.refold_num_samples} sample(s) per candidate",
+        flush=True,
     )
 
     def score_refold_batch(
@@ -1272,15 +1370,18 @@ def refold_pareto_with_boltz2(
     score_refold_batch = eqx.filter_jit(score_refold_batch)
 
     for edit_count, (loss_v, seq_ids) in sorted(pareto.items()):
+        stage_log(f"refold: preparing edit_count={edit_count}")
         seq_str = "".join(TOKENS[i] for i in seq_ids[binder_token_indices_np])
         feats, w = boltz2.target_only_features(
             [TargetChain(seq_str, use_msa=False)] + target_chains
         )
         key = jax.random.key(cfg.seed + 99999 + edit_count)
+        stage_log(f"refold: running trunk edit_count={edit_count}")
         initial_emb, trunk_state = boltz2_trunk(
             boltz2.model, feats, recycling_steps=cfg.recycling_steps,
             deterministic=True, key=fold_in(key, "trunk"),
         )
+        stage_log(f"refold: finished trunk edit_count={edit_count}")
 
         binder_sequence_placeholder = jnp.zeros((len(seq_str), 20))
 
@@ -1289,6 +1390,10 @@ def refold_pareto_with_boltz2(
 
         for chunk_start in range(0, cfg.refold_num_samples, refold_batch_size):
             chunk_size = min(refold_batch_size, cfg.refold_num_samples - chunk_start)
+            stage_log(
+                f"refold: sampling edit_count={edit_count} "
+                f"samples {chunk_start}-{chunk_start + chunk_size - 1}"
+            )
             sample_keys = jax.random.split(
                 fold_in(key, f"sample_batch_{chunk_start}"),
                 chunk_size,
@@ -1300,6 +1405,10 @@ def refold_pareto_with_boltz2(
                 trunk_state,
                 binder_sequence_placeholder,
                 sample_keys,
+            )
+            stage_log(
+                f"refold: scored edit_count={edit_count} "
+                f"samples {chunk_start}-{chunk_start + chunk_size - 1}"
             )
 
             for chunk_offset in range(chunk_size):

@@ -40,10 +40,12 @@ from ..util import pairwise_distance
 
 def load_boltzgen(checkpoint_dir=Path("~/.boltz/").expanduser(), model_diverse=True):
     checkpoints = ["boltzgen1_adherence.ckpt", "boltzgen1_diverse.ckpt"]
+    print(f"[load_boltzgen] checking checkpoints in {checkpoint_dir}", flush=True)
     if not all((checkpoint_dir / ckpt).exists() for ckpt in checkpoints):
-        print(f"Downloading Boltz folding checkpoints to {checkpoint_dir}")
+        print(f"[load_boltzgen] downloading Boltz checkpoints to {checkpoint_dir}", flush=True)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         for ckpt in checkpoints:
+            print(f"[load_boltzgen] downloading {ckpt}", flush=True)
             subprocess.run(
                 [
                     "wget",
@@ -53,6 +55,7 @@ def load_boltzgen(checkpoint_dir=Path("~/.boltz/").expanduser(), model_diverse=T
                 ],
             )
             # ugh, torch is trash
+            print(f"[load_boltzgen] cleaning checkpoint metadata for {ckpt}", flush=True)
             cpkt = torch.load(
                 checkpoint_dir / ckpt, map_location="cpu", weights_only=False
             )
@@ -60,6 +63,7 @@ def load_boltzgen(checkpoint_dir=Path("~/.boltz/").expanduser(), model_diverse=T
             del cpkt["validators"]
             torch.save(cpkt, checkpoint_dir / ckpt)
 
+        print("[load_boltzgen] downloading mols.zip", flush=True)
         subprocess.run(
             [
                 "wget",
@@ -69,16 +73,22 @@ def load_boltzgen(checkpoint_dir=Path("~/.boltz/").expanduser(), model_diverse=T
             ]
         )
 
+    checkpoint = checkpoint_dir / (checkpoints[0] if not model_diverse else checkpoints[1])
+    print(f"[load_boltzgen] loading torch checkpoint {checkpoint}", flush=True)
     torch_model = Boltz.load_from_checkpoint(
-        checkpoint_dir / (checkpoints[0] if not model_diverse else checkpoints[1]),
+        checkpoint,
         strict=True,
         map_location="cpu",
     ).eval()
     torch_model.structure_module.time_dilation = 2.667
 
+    print("[load_boltzgen] converting torch model to JAX", flush=True)
     model = joltzgen.from_torch(torch_model)
+    print("[load_boltzgen] moving model arrays to JAX device", flush=True)
     _model_params, _model_static = eqx.partition(model, eqx.is_inexact_array)
-    return eqx.combine(jax.device_put(_model_params), _model_static)
+    loaded = eqx.combine(jax.device_put(_model_params), _model_static)
+    print("[load_boltzgen] ready", flush=True)
+    return loaded
 
 
 def _generate_mmcif(
@@ -901,5 +911,4 @@ def build_atom_partial_mask(
     if atom_to_token.ndim == 3:
         atom_to_token = atom_to_token[0]
     return (atom_to_token.astype(jnp.float32) @ designable_token_mask.astype(jnp.float32))
-
 

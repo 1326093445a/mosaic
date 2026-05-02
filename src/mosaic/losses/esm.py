@@ -24,6 +24,7 @@ from ..common import LossTerm, TOKENS
 
 def load_esm2(model_name: str = "esm2_t33_650M_UR50D"):
     """Load an ESM2 torch checkpoint and convert it to the JAX/Equinox wrapper."""
+    print(f"[load_esm2] importing fair-esm for {model_name}", flush=True)
     try:
         import esm
         import esm2quinox
@@ -37,9 +38,13 @@ def load_esm2(model_name: str = "esm2_t33_650M_UR50D"):
     if loader is None:
         raise ValueError(f"Unknown ESM2 model '{model_name}' in esm.pretrained")
 
+    print(f"[load_esm2] loading torch checkpoint {model_name}", flush=True)
     torch_model, _ = loader()
     torch_model.eval()
-    return esm2quinox.from_torch(torch_model)
+    print(f"[load_esm2] converting {model_name} from torch to JAX", flush=True)
+    model = esm2quinox.from_torch(torch_model)
+    print(f"[load_esm2] ready {model_name}", flush=True)
+    return model
 
 
 def boltz_to_esm_matrix():
@@ -108,5 +113,4 @@ class ESM2PseudoLikelihood(LossTerm):
             masked_log_likelihoods = jax.lax.stop_gradient(masked_log_likelihoods)
         pll =  (masked_log_likelihoods * esm_toks_unpadded).sum(-1).mean()
         return -pll, {"esm_pll": pll}
-
 
