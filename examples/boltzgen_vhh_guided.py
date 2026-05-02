@@ -187,6 +187,23 @@ def boltzgen_yaml_files(yaml_path: Path, yaml_string: str) -> dict[str, Path]:
     return files
 
 
+def squeeze_feature(array, name: str, ndim: int):
+    """Remove leading singleton batch/multiplicity axes from a feature array."""
+    arr = jnp.array(array)
+    while arr.ndim > ndim:
+        if arr.shape[0] != 1:
+            raise ValueError(
+                f"Feature {name} has shape {arr.shape}; expected leading "
+                f"singleton axes before {ndim}D data."
+            )
+        arr = arr[0]
+    if arr.ndim != ndim:
+        raise ValueError(
+            f"Feature {name} has shape {arr.shape}; expected {ndim}D data."
+        )
+    return arr
+
+
 def parent_one_hot_from_features(features: dict) -> Float[Array, "N 20"]:
     """Recover the parent (pre-mask) sequence as a one-hot over mosaic's TOKENS.
 
@@ -195,12 +212,13 @@ def parent_one_hot_from_features(features: dict) -> Float[Array, "N 20"]:
     at masker.py:101). We slice columns 2:22 to drop BoltzGen's special tokens and
     keep the 20 standard amino-acid columns, matching mosaic's TOKENS ordering.
     """
-    return jnp.array(features["res_type_clone"][0, :, 2:22], dtype=jnp.float32)
+    res_type_clone = squeeze_feature(features["res_type_clone"], "res_type_clone", 2)
+    return jnp.array(res_type_clone[:, 2:22], dtype=jnp.float32)
 
 
 def cdr_token_mask_from_features(features: dict) -> Bool[Array, "N"]:
     """Token-level designable mask, sourced directly from the BoltzGen featurizer."""
-    return jnp.array(features["design_mask"][0], dtype=bool)
+    return jnp.array(squeeze_feature(features["design_mask"], "design_mask", 1), dtype=bool)
 
 
 def binder_indices_from_design_mask(
@@ -1055,15 +1073,18 @@ def run(cfg: VHHDesignConfig):
     stage_log("building parent sequence and design masks")
     parent_one_hot = parent_one_hot_from_features(features)
     designable_token_mask = cdr_token_mask_from_features(features)
-    initial_coords = jnp.array(features["coords"][0])               # (M, 3)
-    atom_pad_mask = jnp.array(features["atom_pad_mask"][0])         # (M,)
+    initial_coords = squeeze_feature(features["coords"], "coords", 2)               # (M, 3)
+    atom_pad_mask = squeeze_feature(features["atom_pad_mask"], "atom_pad_mask", 1)  # (M,)
     atom_partial_mask = build_atom_partial_mask(features, designable_token_mask)  # (M,)
-    asym_id = jnp.array(features["asym_id"][0])
-    residue_index = jnp.array(features["residue_index"][0])
+    asym_id = squeeze_feature(features["asym_id"], "asym_id", 1)
+    residue_index = squeeze_feature(features["residue_index"], "residue_index", 1)
     binder_token_indices = binder_indices_from_design_mask(
         asym_id, designable_token_mask
     )
-    bb_atom_inds = jnp.argmax(jnp.array(features["token_to_bb4_atoms"][0]), axis=-1)  # (N, 4)
+    token_to_bb4_atoms = squeeze_feature(
+        features["token_to_bb4_atoms"], "token_to_bb4_atoms", 3
+    )
+    bb_atom_inds = jnp.argmax(token_to_bb4_atoms, axis=-1)  # (N, 4)
 
     n_total_tokens = parent_one_hot.shape[0]
     n_binder_tokens = int(binder_token_indices.shape[0])
