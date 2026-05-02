@@ -26,6 +26,7 @@ Boltz2-refolded ranked structures with interface/RMSD metrics.
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import subprocess
@@ -537,6 +538,12 @@ def _rank_value(value, *, descending: bool):
     return -value if descending else value
 
 
+def _truthy(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
 def _passes_max_threshold(value, threshold: float) -> bool:
     """Return True when value is finite and <= threshold; threshold <= 0 disables."""
     if threshold <= 0:
@@ -550,11 +557,12 @@ def _passes_max_threshold(value, threshold: float) -> bool:
 
 def _refold_rank_key(row: dict):
     return (
-        not bool(row["rmsd_pass"]),
-        _rank_value(row["ipsae_min"], descending=True),
-        _rank_value(row["iptm"], descending=True),
-        _rank_value(row["geom_interaction_score_refolded"], descending=True),
-        _rank_value(row["binder_ca_rmsd_target_aligned"], descending=False),
+        not _truthy(row.get("rmsd_pass")),
+        _rank_value(row.get("ipsae_min"), descending=True),
+        _rank_value(row.get("iptm"), descending=True),
+        _rank_value(row.get("ipae_min"), descending=False),
+        _rank_value(row.get("geom_interaction_score_refolded"), descending=True),
+        _rank_value(row.get("binder_ca_rmsd_target_aligned"), descending=False),
     )
 
 
@@ -572,6 +580,80 @@ def parse_device_ids(raw: Optional[str]) -> list[str]:
         return [str(i) for i in range(int(raw))]
 
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def write_combined_refold_ranking(root: Path, manifest_rows: list[dict]) -> int:
+    """Combine per-seed refold_ranked.csv files into one root-level ranking CSV."""
+    combined_rows = []
+    for manifest_row in manifest_rows:
+        if manifest_row.get("status") != "ok":
+            continue
+        out_dir = Path(manifest_row["output_dir"])
+        ranked_csv = out_dir / "refold_ranked.csv"
+        if not ranked_csv.exists():
+            continue
+
+        with ranked_csv.open(newline="") as handle:
+            for row in csv.DictReader(handle):
+                combined_rows.append(
+                    {
+                        "seed": manifest_row["seed"],
+                        "local_rank": row.get("rank", ""),
+                        "edit_count": row.get("edit_count", ""),
+                        "sample_idx": row.get("sample_idx", ""),
+                        "sequence": row.get("sequence", ""),
+                        "ipsae_min": row.get("ipsae_min", ""),
+                        "iptm": row.get("iptm", ""),
+                        "ipae_min": row.get("ipae_min", ""),
+                        "bt_ipsae": row.get("bt_ipsae", ""),
+                        "tb_ipsae": row.get("tb_ipsae", ""),
+                        "rmsd_pass": row.get("rmsd_pass", ""),
+                        "refold_cif": row.get("refold_cif", ""),
+                        "output_dir": str(out_dir),
+                        "log": manifest_row.get("log", ""),
+                    }
+                )
+
+    columns = [
+        "rank",
+        "seed",
+        "local_rank",
+        "edit_count",
+        "sample_idx",
+        "sequence",
+        "ipsae_min",
+        "iptm",
+        "ipae_min",
+        "bt_ipsae",
+        "tb_ipsae",
+        "rmsd_pass",
+        "refold_cif",
+        "output_dir",
+        "log",
+    ]
+
+    passing_rows = sorted(
+        [row for row in combined_rows if _truthy(row.get("rmsd_pass"))],
+        key=_refold_rank_key,
+    )
+    failed_rows = sorted(
+        [row for row in combined_rows if not _truthy(row.get("rmsd_pass"))],
+        key=_refold_rank_key,
+    )
+    ranked_rows = [
+        {"rank": rank, **row}
+        for rank, row in enumerate(passing_rows, start=1)
+    ] + [
+        {"rank": "", **row}
+        for row in failed_rows
+    ]
+
+    output_path = root / "combined_refold_ranked.csv"
+    if ranked_rows:
+        pl.DataFrame(ranked_rows).select(columns).write_csv(output_path)
+    else:
+        output_path.write_text(",".join(columns) + "\n")
+    return len(ranked_rows)
 
 
 def _append_option(cmd: list[str], flag: str, value):
@@ -688,6 +770,11 @@ def run_many_from_cli(args):
                 failures.append(row)
 
     pl.DataFrame(manifest_rows).write_csv(root / "multi_design_manifest.csv")
+    combined_count = write_combined_refold_ranking(root, manifest_rows)
+    print(
+        f"[multi] wrote {combined_count} combined ranked refold row(s) -> "
+        f"{root / 'combined_refold_ranked.csv'}"
+    )
     if failures:
         raise RuntimeError(
             f"{len(failures)} design job(s) failed; see "
@@ -1165,12 +1252,19 @@ def refold_pareto_with_boltz2(
                 output=out,
                 key=fold_in(sample_key, "ipsae_min"),
             )
+            binder_len = binder_sequence_placeholder.shape[0]
+            bt_pae = out.pae[:binder_len, binder_len:]
+            tb_pae = out.pae[binder_len:, :binder_len]
+            ipae_min = jnp.minimum(jnp.min(bt_pae), jnp.min(tb_pae))
             return {
                 "structure_coordinates": out.structure_coordinates,
                 "iptm": iptm_aux["iptm"],
                 "bt_ipsae": bt_aux["bt_ipsae"],
                 "tb_ipsae": tb_aux["tb_ipsae"],
                 "ipsae_min": ipsae_min_aux["ipsae_min"],
+                "ipae_min": ipae_min,
+                "bt_pae_mean": jnp.mean(bt_pae),
+                "tb_pae_mean": jnp.mean(tb_pae),
             }
 
         return jax.vmap(score_one)(sample_keys)
@@ -1239,6 +1333,9 @@ def refold_pareto_with_boltz2(
                     "bt_ipsae": float(batch_scores["bt_ipsae"][chunk_offset]),
                     "tb_ipsae": float(batch_scores["tb_ipsae"][chunk_offset]),
                     "ipsae_min": ipsae_min,
+                    "ipae_min": float(batch_scores["ipae_min"][chunk_offset]),
+                    "bt_pae_mean": float(batch_scores["bt_pae_mean"][chunk_offset]),
+                    "tb_pae_mean": float(batch_scores["tb_pae_mean"][chunk_offset]),
                     "sequence": seq_str,
                 }
                 row.update(interface_metrics)

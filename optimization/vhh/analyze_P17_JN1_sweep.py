@@ -174,6 +174,7 @@ def summarize(args) -> int:
                 "bt_ipsae": selected.get("bt_ipsae", ""),
                 "tb_ipsae": selected.get("tb_ipsae", ""),
                 "iptm": selected.get("iptm", ""),
+                "ipae_min": selected.get("ipae_min", ""),
                 "geom_interaction_score_refolded": selected.get(
                     "geom_interaction_score_refolded", ""
                 ),
