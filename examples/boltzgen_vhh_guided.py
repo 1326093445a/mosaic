@@ -858,51 +858,56 @@ def run_many_from_cli(args):
 @dataclass
 class LoadedModels:
     boltzgen: any
-    mpnn: any
+    mpnn: any = None
     esm2_pll: any = None
     ablang2_model: any = None
     ablang2_tokenizer: any = None
 
 
-def load_all_models(cfg: VHHDesignConfig) -> LoadedModels:
-    """Load every model the driver uses, ONCE. JIT compile cost amortizes across
-    the outer loop's iterations because we keep the same loss objects."""
+def load_core_models(cfg: VHHDesignConfig) -> LoadedModels:
+    """Load only the BoltzGen model needed to build the sampler/trunk state."""
+    del cfg
     stage_log("loading BoltzGen model")
     boltzgen = load_boltzgen()
     stage_log("loaded BoltzGen model")
+    return LoadedModels(boltzgen=boltzgen)
 
-    stage_log("loading ABMPNN inverse-folding model")
-    mpnn = load_abmpnn()
-    stage_log("loaded ABMPNN inverse-folding model")
 
-    esm2_pll = None
-    ablang2_model = None
-    ablang2_tokenizer = None
+def load_guidance_models(cfg: VHHDesignConfig, models: LoadedModels) -> LoadedModels:
+    """Load IF/language guidance models after BoltzGen trunk conditioning.
+
+    `Sampler.from_features` has a large compile/runtime peak. Deferring ESM2 and
+    AbLang2 until after that stage avoids keeping those model weights resident
+    during the BoltzGen sampler allocation.
+    """
+    if models.mpnn is None:
+        stage_log("loading ABMPNN inverse-folding model")
+        models.mpnn = load_abmpnn()
+        stage_log("loaded ABMPNN inverse-folding model")
 
     # stop_grad=False on the language models because we need gradients to flow
     # back to coords through the differentiable IF bridge during guidance.
-    if cfg.weight_esm2 > 0:
+    if cfg.weight_esm2 > 0 and models.esm2_pll is None:
         stage_log(f"loading ESM2 model {cfg.esm2_model_name}")
         esm2 = load_esm2(cfg.esm2_model_name)
-        esm2_pll = ESM2PseudoLikelihood(esm2, stop_grad=False)
+        models.esm2_pll = ESM2PseudoLikelihood(esm2, stop_grad=False)
         stage_log(f"loaded ESM2 model {cfg.esm2_model_name}")
-    else:
+    elif cfg.weight_esm2 <= 0:
         stage_log("skipping ESM2 model because weight_esm2 <= 0")
 
-    if cfg.weight_ablang2 > 0:
+    if cfg.weight_ablang2 > 0 and models.ablang2_model is None:
         stage_log("loading AbLang2 model")
-        ablang2_model, ablang2_tokenizer = load_ablang2()
+        models.ablang2_model, models.ablang2_tokenizer = load_ablang2()
         stage_log("loaded AbLang2 model")
-    else:
+    elif cfg.weight_ablang2 <= 0:
         stage_log("skipping AbLang2 model because weight_ablang2 <= 0")
+    return models
 
-    return LoadedModels(
-        boltzgen=boltzgen,
-        mpnn=mpnn,
-        esm2_pll=esm2_pll,
-        ablang2_model=ablang2_model,
-        ablang2_tokenizer=ablang2_tokenizer,
-    )
+
+def load_all_models(cfg: VHHDesignConfig) -> LoadedModels:
+    """Load every model the driver uses, kept for non-staged call sites."""
+    models = load_core_models(cfg)
+    return load_guidance_models(cfg, models)
 
 
 # =============================================================================
@@ -1034,9 +1039,9 @@ def run(cfg: VHHDesignConfig):
                    for k, v in asdict(cfg).items()}, f, indent=2)
     stage_log("wrote config.json")
 
-    # ---- 1. One-time setup: load models, parse YAML, build features ----
-    print("[setup] loading models...", flush=True)
-    models = load_all_models(cfg)
+    # ---- 1. One-time setup: load BoltzGen, parse YAML, build features ----
+    print("[setup] loading BoltzGen model...", flush=True)
+    models = load_core_models(cfg)
 
     if cfg.boltzgen_yaml_path is not None:
         stage_log(f"reading BoltzGen YAML {cfg.boltzgen_yaml_path}")
@@ -1107,7 +1112,12 @@ def run(cfg: VHHDesignConfig):
     )
     stage_log("finished BoltzGen sampler/trunk conditioning")
 
-    # ---- 3. Build composite losses ----
+    # ---- 3. Load guidance models and build composite losses ----
+    print("[setup] loading guidance models...", flush=True)
+    stage_log("starting guidance model loading")
+    models = load_guidance_models(cfg, models)
+    stage_log("finished guidance model loading")
+
     stage_log("building guidance and polish losses")
     guidance_loss = build_guidance_loss(
         cfg, models, parent_one_hot, designable_token_mask, binder_token_indices
