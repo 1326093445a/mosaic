@@ -2,7 +2,7 @@
 # VHH72 CDR redesign benchmark against SARS-CoV-2 WT RBD.
 #
 # Defaults are benchmark-ready and intentionally mirror the real VHH workflow:
-#   MODE=v4, BUDGET=7, refold 5 samples in one batch.
+#   MODE=v4, BUDGET=7, refold 5 samples in one batch, polish batch size 3.
 
 set -euo pipefail
 
@@ -39,7 +39,11 @@ ESM2_MODEL="${ESM2_MODEL:-esm2_t33_650M_UR50D}"
 CLIP_GRADIENT_NORM="${CLIP_GRADIENT_NORM:-1.0}"
 
 POLISH_STEPS="${POLISH_STEPS:-200}"
-POLISH_BATCH_SIZE="${POLISH_BATCH_SIZE:-16}"
+POLISH_BATCH_SIZE="${POLISH_BATCH_SIZE:-3}"
+
+export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
+export TF_GPU_ALLOCATOR="${TF_GPU_ALLOCATOR:-cuda_malloc_async}"
+export XLA_FLAGS="${XLA_FLAGS:---xla_gpu_autotune_level=0}"
 
 OUTPUT_DIR="${1:-${SCRIPT_DIR}/VHH72_WT_mosaic_${MODE}_b${BUDGET}_seed${SEED}_sigma${START_SIGMA_FRAC}}"
 
@@ -73,9 +77,13 @@ echo "step_scale:        ${STEP_SCALE}"
 echo "lambda:            ${LAMBDA_MAX} (${LAMBDA_SCHEDULE})"
 echo "ESM2 model/weight: ${ESM2_MODEL} / ${WEIGHT_ESM2}"
 echo "AbLang2 weight:    ${WEIGHT_ABLANG2}"
+echo "polish:            ${POLISH_STEPS} step(s), batch ${POLISH_BATCH_SIZE}"
 echo "refold:            ${REFOLD_NUM_SAMPLES} sample(s), ${REFOLD_SAMPLING_STEPS} steps, batch ${REFOLD_BATCH_SIZE}"
 echo "ipSAE PAE cutoff:  ${IPSAE_PAE_CUTOFF}"
 echo "RMSD filter:       binder CA <= ${REFOLD_RMSD_THRESHOLD} A"
+echo "XLA preallocate:   ${XLA_PYTHON_CLIENT_PREALLOCATE}"
+echo "GPU allocator:     ${TF_GPU_ALLOCATOR}"
+echo "XLA flags:         ${XLA_FLAGS}"
 echo ""
 
 EXTRA_ARGS=()
