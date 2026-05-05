@@ -81,6 +81,22 @@ def batched_eval(
     return jax.vmap(single)(xs, keys)
 
 
+@eqx.filter_jit
+def batched_value_eval(
+    loss: AbstractLoss,
+    xs: Float[Array, "B N K"],
+    keys: jax.Array,
+) -> tuple[Float[Array, "B"], PyTree]:
+    """Evaluate loss values for B sequences without materializing gradients."""
+    assert xs.ndim == 3, f"xs must be 3D [B, N, K], got {xs.ndim}D"
+
+    def single(x: Float[Array, "N K"], key: jax.Array):
+        v, aux = loss(x, key=key)
+        return jnp.nan_to_num(v, nan=1e6), aux
+
+    return jax.vmap(single)(xs, keys)
+
+
 
 # def _proposal(sequence, g, temp, alphabet_size: int = 20):
 #     input = jax.nn.one_hot(sequence, alphabet_size)
@@ -720,7 +736,7 @@ def edit_budgeted_greedy_descent(
         m = cands.shape[0]
 
         xs = jax.nn.one_hot(jnp.asarray(cands), alphabet_size)
-        vals, auxs, grads_batch = batched_eval(
+        vals, auxs = batched_value_eval(
             loss, xs, jnp.broadcast_to(key, (xs.shape[0], *key.shape))
         )
         vals_np = np.asarray(vals)
@@ -742,8 +758,14 @@ def edit_budgeted_greedy_descent(
         if v_best < v:
             sequence = cands[best_in_batch].copy()
             v = v_best
-            g = np.asarray(grads_batch)[best_in_batch]
             aux = jax.tree.map(lambda a: a[best_in_batch], auxs)
+            x_current = jax.nn.one_hot(jnp.asarray(sequence[None]), alphabet_size)
+            _, _, grads = batched_eval(
+                loss,
+                x_current,
+                jnp.broadcast_to(key, (x_current.shape[0], *key.shape)),
+            )
+            g = np.asarray(grads)[0]
 
         if v < best_val:
             best_val = v
