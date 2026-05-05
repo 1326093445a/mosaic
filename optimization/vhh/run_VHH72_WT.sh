@@ -38,8 +38,15 @@ WEIGHT_ABLANG2="${WEIGHT_ABLANG2:-${WEIGHT_ABLANG:-0.10}}"
 ESM2_MODEL="${ESM2_MODEL:-esm2_t33_650M_UR50D}"
 CLIP_GRADIENT_NORM="${CLIP_GRADIENT_NORM:-1.0}"
 
+SEARCH_MODE="${SEARCH_MODE:-both}"
 POLISH_STEPS="${POLISH_STEPS:-200}"
 POLISH_BATCH_SIZE="${POLISH_BATCH_SIZE:-3}"
+MCMC_STEPS="${MCMC_STEPS:-100}"
+MCMC_TEMP="${MCMC_TEMP:-0.02}"
+MCMC_PROPOSAL_TEMP="${MCMC_PROPOSAL_TEMP:-0.01}"
+MCMC_MAX_PATH_LENGTH="${MCMC_MAX_PATH_LENGTH:-2}"
+RUN_MUTATION_RECOVERY="${RUN_MUTATION_RECOVERY:-1}"
+MUTATION_RECOVERY_VARIANTS="${MUTATION_RECOVERY_VARIANTS:-S56M,L97W,T99V}"
 
 export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
 export TF_GPU_ALLOCATOR="${TF_GPU_ALLOCATOR:-cuda_malloc_async}"
@@ -77,10 +84,13 @@ echo "step_scale:        ${STEP_SCALE}"
 echo "lambda:            ${LAMBDA_MAX} (${LAMBDA_SCHEDULE})"
 echo "ESM2 model/weight: ${ESM2_MODEL} / ${WEIGHT_ESM2}"
 echo "AbLang2 weight:    ${WEIGHT_ABLANG2}"
+echo "search mode:       ${SEARCH_MODE}"
 echo "polish:            ${POLISH_STEPS} step(s), batch ${POLISH_BATCH_SIZE}"
+echo "MCMC:              ${MCMC_STEPS} step(s), temp ${MCMC_TEMP}, proposal ${MCMC_PROPOSAL_TEMP}, path <= ${MCMC_MAX_PATH_LENGTH}"
 echo "refold:            ${REFOLD_NUM_SAMPLES} sample(s), ${REFOLD_SAMPLING_STEPS} steps, batch ${REFOLD_BATCH_SIZE}"
 echo "ipSAE PAE cutoff:  ${IPSAE_PAE_CUTOFF}"
 echo "RMSD filter:       binder CA <= ${REFOLD_RMSD_THRESHOLD} A"
+echo "mutation recovery: ${RUN_MUTATION_RECOVERY} (${MUTATION_RECOVERY_VARIANTS})"
 echo "XLA preallocate:   ${XLA_PYTHON_CLIENT_PREALLOCATE}"
 echo "GPU allocator:     ${TF_GPU_ALLOCATOR}"
 echo "XLA flags:         ${XLA_FLAGS}"
@@ -111,6 +121,7 @@ uv run python examples/boltzgen_vhh_guided.py \
   --lambda-max "${LAMBDA_MAX}" \
   --lambda-schedule "${LAMBDA_SCHEDULE}" \
   --n-outer-iterations "${N_OUTER_ITERATIONS}" \
+  --search-mode "${SEARCH_MODE}" \
   --recycling-steps "${RECYCLING_STEPS}" \
   --refold-sampling-steps "${REFOLD_SAMPLING_STEPS}" \
   --refold-num-samples "${REFOLD_NUM_SAMPLES}" \
@@ -124,7 +135,20 @@ uv run python examples/boltzgen_vhh_guided.py \
   --clip-gradient-norm "${CLIP_GRADIENT_NORM}" \
   --polish-steps "${POLISH_STEPS}" \
   --polish-batch-size "${POLISH_BATCH_SIZE}" \
+  --mcmc-steps "${MCMC_STEPS}" \
+  --mcmc-temp "${MCMC_TEMP}" \
+  --mcmc-proposal-temp "${MCMC_PROPOSAL_TEMP}" \
+  --mcmc-max-path-length "${MCMC_MAX_PATH_LENGTH}" \
   "${EXTRA_ARGS[@]}"
 
 echo ""
+if [[ "${RUN_MUTATION_RECOVERY}" == "1" || "${RUN_MUTATION_RECOVERY}" == "true" || "${RUN_MUTATION_RECOVERY}" == "yes" ]]; then
+  echo "[analysis] checking recovery of VHH72 benchmark mutations..."
+  uv run python optimization/vhh/analyze_VHH72_mutation_recovery.py \
+    "${OUTPUT_DIR}" \
+    --variants "${MUTATION_RECOVERY_VARIANTS}" \
+    --output-csv "${OUTPUT_DIR}/mutation_recovery.csv"
+  echo ""
+fi
+
 echo "Done. Results: ${OUTPUT_DIR}"

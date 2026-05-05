@@ -74,7 +74,10 @@ from mosaic.models.boltzgen import (
     load_boltzgen,
     load_features_and_structure_writer,
 )
-from mosaic.optimizers import edit_budgeted_greedy_descent
+from mosaic.optimizers import (
+    edit_budgeted_greedy_descent,
+    edit_budgeted_gradient_mcmc,
+)
 from mosaic.proteinmpnn.mpnn import load_abmpnn
 from mosaic.util import fold_in
 
@@ -120,8 +123,13 @@ class VHHDesignConfig:
     n_outer_iterations: int = 3
 
     # ---- Stage 2 polish ----
+    search_mode: str = "greedy"  # one of {greedy, mcmc, both}
     polish_steps: int = 200
     polish_batch_size: int = 16
+    mcmc_steps: int = 100
+    mcmc_temp: float = 0.02
+    mcmc_proposal_temp: float = 0.01
+    mcmc_max_path_length: int = 2
 
     # ---- I/O ----
     output_dir: Path = Path("./vhh_designs")
@@ -739,8 +747,13 @@ def build_single_design_command(args, *, seed: int, output_dir: Path) -> list[st
     _append_option(cmd, "--lambda-max", args.lambda_max)
     _append_option(cmd, "--lambda-schedule", args.lambda_schedule)
     _append_option(cmd, "--n-outer-iterations", args.n_outer_iterations)
+    _append_option(cmd, "--search-mode", args.search_mode)
     _append_option(cmd, "--polish-steps", args.polish_steps)
     _append_option(cmd, "--polish-batch-size", args.polish_batch_size)
+    _append_option(cmd, "--mcmc-steps", args.mcmc_steps)
+    _append_option(cmd, "--mcmc-temp", args.mcmc_temp)
+    _append_option(cmd, "--mcmc-proposal-temp", args.mcmc_proposal_temp)
+    _append_option(cmd, "--mcmc-max-path-length", args.mcmc_max_path_length)
     _append_option(cmd, "--recycling-steps", args.recycling_steps)
     _append_option(cmd, "--refold-sampling-steps", args.refold_sampling_steps)
     _append_option(cmd, "--refold-num-samples", args.refold_num_samples)
@@ -1203,27 +1216,85 @@ def run(cfg: VHHDesignConfig):
         )
         stage_log(f"outer {outer}: finished ABMPNN decode")
 
-        # ----- Stage 2: edit-budgeted greedy polish -----
+        # ----- Stage 2: edit-budgeted sequence search -----
         if cfg.skip_polish:
             polished_seq = np.asarray(diffusion_seq)
             polished_val = float("nan")
             iter_pareto = {diffusion_edits: (float("nan"), polished_seq)}
+            polished_label = "none"
         else:
-            print(f"[outer {outer}] edit-budgeted greedy polish "
-                  f"(budget={cfg.edit_budget}, steps<={cfg.polish_steps})...",
-                  flush=True)
-            stage_log(f"outer {outer}: starting edit-budgeted greedy polish")
-            polished_seq, polished_val, iter_pareto = edit_budgeted_greedy_descent(
-                loss=polish_loss,
-                sequence=np.asarray(diffusion_seq),
-                parent=np.asarray(parent_seq_ids),
-                budget=cfg.edit_budget,
-                designable_mask=np.asarray(designable_token_mask),
-                batch_size=cfg.polish_batch_size,
-                steps=cfg.polish_steps,
-                key=jax.random.key(cfg.seed + 31337 * outer),
+            search_mode = cfg.search_mode.lower()
+            if search_mode not in {"greedy", "mcmc", "both"}:
+                raise ValueError(
+                    f"Unknown search_mode {cfg.search_mode!r}; "
+                    "expected greedy, mcmc, or both."
+                )
+            parent_np = np.asarray(parent_seq_ids)
+            design_mask_np = np.asarray(designable_token_mask)
+            diffusion_np = np.asarray(diffusion_seq)
+            search_results: list[tuple[str, np.ndarray, float, dict]] = []
+
+            if search_mode in {"greedy", "both"}:
+                print(
+                    f"[outer {outer}] edit-budgeted greedy polish "
+                    f"(budget={cfg.edit_budget}, steps<={cfg.polish_steps})...",
+                    flush=True,
+                )
+                stage_log(f"outer {outer}: starting edit-budgeted greedy polish")
+                greedy_seq, greedy_val, greedy_pareto = edit_budgeted_greedy_descent(
+                    loss=polish_loss,
+                    sequence=diffusion_np,
+                    parent=parent_np,
+                    budget=cfg.edit_budget,
+                    designable_mask=design_mask_np,
+                    batch_size=cfg.polish_batch_size,
+                    steps=cfg.polish_steps,
+                    key=jax.random.key(cfg.seed + 31337 * outer),
+                )
+                search_results.append(("greedy", greedy_seq, greedy_val, greedy_pareto))
+                stage_log(f"outer {outer}: finished edit-budgeted greedy polish")
+
+            if search_mode in {"mcmc", "both"}:
+                print(
+                    f"[outer {outer}] edit-budgeted gradient MCMC "
+                    f"(budget={cfg.edit_budget}, steps={cfg.mcmc_steps}, "
+                    f"temp={cfg.mcmc_temp}, proposal_temp={cfg.mcmc_proposal_temp}, "
+                    f"path<={cfg.mcmc_max_path_length})...",
+                    flush=True,
+                )
+                stage_log(f"outer {outer}: starting edit-budgeted gradient MCMC")
+                mcmc_seq, mcmc_val, mcmc_pareto = edit_budgeted_gradient_mcmc(
+                    loss=polish_loss,
+                    sequence=diffusion_np,
+                    parent=parent_np,
+                    budget=cfg.edit_budget,
+                    designable_mask=design_mask_np,
+                    steps=cfg.mcmc_steps,
+                    batch_size=cfg.polish_batch_size,
+                    temp=cfg.mcmc_temp,
+                    proposal_temp=cfg.mcmc_proposal_temp,
+                    max_path_length=cfg.mcmc_max_path_length,
+                    key=jax.random.key(cfg.seed + 7331 * outer),
+                )
+                search_results.append(("mcmc", mcmc_seq, mcmc_val, mcmc_pareto))
+                stage_log(f"outer {outer}: finished edit-budgeted gradient MCMC")
+
+            polished_label, polished_seq, polished_val, iter_pareto = min(
+                search_results,
+                key=lambda item: item[2] if np.isfinite(item[2]) else float("inf"),
             )
-            stage_log(f"outer {outer}: finished edit-budgeted greedy polish")
+            if len(search_results) > 1:
+                iter_pareto = {}
+                for _, _, _, pareto in search_results:
+                    for k, (loss_v, seq) in pareto.items():
+                        existing = iter_pareto.get(k)
+                        if existing is None or loss_v < existing[0]:
+                            iter_pareto[k] = (loss_v, seq.copy())
+            print(
+                f"[outer {outer}] selected {polished_label} search result "
+                f"with loss={polished_val:.4f}",
+                flush=True,
+            )
 
         # ----- Update global Pareto front -----
         for k, (loss_v, seq) in iter_pareto.items():
@@ -1248,6 +1319,8 @@ def run(cfg: VHHDesignConfig):
 
         all_iterations.append({
             "outer": outer,
+            "search_mode": cfg.search_mode,
+            "selected_search": polished_label,
             "diffusion_edits": diffusion_edits,
             "polished_edits": int(((np.asarray(polished_seq)
                                     != np.asarray(parent_seq_ids))
@@ -1321,7 +1394,12 @@ def refold_pareto_with_boltz2(
     for cid in cfg.target_chain_ids:
         chain = target_struct[0][cid]
         seq = gemmi.one_letter_code([r.name for r in chain])
-        target_chains.append(TargetChain(seq, use_msa=False, template_chain=chain))
+        # Boltz2 template YAML construction renames template chains in-place to
+        # A/B/...; pass a clone so the original reference keeps author chain IDs
+        # for target-aligned RMSD diagnostics.
+        target_chains.append(
+            TargetChain(seq, use_msa=False, template_chain=chain.clone())
+        )
     stage_log("refold: built target chain templates/features")
 
     iptm_loss = IPTMLoss()
@@ -1573,8 +1651,13 @@ if __name__ == "__main__":
     p.add_argument("--lambda-schedule",
                    choices=["sigma_squared", "sigma", "constant"])
     p.add_argument("--n-outer-iterations", type=int)
+    p.add_argument("--search-mode", choices=["greedy", "mcmc", "both"])
     p.add_argument("--polish-steps", type=int)
     p.add_argument("--polish-batch-size", type=int)
+    p.add_argument("--mcmc-steps", type=int)
+    p.add_argument("--mcmc-temp", type=float)
+    p.add_argument("--mcmc-proposal-temp", type=float)
+    p.add_argument("--mcmc-max-path-length", type=int)
     p.add_argument("--recycling-steps", type=int)
     p.add_argument("--refold-sampling-steps", type=int)
     p.add_argument("--refold-num-samples", type=int)
@@ -1631,8 +1714,13 @@ if __name__ == "__main__":
         "lambda_max": args.lambda_max,
         "lambda_schedule": args.lambda_schedule,
         "n_outer_iterations": args.n_outer_iterations,
+        "search_mode": args.search_mode,
         "polish_steps": args.polish_steps,
         "polish_batch_size": args.polish_batch_size,
+        "mcmc_steps": args.mcmc_steps,
+        "mcmc_temp": args.mcmc_temp,
+        "mcmc_proposal_temp": args.mcmc_proposal_temp,
+        "mcmc_max_path_length": args.mcmc_max_path_length,
         "recycling_steps": args.recycling_steps,
         "refold_sampling_steps": args.refold_sampling_steps,
         "refold_num_samples": args.refold_num_samples,
