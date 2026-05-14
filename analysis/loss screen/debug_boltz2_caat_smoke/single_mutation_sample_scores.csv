@@ -1,3 +1,0 @@
-mutation,position,wt_aa,mut_aa,author_residue,label,sample_idx,bt_ipsae,bt_pae_mean,ipae_min,ipsae_min,iptm,tb_ipsae,tb_pae_mean
-G26W,26,G,W,B:26:GLY,G26W,0,0.0,24.256481170654297,14.843435287475586,0.0,0.20967526733875275,0.0,24.23016929626465
-G26Y,26,G,Y,B:26:GLY,G26Y,0,0.0,24.30704689025879,15.065707206726074,0.0,0.20466673374176025,0.0,24.34857749938965

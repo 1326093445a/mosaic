@@ -1,3 +1,0 @@
-target,baseline_ipsae_mean,baseline_ipsae_std,top_positions,top_aa_types,increase_first_edits,increase_5edit_ack,increase_5edit_delta,absolute_first_edits,absolute_5edit_ack,absolute_5edit_delta
-alpha,0.7338774085044861,0.04058061901668302,97:A97F(-0.734);99:G99M(-0.667);108:A108F(-0.599);100:G100V(-0.435);107:Y107M(-0.208);102:G102T(-0.201),F:6/29;M:4/29;W:7/28;S:4/27;R:5/27;V:7/28,6,False,0.0765461246172586,1,True,-0.680163311958313
-jn1,0.24949671924114222,0.0967687036859981,30:S30W(+0.315);52:T52M(+0.272);51:I51F(+0.264);106:N106F(+0.259);98:A98Y(+0.257);28:T28Y(+0.253),W:8/28;M:6/29;F:7/29;Y:5/26;R:10/27;S:4/27,1,False,0.1356434216101964,4,False,0.0202247887849807
