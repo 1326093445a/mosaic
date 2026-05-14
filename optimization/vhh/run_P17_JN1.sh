@@ -38,6 +38,11 @@ BUDGET="${BUDGET:-7}"
 WEIGHT_EDIT_BUDGET="${WEIGHT_EDIT_BUDGET:-10.0}"
 WEIGHT_ESM2="${WEIGHT_ESM2:-${WEIGHT_ESMC:-0.10}}"
 WEIGHT_ABLANG2="${WEIGHT_ABLANG2:-${WEIGHT_ABLANG:-0.10}}"
+WEIGHT_BOLTZ2_PTM_ENERGY="${WEIGHT_BOLTZ2_PTM_ENERGY:-0.0}"
+WEIGHT_BOLTZ2_INTERFACE_PAE="${WEIGHT_BOLTZ2_INTERFACE_PAE:-${WEIGHT_BOLTZ2_IPAE:-0.0}}"
+BOLTZ2_GUIDANCE_RECYCLING_STEPS="${BOLTZ2_GUIDANCE_RECYCLING_STEPS:-0}"
+BOLTZ2_GUIDANCE_SAMPLING_STEPS="${BOLTZ2_GUIDANCE_SAMPLING_STEPS:-5}"
+BOLTZ2_GUIDANCE_TARGET_TEMPLATE="${BOLTZ2_GUIDANCE_TARGET_TEMPLATE:-1}"
 ESM2_MODEL="${ESM2_MODEL:-esm2_t33_650M_UR50D}"
 CLIP_GRADIENT_NORM="${CLIP_GRADIENT_NORM:-1.0}"
 
@@ -74,6 +79,7 @@ echo "step_scale:        ${STEP_SCALE}"
 echo "lambda:            ${LAMBDA_MAX} (${LAMBDA_SCHEDULE})"
 echo "ESM2 model/weight: ${ESM2_MODEL} / ${WEIGHT_ESM2}"
 echo "AbLang2 weight:    ${WEIGHT_ABLANG2}"
+echo "Boltz2 guidance:   pTMEnergy ${WEIGHT_BOLTZ2_PTM_ENERGY}, interface PAE ${WEIGHT_BOLTZ2_INTERFACE_PAE}, recycle ${BOLTZ2_GUIDANCE_RECYCLING_STEPS}, steps ${BOLTZ2_GUIDANCE_SAMPLING_STEPS}, target_template ${BOLTZ2_GUIDANCE_TARGET_TEMPLATE}"
 echo "refold:            ${REFOLD_NUM_SAMPLES} sample(s), ${REFOLD_SAMPLING_STEPS} steps, batch ${REFOLD_BATCH_SIZE}"
 echo "ipSAE PAE cutoff:  ${IPSAE_PAE_CUTOFF}"
 echo "RMSD filter:       binder CA <= ${REFOLD_RMSD_THRESHOLD} A"
@@ -114,6 +120,11 @@ uv run python examples/boltzgen_vhh_guided.py \
   --esm2-model "${ESM2_MODEL}" \
   --weight-esm2 "${WEIGHT_ESM2}" \
   --weight-ablang2 "${WEIGHT_ABLANG2}" \
+  --weight-boltz2-ptm-energy "${WEIGHT_BOLTZ2_PTM_ENERGY}" \
+  --weight-boltz2-interface-pae "${WEIGHT_BOLTZ2_INTERFACE_PAE}" \
+  --boltz2-guidance-recycling-steps "${BOLTZ2_GUIDANCE_RECYCLING_STEPS}" \
+  --boltz2-guidance-sampling-steps "${BOLTZ2_GUIDANCE_SAMPLING_STEPS}" \
+  --boltz2-guidance-target-template "${BOLTZ2_GUIDANCE_TARGET_TEMPLATE}" \
   --clip-gradient-norm "${CLIP_GRADIENT_NORM}" \
   --polish-steps "${POLISH_STEPS}" \
   --polish-batch-size "${POLISH_BATCH_SIZE}" \

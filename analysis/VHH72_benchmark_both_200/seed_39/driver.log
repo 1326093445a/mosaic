@@ -1,0 +1,426 @@
+[stage      0.0s] importing heavy dependencies
+[stage      5.2s] finished importing heavy dependencies
+[stage      5.2s] starting run seed=39 output_dir=vhh/VHH72_benchmark_both_200/seed_39
+[stage      5.2s] wrote config.json
+[setup] loading BoltzGen model...
+[stage      5.2s] loading BoltzGen model
+[load_boltzgen] checking checkpoints in /storage/frank/.boltz
+[load_boltzgen] loading torch checkpoint /storage/frank/.boltz/boltzgen1_diverse.ckpt
+/storage/frank/mosaic/.venv/lib/python3.12/site-packages/pytorch_lightning/utilities/migration/utils.py:56: The loaded checkpoint was produced with Lightning v2.5.5, which is newer than your current Lightning version: v2.5.0
+[load_boltzgen] converting torch model to JAX
+[load_boltzgen] moving model arrays to JAX device
+[load_boltzgen] ready
+[stage     55.4s] loaded BoltzGen model
+[stage     55.4s] reading BoltzGen YAML /storage/frank/mosaic/optimization/vhh/VHH72_WT_SARS-CoV-2_RBD.yaml
+[setup] parsing YAML and featurizing complex...
+[stage     55.4s] loading and featurizing complex
+[stage     57.1s] finished loading and featurizing complex
+[stage     57.1s] building parent sequence and design masks
+[setup] complex has 321 tokens, 127 binder tokens, 28 designable (CDR) positions, edit budget = 7
+[stage     57.9s] finished parent sequence and design masks
+[setup] running BoltzGen trunk + diffusion conditioning...
+[stage     57.9s] starting BoltzGen sampler/trunk conditioning
+[stage    109.0s] finished BoltzGen sampler/trunk conditioning
+[setup] loading guidance models...
+[stage    109.0s] starting guidance model loading
+[stage    109.0s] loading ABMPNN inverse-folding model
+[load_abmpnn] loading ABMPNN weights
+[load_abmpnn] ready
+[stage    109.1s] loaded ABMPNN inverse-folding model
+[stage    109.1s] loading ESM2 model esm2_t33_650M_UR50D
+[load_esm2] importing fair-esm for esm2_t33_650M_UR50D
+[load_esm2] loading torch checkpoint esm2_t33_650M_UR50D
+[load_esm2] converting esm2_t33_650M_UR50D from torch to JAX
+[load_esm2] ready esm2_t33_650M_UR50D
+[stage    116.6s] loaded ESM2 model esm2_t33_650M_UR50D
+[stage    116.6s] loading AbLang2 model
+[load_ablang2] loading torch checkpoint ablang2-paired
+[load_ablang2] converting torch model to JAX
+[load_ablang2] ready
+[stage    117.8s] loaded AbLang2 model
+[stage    117.8s] finished guidance model loading
+[stage    117.8s] building guidance and polish losses
+[stage    118.5s] finished building guidance and polish losses
+
+[outer 0] guided partial diffusion (start_sigma_frac=0.25, steps=200)...
+[stage    118.6s] outer 0: starting guided partial diffusion
+[stage    314.6s] outer 0: finished guided partial diffusion
+[stage    314.6s] outer 0: decoding final structure with ABMPNN
+[outer 0] diffusion produced 24 edits vs parent
+[stage    326.2s] outer 0: finished ABMPNN decode
+[outer 0] edit-budgeted greedy polish (budget=7, steps<=200)...
+[stage    326.2s] outer 0: starting edit-budgeted greedy polish
+warn: starting sequence had 24 edits > budget 7; loss-projected to 7 edits before greedy descent. kept chain-order positions: 31,53,104,105,107,108,110
+init loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.26 .2.ablang2_ppl: 3.73 edits: 7.00
+0 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.80 edits: 7.00 time: 4.09
+1 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.68 edits: 7.00 time: 3.99
+2 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.24 .2.ablang2_ppl: 3.50 edits: 7.00 time: 4.00
+3 loss: 0.25 .0.E_soft: 6.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.40 edits: 6.00 time: 4.00
+4 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 4.00
+5 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+6 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+7 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+8 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+9 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+10 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+11 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+12 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+13 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+14 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+15 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+16 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+17 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+18 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+19 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+20 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+21 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+22 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+23 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+24 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+25 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+26 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+27 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+28 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+29 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+30 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+31 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+32 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+33 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+34 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+35 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+36 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+37 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+38 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+39 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+40 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+41 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+42 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+43 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+44 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+45 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+46 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+47 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.12
+48 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.23 .2.ablang2_ppl: 3.39 edits: 7.00 time: 1.13
+step 49: feasible neighbourhood exhausted, stopping
+[stage    531.2s] outer 0: finished edit-budgeted greedy polish
+[outer 0] edit-budgeted gradient MCMC (budget=7, steps=100, temp=0.02, proposal_temp=0.01, path<=2)...
+[stage    531.2s] outer 0: starting edit-budgeted gradient MCMC
+warn: MCMC starting sequence had 24 edits > budget 7; loss-projected to 7 edits. kept chain-order positions: 31,53,104,105,107,108,110
+mcmc init loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.26 .2.ablang2_ppl: 3.73 edits: 7.00
+mcmc 0 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.28 .2.ablang2_ppl: 3.75 accepted: 1.00 edits: 7.00 proposal_loss: 0.26 time: 2.87
+mcmc 1 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.26 .2.ablang2_ppl: 3.86 accepted: 2.00 edits: 7.00 proposal_loss: 0.26 time: 2.86
+mcmc 2 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.71 accepted: 3.00 edits: 7.00 proposal_loss: 0.26 time: 2.88
+mcmc 6 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 3.70 accepted: 4.00 edits: 7.00 proposal_loss: 0.26 time: 2.89
+mcmc 8 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.35 .2.ablang2_ppl: 3.82 accepted: 5.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 9 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 3.79 accepted: 6.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 10 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 3.87 accepted: 7.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 11 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 4.35 accepted: 8.00 edits: 7.00 proposal_loss: 0.28 time: 2.89
+mcmc 12 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 4.25 accepted: 9.00 edits: 7.00 proposal_loss: 0.28 time: 2.87
+mcmc 13 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.35 .2.ablang2_ppl: 4.33 accepted: 10.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 14 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 4.19 accepted: 11.00 edits: 7.00 proposal_loss: 0.27 time: 2.89
+mcmc 15 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 3.97 accepted: 12.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 16 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.30 .2.ablang2_ppl: 3.99 accepted: 13.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 17 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 3.97 accepted: 14.00 edits: 7.00 proposal_loss: 0.27 time: 2.89
+mcmc 18 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 3.91 accepted: 15.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 19 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 4.11 accepted: 16.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 20 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.30 .2.ablang2_ppl: 4.39 accepted: 17.00 edits: 7.00 proposal_loss: 0.28 time: 2.87
+mcmc 21 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.30 .2.ablang2_ppl: 4.25 accepted: 18.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 22 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.93 accepted: 19.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 23 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 3.89 accepted: 20.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 24 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.26 .2.ablang2_ppl: 3.84 accepted: 21.00 edits: 7.00 proposal_loss: 0.26 time: 2.88
+mcmc 25 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.28 .2.ablang2_ppl: 3.88 accepted: 22.00 edits: 7.00 proposal_loss: 0.26 time: 2.88
+mcmc 26 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 3.90 accepted: 23.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 27 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.30 .2.ablang2_ppl: 3.95 accepted: 24.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 28 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 3.93 accepted: 25.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 29 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 3.93 accepted: 26.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 30 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 3.96 accepted: 27.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 31 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.28 .2.ablang2_ppl: 3.98 accepted: 28.00 edits: 7.00 proposal_loss: 0.27 time: 2.89
+mcmc 32 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.28 .2.ablang2_ppl: 4.03 accepted: 29.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 33 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 4.14 accepted: 30.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 34 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 4.19 accepted: 31.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 35 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 4.21 accepted: 32.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 36 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 4.11 accepted: 33.00 edits: 7.00 proposal_loss: 0.27 time: 2.89
+mcmc 37 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 4.03 accepted: 34.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 38 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.35 .2.ablang2_ppl: 4.45 accepted: 35.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 39 loss: 0.29 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.38 .2.ablang2_ppl: 4.37 accepted: 36.00 edits: 7.00 proposal_loss: 0.29 time: 2.88
+mcmc 40 loss: 0.29 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.38 .2.ablang2_ppl: 4.41 accepted: 37.00 edits: 7.00 proposal_loss: 0.29 time: 2.89
+mcmc 41 loss: 0.29 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.39 .2.ablang2_ppl: 4.46 accepted: 38.00 edits: 7.00 proposal_loss: 0.29 time: 2.88
+mcmc 42 loss: 0.29 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.41 .2.ablang2_ppl: 4.39 accepted: 39.00 edits: 7.00 proposal_loss: 0.29 time: 2.88
+mcmc 43 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 4.33 accepted: 40.00 edits: 7.00 proposal_loss: 0.28 time: 2.87
+mcmc 44 loss: 0.29 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.39 .2.ablang2_ppl: 4.34 accepted: 41.00 edits: 7.00 proposal_loss: 0.29 time: 2.88
+mcmc 45 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 4.29 accepted: 42.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 46 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.38 .2.ablang2_ppl: 4.33 accepted: 43.00 edits: 7.00 proposal_loss: 0.28 time: 2.87
+mcmc 47 loss: 0.28 .0.E_soft: 6.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 4.19 accepted: 44.00 edits: 6.00 proposal_loss: 0.28 time: 2.87
+mcmc 48 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 4.24 accepted: 45.00 edits: 7.00 proposal_loss: 0.28 time: 2.87
+mcmc 49 loss: 0.28 .0.E_soft: 6.00 .0.edit_violation: 0.00 .1.esm_pll:-1.35 .2.ablang2_ppl: 4.21 accepted: 46.00 edits: 6.00 proposal_loss: 0.28 time: 2.89
+mcmc 50 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.35 .2.ablang2_ppl: 4.12 accepted: 47.00 edits: 7.00 proposal_loss: 0.28 time: 2.89
+mcmc 52 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 4.29 accepted: 48.00 edits: 7.00 proposal_loss: 0.28 time: 2.89
+mcmc 53 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 4.26 accepted: 49.00 edits: 7.00 proposal_loss: 0.28 time: 2.89
+mcmc 54 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 4.24 accepted: 50.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 55 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 4.28 accepted: 51.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 56 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 4.18 accepted: 52.00 edits: 7.00 proposal_loss: 0.28 time: 2.89
+mcmc 57 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 4.17 accepted: 53.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 58 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 4.22 accepted: 54.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 59 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 4.12 accepted: 55.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 60 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 4.19 accepted: 56.00 edits: 7.00 proposal_loss: 0.28 time: 2.89
+mcmc 61 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 4.04 accepted: 57.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 63 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 3.91 accepted: 58.00 edits: 7.00 proposal_loss: 0.27 time: 2.89
+mcmc 64 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 3.87 accepted: 59.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 65 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 3.83 accepted: 60.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 66 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 4.09 accepted: 61.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 67 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 3.95 accepted: 62.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 68 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 4.16 accepted: 63.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 69 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 4.26 accepted: 64.00 edits: 7.00 proposal_loss: 0.28 time: 2.87
+mcmc 70 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 4.15 accepted: 65.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 71 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 4.05 accepted: 66.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 73 loss: 0.27 .0.E_soft: 6.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 3.98 accepted: 67.00 edits: 6.00 proposal_loss: 0.27 time: 2.88
+mcmc 74 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 4.35 accepted: 68.00 edits: 7.00 proposal_loss: 0.28 time: 2.89
+mcmc 75 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 3.84 accepted: 69.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 77 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.89 accepted: 70.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 78 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.88 accepted: 71.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 79 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 3.95 accepted: 72.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 80 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.38 .2.ablang2_ppl: 4.02 accepted: 73.00 edits: 7.00 proposal_loss: 0.28 time: 2.87
+mcmc 81 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 4.06 accepted: 74.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 82 loss: 0.29 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 4.42 accepted: 75.00 edits: 7.00 proposal_loss: 0.29 time: 2.88
+mcmc 83 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 4.22 accepted: 76.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 84 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 4.22 accepted: 77.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 85 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 4.38 accepted: 78.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 86 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 4.27 accepted: 79.00 edits: 7.00 proposal_loss: 0.28 time: 2.89
+mcmc 87 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 4.11 accepted: 80.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 88 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 4.17 accepted: 81.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 89 loss: 0.28 .0.E_soft: 6.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 4.30 accepted: 82.00 edits: 6.00 proposal_loss: 0.28 time: 2.88
+mcmc 91 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 4.29 accepted: 83.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 92 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 4.24 accepted: 84.00 edits: 7.00 proposal_loss: 0.28 time: 2.89
+mcmc 93 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 4.30 accepted: 85.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 94 loss: 0.29 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.35 .2.ablang2_ppl: 4.51 accepted: 86.00 edits: 7.00 proposal_loss: 0.29 time: 2.89
+mcmc 95 loss: 0.29 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.35 .2.ablang2_ppl: 4.49 accepted: 87.00 edits: 7.00 proposal_loss: 0.29 time: 2.88
+mcmc 96 loss: 0.29 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.35 .2.ablang2_ppl: 4.70 accepted: 88.00 edits: 7.00 proposal_loss: 0.29 time: 2.88
+mcmc 97 loss: 0.29 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.38 .2.ablang2_ppl: 4.44 accepted: 89.00 edits: 7.00 proposal_loss: 0.29 time: 2.88
+mcmc 98 loss: 0.29 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.38 .2.ablang2_ppl: 4.49 accepted: 90.00 edits: 7.00 proposal_loss: 0.29 time: 2.88
+mcmc 99 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.35 .2.ablang2_ppl: 4.21 accepted: 91.00 edits: 7.00 proposal_loss: 0.28 time: 2.89
+[stage    930.5s] outer 0: finished edit-budgeted gradient MCMC
+[outer 0] selected greedy search result with loss=0.2450
+
+[outer 1] guided partial diffusion (start_sigma_frac=0.25, steps=200)...
+[stage    930.6s] outer 1: starting guided partial diffusion
+[stage   1113.0s] outer 1: finished guided partial diffusion
+[stage   1113.0s] outer 1: decoding final structure with ABMPNN
+[outer 1] diffusion produced 28 edits vs parent
+[stage   1115.1s] outer 1: finished ABMPNN decode
+[outer 1] edit-budgeted greedy polish (budget=7, steps<=200)...
+[stage   1115.1s] outer 1: starting edit-budgeted greedy polish
+warn: starting sequence had 28 edits > budget 7; loss-projected to 7 edits before greedy descent. kept chain-order positions: 53,56,104,105,107,109,111
+init loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 3.57 edits: 7.00
+0 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 3.57 edits: 7.00 time: 1.12
+1 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 3.99
+2 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+3 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+4 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+5 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+6 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+7 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+8 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+9 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+10 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+11 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+12 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+13 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+14 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+15 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+16 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+17 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+18 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+19 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+20 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+21 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+22 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+23 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+24 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+25 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+26 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+27 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+28 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.13
+29 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+30 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+31 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+32 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+33 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+34 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.13
+35 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.13
+36 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.13
+37 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+38 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.13
+39 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.13
+40 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+41 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.13
+42 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.13
+43 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+44 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.12
+45 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.43 edits: 7.00 time: 1.13
+step 46: feasible neighbourhood exhausted, stopping
+[stage   1321.8s] outer 1: finished edit-budgeted greedy polish
+[outer 1] edit-budgeted gradient MCMC (budget=7, steps=100, temp=0.02, proposal_temp=0.01, path<=2)...
+[stage   1321.8s] outer 1: starting edit-budgeted gradient MCMC
+warn: MCMC starting sequence had 28 edits > budget 7; loss-projected to 7 edits. kept chain-order positions: 53,56,104,105,107,109,111
+mcmc init loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 3.57 edits: 7.00
+mcmc 0 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 4.14 accepted: 1.00 edits: 7.00 proposal_loss: 0.28 time: 2.89
+mcmc 1 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.38 .2.ablang2_ppl: 4.23 accepted: 2.00 edits: 7.00 proposal_loss: 0.28 time: 2.87
+mcmc 2 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.41 .2.ablang2_ppl: 4.16 accepted: 3.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 3 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.40 .2.ablang2_ppl: 4.21 accepted: 4.00 edits: 7.00 proposal_loss: 0.28 time: 2.87
+mcmc 4 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 3.94 accepted: 5.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 5 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 4.05 accepted: 6.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 6 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.35 .2.ablang2_ppl: 4.04 accepted: 7.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 7 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 4.12 accepted: 8.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 8 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 4.09 accepted: 9.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 9 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 4.02 accepted: 10.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 10 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 4.11 accepted: 11.00 edits: 7.00 proposal_loss: 0.28 time: 2.89
+mcmc 11 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 4.07 accepted: 12.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 12 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 4.08 accepted: 13.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 13 loss: 0.27 .0.E_soft: 6.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 3.82 accepted: 14.00 edits: 6.00 proposal_loss: 0.27 time: 2.88
+mcmc 15 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.40 .2.ablang2_ppl: 3.75 accepted: 15.00 edits: 7.00 proposal_loss: 0.27 time: 2.89
+mcmc 16 loss: 0.27 .0.E_soft: 6.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 3.64 accepted: 16.00 edits: 6.00 proposal_loss: 0.27 time: 2.88
+mcmc 17 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 3.64 accepted: 17.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 18 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 3.63 accepted: 18.00 edits: 7.00 proposal_loss: 0.26 time: 2.88
+mcmc 19 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.35 .2.ablang2_ppl: 3.60 accepted: 19.00 edits: 7.00 proposal_loss: 0.26 time: 2.88
+mcmc 20 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.35 .2.ablang2_ppl: 3.60 accepted: 20.00 edits: 7.00 proposal_loss: 0.26 time: 2.88
+mcmc 21 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 3.65 accepted: 21.00 edits: 7.00 proposal_loss: 0.27 time: 2.89
+mcmc 22 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.35 .2.ablang2_ppl: 3.82 accepted: 22.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 23 loss: 0.26 .0.E_soft: 6.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.56 accepted: 23.00 edits: 6.00 proposal_loss: 0.26 time: 2.88
+mcmc 26 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 3.67 accepted: 24.00 edits: 7.00 proposal_loss: 0.27 time: 2.89
+mcmc 27 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 3.72 accepted: 25.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 28 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 3.79 accepted: 26.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 29: no feasible nontrivial proposal, stopping
+[stage   1557.5s] outer 1: finished edit-budgeted gradient MCMC
+[outer 1] selected greedy search result with loss=0.2573
+
+[outer 2] guided partial diffusion (start_sigma_frac=0.25, steps=200)...
+[stage   1557.5s] outer 2: starting guided partial diffusion
+[stage   1740.1s] outer 2: finished guided partial diffusion
+[stage   1740.1s] outer 2: decoding final structure with ABMPNN
+[outer 2] diffusion produced 21 edits vs parent
+[stage   1742.2s] outer 2: finished ABMPNN decode
+[outer 2] edit-budgeted greedy polish (budget=7, steps<=200)...
+[stage   1742.2s] outer 2: starting edit-budgeted greedy polish
+warn: starting sequence had 21 edits > budget 7; loss-projected to 7 edits before greedy descent. kept chain-order positions: 53,61,100,107,109,110,111
+init loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.27 .2.ablang2_ppl: 3.72 edits: 7.00
+0 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.70 edits: 7.00 time: 3.98
+1 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.26 .2.ablang2_ppl: 3.63 edits: 7.00 time: 3.99
+2 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.26 .2.ablang2_ppl: 3.58 edits: 7.00 time: 3.98
+3 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 4.00
+4 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+5 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.13
+6 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+7 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+8 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.13
+9 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+10 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+11 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+12 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+13 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+14 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+15 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+16 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+17 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+18 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+19 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+20 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+21 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+22 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+23 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+24 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+25 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+26 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+27 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+28 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+29 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+30 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+31 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+32 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+33 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+34 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.13
+35 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+36 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+37 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.13
+38 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.13
+39 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+40 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.13
+41 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.13
+42 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.13
+43 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.13
+44 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.13
+45 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+46 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 1.12
+47 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.25 .2.ablang2_ppl: 3.60 edits: 7.00 time: 13.37
+step 48: feasible neighbourhood exhausted, stopping
+[stage   1903.6s] outer 2: finished edit-budgeted greedy polish
+[outer 2] edit-budgeted gradient MCMC (budget=7, steps=100, temp=0.02, proposal_temp=0.01, path<=2)...
+[stage   1903.6s] outer 2: starting edit-budgeted gradient MCMC
+warn: MCMC starting sequence had 21 edits > budget 7; loss-projected to 7 edits. kept chain-order positions: 53,61,100,107,109,110,111
+mcmc init loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.27 .2.ablang2_ppl: 3.72 edits: 7.00
+mcmc 0 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.27 .2.ablang2_ppl: 3.69 accepted: 1.00 edits: 7.00 proposal_loss: 0.26 time: 2.88
+mcmc 1 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.28 .2.ablang2_ppl: 3.77 accepted: 2.00 edits: 7.00 proposal_loss: 0.26 time: 2.88
+mcmc 2 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.80 accepted: 3.00 edits: 7.00 proposal_loss: 0.26 time: 2.87
+mcmc 3 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 3.72 accepted: 4.00 edits: 7.00 proposal_loss: 0.26 time: 2.88
+mcmc 4 loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 3.71 accepted: 5.00 edits: 7.00 proposal_loss: 0.26 time: 2.88
+mcmc 5 loss: 0.26 .0.E_soft: 6.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.71 accepted: 6.00 edits: 6.00 proposal_loss: 0.26 time: 2.88
+mcmc 8 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.43 .2.ablang2_ppl: 4.02 accepted: 7.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 9 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.43 .2.ablang2_ppl: 4.02 accepted: 7.00 edits: 7.00 proposal_loss: 0.29 time: 2.87
+mcmc 10 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.42 .2.ablang2_ppl: 4.10 accepted: 8.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 12 loss: 0.26 .0.E_soft: 6.00 .0.edit_violation: 0.00 .1.esm_pll:-1.30 .2.ablang2_ppl: 3.72 accepted: 9.00 edits: 6.00 proposal_loss: 0.26 time: 2.89
+mcmc 13 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.74 accepted: 10.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 14 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.36 .2.ablang2_ppl: 3.74 accepted: 11.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 15 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 3.92 accepted: 12.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 16 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.39 .2.ablang2_ppl: 4.05 accepted: 13.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 17 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.37 .2.ablang2_ppl: 3.99 accepted: 14.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 18 loss: 0.27 .0.E_soft: 6.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 3.82 accepted: 15.00 edits: 6.00 proposal_loss: 0.27 time: 2.88
+mcmc 19 loss: 0.27 .0.E_soft: 6.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 3.95 accepted: 16.00 edits: 6.00 proposal_loss: 0.27 time: 2.88
+mcmc 21 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.92 accepted: 17.00 edits: 7.00 proposal_loss: 0.27 time: 2.88
+mcmc 22 loss: 0.27 .0.E_soft: 6.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 3.81 accepted: 18.00 edits: 6.00 proposal_loss: 0.27 time: 2.88
+mcmc 23 loss: 0.28 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.44 .2.ablang2_ppl: 3.93 accepted: 19.00 edits: 7.00 proposal_loss: 0.28 time: 2.88
+mcmc 24 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.34 .2.ablang2_ppl: 3.89 accepted: 20.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 25 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.33 .2.ablang2_ppl: 4.00 accepted: 21.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 26 loss: 0.27 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.32 .2.ablang2_ppl: 4.07 accepted: 22.00 edits: 7.00 proposal_loss: 0.27 time: 2.87
+mcmc 27: no feasible nontrivial proposal, stopping
+[stage   2065.0s] outer 2: finished edit-budgeted gradient MCMC
+[outer 2] selected greedy search result with loss=0.2530
+
+[output] writing Pareto front and per-iteration log...
+[stage   2065.0s] writing Pareto front and iterations CSV
+[refold] refolding Pareto candidates with Boltz2...
+[stage   2065.1s] starting Boltz2 refold
+[stage   2065.1s] refold: importing Boltz2 helpers
+[stage   2065.3s] refold: loading Boltz2 model
+/storage/frank/mosaic/.venv/lib/python3.12/site-packages/pytorch_lightning/utilities/migration/utils.py:56: The loaded checkpoint was produced with Lightning v2.5.0.post0, which is newer than your current Lightning version: v2.5.0
+[stage   2095.0s] refold: loaded Boltz2 model
+[stage   2095.0s] refold: reading complex /storage/frank/mosaic/optimization/vhh/VHH72_WT_SARS-CoV-2_RBD_relaxed.pdb
+[stage   2095.0s] refold: built target chain templates/features
+[refold] using sample batch size 5 for 5 sample(s) per candidate
+[stage   2095.0s] refold: preparing edit_count=6
+Loading data
+Checking input data.
+Processing 1 inputs with 1 threads.
+  0%|          | 0/1 [00:00<?, ?it/s]Found explicit empty MSA for some proteins, will run these in single sequence mode. Keep in mind that the model predictions will be suboptimal without an MSA.
+Found explicit empty MSA for some proteins, will run these in single sequence mode. Keep in mind that the model predictions will be suboptimal without an MSA.
+100%|██████████| 1/1 [00:00<00:00, 10.78it/s]
+Something odd happened with manifest, trying to reload.
+/storage/frank/mosaic/.venv/lib/python3.12/site-packages/torch/utils/data/dataloader.py:665: UserWarning: 'pin_memory' argument is set as true but no accelerator is found, then device pinned memory won't be used.
+  warnings.warn(warn_msg)
+[stage   2096.0s] refold: running trunk edit_count=6
+[stage   2119.1s] refold: finished trunk edit_count=6
+[stage   2119.2s] refold: sampling edit_count=6 samples 0-4
+[stage   2151.3s] refold: scored edit_count=6 samples 0-4
+[stage   2152.9s] refold: preparing edit_count=7
+Loading data
+Checking input data.
+Processing 1 inputs with 1 threads.
+  0%|          | 0/1 [00:00<?, ?it/s]Found explicit empty MSA for some proteins, will run these in single sequence mode. Keep in mind that the model predictions will be suboptimal without an MSA.
+Found explicit empty MSA for some proteins, will run these in single sequence mode. Keep in mind that the model predictions will be suboptimal without an MSA.
+100%|██████████| 1/1 [00:00<00:00, 10.92it/s]
+Something odd happened with manifest, trying to reload.
+[stage   2153.3s] refold: running trunk edit_count=7
+[stage   2170.9s] refold: finished trunk edit_count=7
+[stage   2170.9s] refold: sampling edit_count=7 samples 0-4
+[stage   2177.6s] refold: scored edit_count=7 samples 0-4
+[stage   2179.0s] finished Boltz2 refold
+[done] outputs in vhh/VHH72_benchmark_both_200/seed_39
+[stage   2179.0s] run complete

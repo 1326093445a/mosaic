@@ -1,0 +1,2 @@
+position,author_residue,wt_aa,n_mutations_tested,n_acknowledged,mean_abs_delta_ipsae_min,max_abs_delta_ipsae_min,most_sensitive_mutation,most_sensitive_delta_ipsae,best_increase_mutation,best_delta_ipsae,worst_decrease_mutation,worst_delta_ipsae
+26,B:26:GLY,G,2,0,0.0,0.0,G26W,0.0,G26W,0.0,G26W,0.0

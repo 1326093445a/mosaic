@@ -1,0 +1,4 @@
+outer,search_mode,selected_search,diffusion_edits,polished_edits,polished_loss,elapsed_s
+0,both,greedy,26,7,0.2530879080295563,864.4320764541626
+1,both,greedy,21,7,0.24614989757537842,721.2211291790009
+2,both,greedy,23,7,0.23835037648677826,779.9960963726044

@@ -1,0 +1,2 @@
+seed,device,cuda_visible_devices,output_dir,log,returncode,status
+0,"","",vhh/debug_VHH72_esm_fix/seed_0,vhh/debug_VHH72_esm_fix/seed_0/driver.log,0,ok

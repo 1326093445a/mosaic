@@ -2,7 +2,8 @@
 
 Pipeline (per outer-loop iteration):
   1. guided_partial_diffusion: BoltzGen partial diffusion with classifier guidance
-     from ESM2/AbLang2/MPNN/EditBudget, perturbing CDR atoms only.
+     from ESM2/AbLang2/EditBudget and optional Boltz2 target-aware terms,
+     perturbing CDR atoms only.
   2. differentiable_inverse_fold(temp=0.001): decode guided coords to a soft sequence.
   3. edit_budgeted_greedy_descent: polish the discrete sequence under the full
      multi-model loss with a hard <=budget edit constraint vs the parent.
@@ -108,6 +109,11 @@ class VHHDesignConfig:
     weight_ablang2: float = 0.10
     weight_mpnn_recovery: float = 0.50
     weight_edit_budget: float = 5.00
+    weight_boltz2_ptm_energy: float = 0.0
+    weight_boltz2_interface_pae: float = 0.0
+    boltz2_guidance_recycling_steps: int = 0
+    boltz2_guidance_sampling_steps: int = 5
+    boltz2_guidance_target_template: bool = True
     clip_gradient_norm: float = 1.0  # per-term gradient clip for balance
     esm2_model_name: str = "esm2_t33_650M_UR50D"
 
@@ -144,6 +150,7 @@ class VHHDesignConfig:
     refold_sampling_steps: int = 25
     refold_num_samples: int = 1
     refold_batch_size: int = 1
+    refold_binder_template: bool = True
     ipsae_pae_cutoff: float = 12.0
     refold_rmsd_threshold: float = 2.5
     seed: int = 0
@@ -481,10 +488,11 @@ def _fit_transform(mobile: np.ndarray, reference: np.ndarray):
     mobile_centered = mobile - mobile_mean
     reference_centered = reference - reference_mean
     u, _, vt = np.linalg.svd(mobile_centered.T @ reference_centered)
-    rotation = vt.T @ u.T
+    # Row-vector Kabsch: coordinates are transformed as coords @ rotation.
+    rotation = u @ vt
     if np.linalg.det(rotation) < 0:
         vt[-1, :] *= -1
-        rotation = vt.T @ u.T
+        rotation = u @ vt
     translation = reference_mean - mobile_mean @ rotation
     return rotation, translation
 
@@ -722,6 +730,13 @@ def _append_option(cmd: list[str], flag: str, value):
         cmd.extend([flag, str(value)])
 
 
+def uses_boltz2_guidance(cfg: VHHDesignConfig) -> bool:
+    return (
+        cfg.weight_boltz2_ptm_energy > 0
+        or cfg.weight_boltz2_interface_pae > 0
+    )
+
+
 def build_single_design_command(args, *, seed: int, output_dir: Path) -> list[str]:
     """Reconstruct the CLI for one child design job."""
     cmd = [sys.executable, "-u", str(Path(__file__).resolve()), "--mode", args.mode]
@@ -758,12 +773,34 @@ def build_single_design_command(args, *, seed: int, output_dir: Path) -> list[st
     _append_option(cmd, "--refold-sampling-steps", args.refold_sampling_steps)
     _append_option(cmd, "--refold-num-samples", args.refold_num_samples)
     _append_option(cmd, "--refold-batch-size", args.refold_batch_size)
+    _append_option(cmd, "--refold-binder-template", args.refold_binder_template)
     _append_option(cmd, "--ipsae-pae-cutoff", args.ipsae_pae_cutoff)
     _append_option(cmd, "--refold-rmsd-threshold", args.refold_rmsd_threshold)
     _append_option(cmd, "--esm2-model", args.esm2_model)
     _append_option(cmd, "--weight-esm2", args.weight_esm2)
     _append_option(cmd, "--weight-ablang2", args.weight_ablang2)
     _append_option(cmd, "--weight-edit-budget", args.weight_edit_budget)
+    _append_option(cmd, "--weight-boltz2-ptm-energy", args.weight_boltz2_ptm_energy)
+    _append_option(
+        cmd,
+        "--weight-boltz2-interface-pae",
+        args.weight_boltz2_interface_pae,
+    )
+    _append_option(
+        cmd,
+        "--boltz2-guidance-recycling-steps",
+        args.boltz2_guidance_recycling_steps,
+    )
+    _append_option(
+        cmd,
+        "--boltz2-guidance-sampling-steps",
+        args.boltz2_guidance_sampling_steps,
+    )
+    _append_option(
+        cmd,
+        "--boltz2-guidance-target-template",
+        args.boltz2_guidance_target_template,
+    )
     _append_option(cmd, "--clip-gradient-norm", args.clip_gradient_norm)
     return cmd
 
@@ -875,6 +912,7 @@ class LoadedModels:
     esm2_pll: any = None
     ablang2_model: any = None
     ablang2_tokenizer: any = None
+    boltz2: any = None
 
 
 def load_core_models(cfg: VHHDesignConfig) -> LoadedModels:
@@ -914,6 +952,15 @@ def load_guidance_models(cfg: VHHDesignConfig, models: LoadedModels) -> LoadedMo
         stage_log("loaded AbLang2 model")
     elif cfg.weight_ablang2 <= 0:
         stage_log("skipping AbLang2 model because weight_ablang2 <= 0")
+
+    if uses_boltz2_guidance(cfg) and models.boltz2 is None:
+        stage_log("loading Boltz2 model for target-aware guidance")
+        from mosaic.models.boltz2 import Boltz2
+
+        models.boltz2 = Boltz2()
+        stage_log("loaded Boltz2 model for target-aware guidance")
+    elif not uses_boltz2_guidance(cfg):
+        stage_log("skipping Boltz2 guidance model because its weights are <= 0")
     return models
 
 
@@ -951,6 +998,82 @@ def make_ablang2_loss(
         tokenizer=models.ablang2_tokenizer,
         heavy_len=int(sequence_loss_indices.shape[0]),
         stop_grad=stop_grad,
+    )
+
+
+def build_boltz2_guidance_loss(
+    cfg: VHHDesignConfig,
+    models: LoadedModels,
+    binder_length: int,
+) -> LossTerm:
+    """Build the target-aware sequence loss used inside diffusion guidance.
+
+    The Boltz2 feature graph is binder-first: a placeholder binder sequence is
+    followed by the target chain(s). During guidance, SequenceSubsetLoss passes
+    ABMPNN's soft full-binder sequence into this loss, replacing the placeholder.
+    Target templates are allowed; binder templates are intentionally not used
+    here so the confidence loss stays sensitive to sequence changes.
+    """
+    if models.boltz2 is None:
+        raise ValueError("Boltz2 model was not loaded; check Boltz2 guidance weights")
+
+    from mosaic.losses.structure_prediction import (
+        BinderTargetPAE,
+        TargetBinderPAE,
+        pTMEnergy,
+    )
+    from mosaic.structure_prediction import TargetChain
+
+    if cfg.boltz2_guidance_recycling_steps < 0:
+        raise ValueError("--boltz2-guidance-recycling-steps must be >= 0")
+    if cfg.boltz2_guidance_sampling_steps < 2:
+        raise ValueError("--boltz2-guidance-sampling-steps must be >= 2")
+
+    stage_log(f"Boltz2 guidance: reading target templates from {cfg.complex_cif_path}")
+    target_struct = gemmi.read_structure(str(cfg.complex_cif_path))
+    target_struct.setup_entities()
+    target_chains = []
+    for cid in cfg.target_chain_ids:
+        chain = target_struct[0][cid]
+        seq = gemmi.one_letter_code([r.name for r in chain])
+        template_chain = (
+            chain.clone() if cfg.boltz2_guidance_target_template else None
+        )
+        target_chains.append(
+            TargetChain(seq, use_msa=False, template_chain=template_chain)
+        )
+
+    stage_log(
+        "Boltz2 guidance: featurizing binder placeholder + target "
+        f"(binder_len={binder_length}, target_template="
+        f"{cfg.boltz2_guidance_target_template})"
+    )
+    features, _ = models.boltz2.binder_features(binder_length, target_chains)
+
+    loss_terms = []
+    if cfg.weight_boltz2_ptm_energy > 0:
+        # pTMEnergy is negative when confidence is high, so minimizing it
+        # maximizes cross-chain TM-style confidence.
+        loss_terms.append(cfg.weight_boltz2_ptm_energy * pTMEnergy())
+    if cfg.weight_boltz2_interface_pae > 0:
+        mean_interface_pae = 0.5 * BinderTargetPAE() + 0.5 * TargetBinderPAE()
+        loss_terms.append(cfg.weight_boltz2_interface_pae * mean_interface_pae)
+    if not loss_terms:
+        raise ValueError("Boltz2 guidance requested without positive loss weights")
+
+    boltz2_sequence_loss = sum(loss_terms[1:], start=loss_terms[0])
+    stage_log(
+        "Boltz2 guidance: built loss "
+        f"(pTMEnergy={cfg.weight_boltz2_ptm_energy}, "
+        f"interface_PAE={cfg.weight_boltz2_interface_pae}, "
+        f"recycle={cfg.boltz2_guidance_recycling_steps}, "
+        f"sample_steps={cfg.boltz2_guidance_sampling_steps})"
+    )
+    return models.boltz2.build_loss(
+        loss=boltz2_sequence_loss,
+        features=features,
+        recycling_steps=cfg.boltz2_guidance_recycling_steps,
+        sampling_steps=cfg.boltz2_guidance_sampling_steps,
     )
 
 
@@ -999,9 +1122,22 @@ def build_guidance_loss(cfg: VHHDesignConfig, models: LoadedModels,
                 sequence_loss_indices,
             )
         )
+    if uses_boltz2_guidance(cfg):
+        boltz2_guidance_loss = build_boltz2_guidance_loss(
+            cfg,
+            models,
+            binder_length=int(sequence_loss_indices.shape[0]),
+        )
+        aux_terms.append(
+            SequenceSubsetLoss(
+                ClippedGradient(boltz2_guidance_loss, cfg.clip_gradient_norm),
+                sequence_loss_indices,
+            )
+        )
     # MPNN sequence recovery is a structure-prediction-output loss, so it needs
     # to be plumbed differently — see polish loss below. For guidance during
-    # diffusion we only use sequence-only auxiliary terms here.
+    # diffusion we use sequence-only auxiliary terms plus the optional Boltz2
+    # target-aware sequence loss through the ABMPNN soft-sequence bridge.
 
     return sum(aux_terms[1:], start=aux_terms[0])
 
@@ -1046,6 +1182,8 @@ def build_polish_loss(cfg: VHHDesignConfig, models: LoadedModels,
 def run(cfg: VHHDesignConfig):
     """End-to-end VHH redesign driver. See module docstring for pipeline overview."""
     stage_log(f"starting run seed={cfg.seed} output_dir={cfg.output_dir}")
+    if cfg.num_sampling_steps < 2:
+        raise ValueError("--num-sampling-steps must be >= 2")
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     with open(cfg.output_dir / "config.json", "w") as f:
         json.dump({k: (str(v) if isinstance(v, Path) else v)
@@ -1390,17 +1528,21 @@ def refold_pareto_with_boltz2(
     stage_log(f"refold: reading complex {cfg.complex_cif_path}")
     target_struct = gemmi.read_structure(str(cfg.complex_cif_path))
     target_struct.setup_entities()
-    target_chains = []
+    binder_template_chain = None
+    if cfg.refold_binder_template:
+        binder_template_chain = target_struct[0][cfg.binder_chain_id].clone()
+    target_templates = []
     for cid in cfg.target_chain_ids:
         chain = target_struct[0][cid]
         seq = gemmi.one_letter_code([r.name for r in chain])
         # Boltz2 template YAML construction renames template chains in-place to
         # A/B/...; pass a clone so the original reference keeps author chain IDs
         # for target-aligned RMSD diagnostics.
-        target_chains.append(
-            TargetChain(seq, use_msa=False, template_chain=chain.clone())
-        )
-    stage_log("refold: built target chain templates/features")
+        target_templates.append((seq, chain.clone()))
+    stage_log(
+        "refold: built target chain templates/features "
+        f"(binder_template={cfg.refold_binder_template})"
+    )
 
     iptm_loss = IPTMLoss()
     bt_ipsae_loss = BinderTargetIPSAE(pae_cutoff=cfg.ipsae_pae_cutoff)
@@ -1408,6 +1550,7 @@ def refold_pareto_with_boltz2(
     ipsae_min_loss = IPSAE_min(pae_cutoff=cfg.ipsae_pae_cutoff)
 
     rows = []
+    all_sample_rows = []
     binder_token_indices_np = np.asarray(binder_token_indices)
     refold_dir = cfg.output_dir / "refolded_cifs"
     refolded_binder_chain_id = "A"
@@ -1481,9 +1624,21 @@ def refold_pareto_with_boltz2(
     for edit_count, (loss_v, seq_ids) in sorted(pareto.items()):
         stage_log(f"refold: preparing edit_count={edit_count}")
         seq_str = "".join(TOKENS[i] for i in seq_ids[binder_token_indices_np])
-        feats, w = boltz2.target_only_features(
-            [TargetChain(seq_str, use_msa=False)] + target_chains
+        # Query sequence is the designed binder sequence, while the optional
+        # binder template supplies the parent pose/backbone to keep refolding
+        # close to the input complex instead of freely redocking the binder.
+        binder_template = (
+            binder_template_chain.clone()
+            if binder_template_chain is not None
+            else None
         )
+        refold_chains = [
+            TargetChain(seq_str, use_msa=False, template_chain=binder_template)
+        ] + [
+            TargetChain(seq, use_msa=False, template_chain=template.clone())
+            for seq, template in target_templates
+        ]
+        feats, w = boltz2.target_only_features(refold_chains)
         key = jax.random.key(cfg.seed + 99999 + edit_count)
         stage_log(f"refold: running trunk edit_count={edit_count}")
         initial_emb, trunk_state = boltz2_trunk(
@@ -1563,6 +1718,7 @@ def refold_pareto_with_boltz2(
                     row["binder_ca_rmsd_target_aligned"],
                     cfg.refold_rmsd_threshold,
                 )
+                all_sample_rows.append(dict(row))
 
                 if (
                     best_row is None
@@ -1601,6 +1757,7 @@ def refold_pareto_with_boltz2(
 
     pl.DataFrame(ranked_rows).write_csv(cfg.output_dir / "refold_ranked.csv")
     pl.DataFrame(rows).write_csv(cfg.output_dir / "refold_best_by_edit_count.csv")
+    pl.DataFrame(all_sample_rows).write_csv(cfg.output_dir / "refold_all_samples.csv")
 
 
 # =============================================================================
@@ -1663,6 +1820,8 @@ if __name__ == "__main__":
     p.add_argument("--refold-num-samples", type=int)
     p.add_argument("--refold-batch-size", type=int,
                    help="Boltz2 refold samples to evaluate per batched model call")
+    p.add_argument("--refold-binder-template", type=int, choices=[0, 1],
+                   help="Use parent binder chain as a Boltz2 refold template")
     p.add_argument("--ipsae-pae-cutoff", type=float)
     p.add_argument("--refold-rmsd-threshold", type=float,
                    help="Binder CA RMSD filter after target alignment; <=0 disables")
@@ -1673,6 +1832,17 @@ if __name__ == "__main__":
     p.add_argument("--weight-ablang2", "--weight-ablang", dest="weight_ablang2",
                    type=float, help="AbLang2 PLL weight; --weight-ablang is a deprecated alias")
     p.add_argument("--weight-edit-budget", type=float)
+    p.add_argument("--weight-boltz2-ptm-energy", type=float,
+                   help="Boltz2 guidance weight for smooth cross-chain pTM energy")
+    p.add_argument("--weight-boltz2-interface-pae", "--weight-boltz2-ipae",
+                   dest="weight_boltz2_interface_pae", type=float,
+                   help="Boltz2 guidance weight for mean interface PAE")
+    p.add_argument("--boltz2-guidance-recycling-steps", type=int,
+                   help="Boltz2 recycling steps inside per-step guidance")
+    p.add_argument("--boltz2-guidance-sampling-steps", type=int,
+                   help="Boltz2 structure sampling steps inside per-step guidance")
+    p.add_argument("--boltz2-guidance-target-template", type=int, choices=[0, 1],
+                   help="Use target chain template for Boltz2 guidance features")
     p.add_argument("--clip-gradient-norm", type=float)
     args = p.parse_args()
 
@@ -1725,12 +1895,24 @@ if __name__ == "__main__":
         "refold_sampling_steps": args.refold_sampling_steps,
         "refold_num_samples": args.refold_num_samples,
         "refold_batch_size": args.refold_batch_size,
+        "refold_binder_template": (
+            bool(args.refold_binder_template)
+            if args.refold_binder_template is not None else None
+        ),
         "ipsae_pae_cutoff": args.ipsae_pae_cutoff,
         "refold_rmsd_threshold": args.refold_rmsd_threshold,
         "esm2_model_name": args.esm2_model,
         "weight_esm2": args.weight_esm2,
         "weight_ablang2": args.weight_ablang2,
         "weight_edit_budget": args.weight_edit_budget,
+        "weight_boltz2_ptm_energy": args.weight_boltz2_ptm_energy,
+        "weight_boltz2_interface_pae": args.weight_boltz2_interface_pae,
+        "boltz2_guidance_recycling_steps": args.boltz2_guidance_recycling_steps,
+        "boltz2_guidance_sampling_steps": args.boltz2_guidance_sampling_steps,
+        "boltz2_guidance_target_template": (
+            bool(args.boltz2_guidance_target_template)
+            if args.boltz2_guidance_target_template is not None else None
+        ),
         "clip_gradient_norm": args.clip_gradient_norm,
     }
     for name, value in overrides.items():
@@ -1744,6 +1926,8 @@ if __name__ == "__main__":
         cfg.skip_refold = True
         cfg.weight_esm2 = 0.0
         cfg.weight_ablang2 = 0.0
+        cfg.weight_boltz2_ptm_energy = 0.0
+        cfg.weight_boltz2_interface_pae = 0.0
     elif args.mode == "v1":
         # EditBudget-only guidance; zero-out other guidance terms.
         cfg.skip_guidance = False
@@ -1751,6 +1935,8 @@ if __name__ == "__main__":
         cfg.skip_refold = True
         cfg.weight_esm2 = 0.0
         cfg.weight_ablang2 = 0.0
+        cfg.weight_boltz2_ptm_energy = 0.0
+        cfg.weight_boltz2_interface_pae = 0.0
     elif args.mode == "v2":
         cfg.skip_guidance = False
         cfg.skip_polish = True

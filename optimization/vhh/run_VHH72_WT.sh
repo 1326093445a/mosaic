@@ -28,6 +28,7 @@ RECYCLING_STEPS="${RECYCLING_STEPS:-3}"
 REFOLD_SAMPLING_STEPS="${REFOLD_SAMPLING_STEPS:-200}"
 REFOLD_NUM_SAMPLES="${REFOLD_NUM_SAMPLES:-5}"
 REFOLD_BATCH_SIZE="${REFOLD_BATCH_SIZE:-5}"
+REFOLD_BINDER_TEMPLATE="${REFOLD_BINDER_TEMPLATE:-1}"
 IPSAE_PAE_CUTOFF="${IPSAE_PAE_CUTOFF:-12.0}"
 REFOLD_RMSD_THRESHOLD="${REFOLD_RMSD_THRESHOLD:-2.5}"
 
@@ -35,6 +36,11 @@ BUDGET="${BUDGET:-7}"
 WEIGHT_EDIT_BUDGET="${WEIGHT_EDIT_BUDGET:-10.0}"
 WEIGHT_ESM2="${WEIGHT_ESM2:-${WEIGHT_ESMC:-0.10}}"
 WEIGHT_ABLANG2="${WEIGHT_ABLANG2:-${WEIGHT_ABLANG:-0.10}}"
+WEIGHT_BOLTZ2_PTM_ENERGY="${WEIGHT_BOLTZ2_PTM_ENERGY:-0.0}"
+WEIGHT_BOLTZ2_INTERFACE_PAE="${WEIGHT_BOLTZ2_INTERFACE_PAE:-${WEIGHT_BOLTZ2_IPAE:-0.0}}"
+BOLTZ2_GUIDANCE_RECYCLING_STEPS="${BOLTZ2_GUIDANCE_RECYCLING_STEPS:-0}"
+BOLTZ2_GUIDANCE_SAMPLING_STEPS="${BOLTZ2_GUIDANCE_SAMPLING_STEPS:-5}"
+BOLTZ2_GUIDANCE_TARGET_TEMPLATE="${BOLTZ2_GUIDANCE_TARGET_TEMPLATE:-1}"
 ESM2_MODEL="${ESM2_MODEL:-esm2_t33_650M_UR50D}"
 CLIP_GRADIENT_NORM="${CLIP_GRADIENT_NORM:-1.0}"
 
@@ -84,10 +90,12 @@ echo "step_scale:        ${STEP_SCALE}"
 echo "lambda:            ${LAMBDA_MAX} (${LAMBDA_SCHEDULE})"
 echo "ESM2 model/weight: ${ESM2_MODEL} / ${WEIGHT_ESM2}"
 echo "AbLang2 weight:    ${WEIGHT_ABLANG2}"
+echo "Boltz2 guidance:   pTMEnergy ${WEIGHT_BOLTZ2_PTM_ENERGY}, interface PAE ${WEIGHT_BOLTZ2_INTERFACE_PAE}, recycle ${BOLTZ2_GUIDANCE_RECYCLING_STEPS}, steps ${BOLTZ2_GUIDANCE_SAMPLING_STEPS}, target_template ${BOLTZ2_GUIDANCE_TARGET_TEMPLATE}"
 echo "search mode:       ${SEARCH_MODE}"
 echo "polish:            ${POLISH_STEPS} step(s), batch ${POLISH_BATCH_SIZE}"
 echo "MCMC:              ${MCMC_STEPS} step(s), temp ${MCMC_TEMP}, proposal ${MCMC_PROPOSAL_TEMP}, path <= ${MCMC_MAX_PATH_LENGTH}"
 echo "refold:            ${REFOLD_NUM_SAMPLES} sample(s), ${REFOLD_SAMPLING_STEPS} steps, batch ${REFOLD_BATCH_SIZE}"
+echo "refold template:   binder ${REFOLD_BINDER_TEMPLATE}, target 1"
 echo "ipSAE PAE cutoff:  ${IPSAE_PAE_CUTOFF}"
 echo "RMSD filter:       binder CA <= ${REFOLD_RMSD_THRESHOLD} A"
 echo "mutation recovery: ${RUN_MUTATION_RECOVERY} (${MUTATION_RECOVERY_VARIANTS})"
@@ -126,12 +134,18 @@ uv run python examples/boltzgen_vhh_guided.py \
   --refold-sampling-steps "${REFOLD_SAMPLING_STEPS}" \
   --refold-num-samples "${REFOLD_NUM_SAMPLES}" \
   --refold-batch-size "${REFOLD_BATCH_SIZE}" \
+  --refold-binder-template "${REFOLD_BINDER_TEMPLATE}" \
   --ipsae-pae-cutoff "${IPSAE_PAE_CUTOFF}" \
   --refold-rmsd-threshold "${REFOLD_RMSD_THRESHOLD}" \
   --weight-edit-budget "${WEIGHT_EDIT_BUDGET}" \
   --esm2-model "${ESM2_MODEL}" \
   --weight-esm2 "${WEIGHT_ESM2}" \
   --weight-ablang2 "${WEIGHT_ABLANG2}" \
+  --weight-boltz2-ptm-energy "${WEIGHT_BOLTZ2_PTM_ENERGY}" \
+  --weight-boltz2-interface-pae "${WEIGHT_BOLTZ2_INTERFACE_PAE}" \
+  --boltz2-guidance-recycling-steps "${BOLTZ2_GUIDANCE_RECYCLING_STEPS}" \
+  --boltz2-guidance-sampling-steps "${BOLTZ2_GUIDANCE_SAMPLING_STEPS}" \
+  --boltz2-guidance-target-template "${BOLTZ2_GUIDANCE_TARGET_TEMPLATE}" \
   --clip-gradient-norm "${CLIP_GRADIENT_NORM}" \
   --polish-steps "${POLISH_STEPS}" \
   --polish-batch-size "${POLISH_BATCH_SIZE}" \

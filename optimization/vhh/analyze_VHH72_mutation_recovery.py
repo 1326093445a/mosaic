@@ -158,6 +158,15 @@ def annotate_rows(rows: list[dict], variants: list[dict]) -> list[dict]:
                 missing.append(variant["variant"])
 
         out["intended_mutation_count"] = len(observed)
+        out["paper_hit_none"] = len(observed) == 0
+        out["paper_hit_any"] = len(observed) >= 1
+        out["paper_hit_multi"] = len(observed) >= 2
+        out["paper_hit_combo"] = "+".join(observed) if observed else "none"
+        out["paper_hit_class"] = (
+            "multi" if len(observed) >= 2
+            else "single" if observed
+            else "none"
+        )
         out["intended_mutations_observed"] = ";".join(observed)
         out["intended_mutations_missing"] = ";".join(missing)
         out["intended_site_states"] = ";".join(site_states)
@@ -186,6 +195,10 @@ def print_summary(rows: list[dict], variants: list[dict], top_n: int) -> None:
     ranked = [row for row in rows if str(row.get("rank", "")).strip()]
     counts = Counter(int(row["intended_mutation_count"]) for row in rows)
     passing_counts = Counter(int(row["intended_mutation_count"]) for row in passing)
+    none_count = sum(truthy(row.get("paper_hit_none")) for row in rows)
+    any_count = sum(truthy(row.get("paper_hit_any")) for row in rows)
+    multi_count = sum(truthy(row.get("paper_hit_multi")) for row in rows)
+    combos = Counter(row.get("paper_hit_combo", "none") for row in rows)
 
     print("Verified paper-hit mapping:")
     for variant in variants:
@@ -203,6 +216,14 @@ def print_summary(rows: list[dict], variants: list[dict], top_n: int) -> None:
         "Intended mutation count histogram: "
         + ", ".join(f"{k}:{counts[k]}" for k in sorted(counts))
     )
+    print(
+        "Paper-hit recovery flags: "
+        f"none={none_count}, any={any_count}, multi={multi_count}"
+    )
+    print(
+        "Paper-hit combos: "
+        + ", ".join(f"{combo}:{combos[combo]}" for combo in sorted(combos))
+    )
     if passing:
         print(
             "Passing-only histogram: "
@@ -217,6 +238,7 @@ def print_summary(rows: list[dict], variants: list[dict], top_n: int) -> None:
             f"  rank={label} edit={row.get('edit_count', '')} "
             f"ipsae={row.get('ipsae_min', '')} rmsd_pass={row.get('rmsd_pass', '')} "
             f"hits={row['intended_mutation_count']} "
+            f"class={row.get('paper_hit_class', '')} "
             f"observed={row['intended_mutations_observed'] or '-'} "
             f"states={row['intended_site_states']}"
         )

@@ -1,0 +1,4 @@
+paper_variant,cdr,anarci_label,pdb_auth_label,seq_index,mutation_chain_index,substitution_type,esm2_delta_nll,ablang2_delta_nll,mosaic_sequence_delta_loss,mosaic_sequence_delta_loss_site_rank,mosaic_sequence_delta_loss_site_percentile,mosaic_sequence_delta_loss_cdr_rank,mosaic_sequence_delta_loss_global_rank
+S56M,CDR2,H56,56,57,S57M,S->M,0.036351680755615234,0.046234726905822754,0.008258640766143799,18,0.9444,186,444
+L97W,CDR3,H97,97,101,L101W,L->W,-0.011240005493164062,-0.01293790340423584,-0.0024177908897400346,2,0.0556,6,25
+T99V,CDR3,H99,99,103,T103V,T->V,0.005751490592956543,-0.005035758018493652,7.157325744627796e-05,7,0.3333,57,90

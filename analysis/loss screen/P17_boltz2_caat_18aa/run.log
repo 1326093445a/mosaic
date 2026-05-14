@@ -1,0 +1,11 @@
+==============================================
+P17 Boltz2 CAAT-style 18-AA scan: alpha
+==============================================
+Preset:          p17-alpha
+Output:          vhh/P17_boltz2_caat_18aa/alpha
+AA_PANEL:        ARNDQEGHILKFPSTWYV
+baseline sample: 5
+variant samples: 3
+sampling steps:  200
+recycling:       3
+

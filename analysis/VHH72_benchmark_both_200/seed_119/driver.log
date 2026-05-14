@@ -1,0 +1,111 @@
+[stage      0.0s] importing heavy dependencies
+[stage      5.3s] finished importing heavy dependencies
+[stage      5.3s] starting run seed=119 output_dir=vhh/VHH72_benchmark_both_200/seed_119
+[stage      5.3s] wrote config.json
+[setup] loading BoltzGen model...
+[stage      5.3s] loading BoltzGen model
+[load_boltzgen] checking checkpoints in /storage/frank/.boltz
+[load_boltzgen] loading torch checkpoint /storage/frank/.boltz/boltzgen1_diverse.ckpt
+/storage/frank/mosaic/.venv/lib/python3.12/site-packages/pytorch_lightning/utilities/migration/utils.py:56: The loaded checkpoint was produced with Lightning v2.5.5, which is newer than your current Lightning version: v2.5.0
+[load_boltzgen] converting torch model to JAX
+[load_boltzgen] moving model arrays to JAX device
+[load_boltzgen] ready
+[stage     70.4s] loaded BoltzGen model
+[stage     70.4s] reading BoltzGen YAML /storage/frank/mosaic/optimization/vhh/VHH72_WT_SARS-CoV-2_RBD.yaml
+[setup] parsing YAML and featurizing complex...
+[stage     70.4s] loading and featurizing complex
+[stage     72.0s] finished loading and featurizing complex
+[stage     72.0s] building parent sequence and design masks
+[setup] complex has 321 tokens, 127 binder tokens, 28 designable (CDR) positions, edit budget = 7
+[stage     72.9s] finished parent sequence and design masks
+[setup] running BoltzGen trunk + diffusion conditioning...
+[stage     72.9s] starting BoltzGen sampler/trunk conditioning
+[stage    122.8s] finished BoltzGen sampler/trunk conditioning
+[setup] loading guidance models...
+[stage    122.8s] starting guidance model loading
+[stage    122.8s] loading ABMPNN inverse-folding model
+[load_abmpnn] loading ABMPNN weights
+[load_abmpnn] ready
+[stage    122.9s] loaded ABMPNN inverse-folding model
+[stage    122.9s] loading ESM2 model esm2_t33_650M_UR50D
+[load_esm2] importing fair-esm for esm2_t33_650M_UR50D
+[load_esm2] loading torch checkpoint esm2_t33_650M_UR50D
+[load_esm2] converting esm2_t33_650M_UR50D from torch to JAX
+[load_esm2] ready esm2_t33_650M_UR50D
+[stage    130.7s] loaded ESM2 model esm2_t33_650M_UR50D
+[stage    130.7s] loading AbLang2 model
+[load_ablang2] loading torch checkpoint ablang2-paired
+[load_ablang2] converting torch model to JAX
+[load_ablang2] ready
+[stage    131.8s] loaded AbLang2 model
+[stage    131.8s] finished guidance model loading
+[stage    131.8s] building guidance and polish losses
+[stage    132.5s] finished building guidance and polish losses
+
+[outer 0] guided partial diffusion (start_sigma_frac=0.25, steps=200)...
+[stage    132.6s] outer 0: starting guided partial diffusion
+[stage    334.0s] outer 0: finished guided partial diffusion
+[stage    334.0s] outer 0: decoding final structure with ABMPNN
+[outer 0] diffusion produced 25 edits vs parent
+[stage    345.0s] outer 0: finished ABMPNN decode
+[outer 0] edit-budgeted greedy polish (budget=7, steps<=200)...
+[stage    345.0s] outer 0: starting edit-budgeted greedy polish
+warn: starting sequence had 25 edits > budget 7; loss-projected to 7 edits before greedy descent. kept chain-order positions: 53,102,103,106,107,109,111
+init loss: 0.26 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.31 .2.ablang2_ppl: 3.65 edits: 7.00
+0 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.28 .2.ablang2_ppl: 3.55 edits: 7.00 time: 4.08
+1 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.28 .2.ablang2_ppl: 3.48 edits: 7.00 time: 4.00
+2 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.41 edits: 7.00 time: 3.99
+3 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.30 .2.ablang2_ppl: 3.30 edits: 7.00 time: 3.99
+4 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.30 .2.ablang2_ppl: 3.30 edits: 7.00 time: 1.12
+5 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.30 .2.ablang2_ppl: 3.28 edits: 7.00 time: 4.16
+6 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.28 .2.ablang2_ppl: 3.35 edits: 7.00 time: 4.17
+7 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.28 .2.ablang2_ppl: 3.35 edits: 7.00 time: 1.16
+8 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.26 .2.ablang2_ppl: 3.36 edits: 7.00 time: 4.16
+9 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 4.24
+10 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.16
+11 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.15
+12 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.16
+13 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.17
+14 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.18
+15 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.17
+16 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.16
+17 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.16
+18 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.16
+19 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.18
+20 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.16
+21 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.17
+22 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+23 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+24 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+25 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+26 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+27 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+28 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+29 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+30 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+31 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+32 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+33 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+34 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+35 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+36 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+37 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+38 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+39 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+40 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+41 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+42 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+43 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+44 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+45 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.13
+46 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+47 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.12
+48 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.13
+49 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.13
+50 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.13
+51 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 1.13
+52 loss: 0.25 .0.E_soft: 7.00 .0.edit_violation: 0.00 .1.esm_pll:-1.29 .2.ablang2_ppl: 3.28 edits: 7.00 time: 12.52
+step 53: feasible neighbourhood exhausted, stopping
+[stage    596.8s] outer 0: finished edit-budgeted greedy polish
+[outer 0] edit-budgeted gradient MCMC (budget=7, steps=100, temp=0.02, proposal_temp=0.01, path<=2)...
+[stage    596.8s] outer 0: starting edit-budgeted gradient MCMC

@@ -1,0 +1,3 @@
+mode,first_acknowledged_edit_count,first_acknowledged_delta_ipsae,first_acknowledged_mutations,five_edit_available,five_or_nearest_edit_count,five_or_nearest_acknowledged,five_or_nearest_delta_ipsae,five_or_nearest_z_delta_ipsae,five_or_nearest_mutations
+absolute,3,-0.1951371123393376,T57A;V31W;E104G,True,5,False,0.1032866050799687,1.1399471366973664,T57A;V31W;E104G;G26P;T28H
+increase,3,0.2825217852989832,T57A;V31W;E104G,True,5,False,-0.124143440524737,-1.370138552393754,T57A;V31W;E104G;N106W;Y109I
