@@ -9,7 +9,40 @@ guidance term should be redesigned for low-edit antibody optimization.
 
 ---
 
-## 1. Current mechanism
+## 1. Notation
+
+The symbols below are used throughout this note.
+
+- `x_t`
+  - the current noisy structure state at diffusion step `t`
+- `x0_hat`
+  - the BoltzGen denoiser's current clean-structure estimate from `x_t`
+  - this is **not** the final ranked candidate and **not** "the structure with
+    the best ipSAE"
+- `x0_guided`
+  - the guided clean estimate after applying the coordinate update
+- `x_final`
+  - the final structural sample after the full reverse-diffusion trajectory
+    finishes
+- `s`
+  - the soft sequence representation produced by the differentiable inverse-fold
+    bridge from the current structure estimate
+- `design proposal`
+  - the joint sequence-structure candidate derived from `x_final`, optionally
+    followed by decode, polish, and refold
+
+The important distinction is:
+
+```text
+x_t -> x0_hat -> x0_guided -> ... -> x_final -> decoded/refolded candidate
+```
+
+Guidance acts on `x0_hat` inside the reverse process. Final ranking acts on
+the finished candidate derived from `x_final`.
+
+---
+
+## 2. Current mechanism
 
 At a high level, the current guided partial diffusion loop does this:
 
@@ -43,7 +76,7 @@ weak.
 
 ---
 
-## 2. Why the current guidance is too brutal
+## 3. Why the current guidance is too brutal
 
 The main problem is not that guidance exists. The problem is that the current
 update is too close to a raw gradient subtraction in coordinate space.
@@ -77,7 +110,7 @@ controller is underdesigned.
 
 ---
 
-## 3. Design goal
+## 4. Design goal
 
 For our use case, the guidance system should satisfy four constraints:
 
@@ -95,7 +128,7 @@ The primary objective should lead. The secondary objectives should regularize.
 
 ---
 
-## 4. Recommended architecture
+## 5. Recommended architecture
 
 ### 4.1 Separate the gradient into components
 
@@ -183,7 +216,7 @@ This is the key guardrail missing from the current implementation.
 
 ---
 
-## 5. Which losses should be used
+## 6. Which losses should be used
 
 ### 5.1 Primary guidance during diffusion
 
@@ -224,7 +257,46 @@ we have a stable smooth surrogate for it.
 
 ---
 
-## 6. Noise-dependent schedule
+## 7. Two different time axes
+
+This redesign uses two different schedules. They should not be conflated.
+
+### 7.1 Noise-axis schedule: inside one trajectory
+
+This is the diffusion-time axis:
+
+- current denoising step `t`
+- current noise level `sigma_t`
+
+This axis controls:
+
+- `lambda(sigma)` for guidance strength
+- `tau(sigma)` for trust-radius clipping
+- the relative weight of structure, naturalness, and locality terms **within**
+  a single trajectory
+
+### 7.2 Search-axis schedule: across trajectories / outer rounds
+
+This is the proposal-search axis:
+
+- outer iteration index
+- proposal generation round
+- resampling stage across multiple trajectories
+
+This axis controls:
+
+- soft vs hard proposal selection
+- how aggressively to prune proposals
+- how much diversity to preserve across candidate trajectories
+
+The clean rule is:
+
+- **noise-axis schedule** controls local guidance inside a trajectory
+- **search-axis schedule** controls which trajectories survive
+
+---
+
+## 8. Noise-dependent schedule
 
 The guidance should change over the diffusion trajectory.
 
@@ -256,7 +328,7 @@ This is where a trust radius is most important.
 
 ---
 
-## 7. Proposed algorithm
+## 9. Proposed algorithm
 
 ```text
 Input:
@@ -312,7 +384,7 @@ Step 10: use x0_guided in the EDM reverse update
 
 ---
 
-## 8. Practical recommendation for Mosaic
+## 10. Practical recommendation for Mosaic
 
 For the next implementation pass, the most useful changes are:
 
@@ -342,7 +414,26 @@ changing the whole pipeline.
 
 ---
 
-## 9. Relationship to prior work
+## 11. Implementation scope
+
+This is a real rewrite of the guidance injection block, not a small
+hyperparameter patch.
+
+The current code path differentiates a single scalar guidance objective. The
+proposed controller requires at least:
+
+- separate objective evaluations
+- separate gradients for `g_bind`, `g_nat`, `g_edit`
+- masking, de-meaning, normalization, and compatibility projection per
+  objective
+- merged trust-region clipping before the reverse update
+
+So this should be sized as a real implementation phase inside
+`guided_partial_diffusion`, not treated as a light configuration change.
+
+---
+
+## 12. Relationship to prior work
 
 The proposed controller is closest in spirit to:
 
