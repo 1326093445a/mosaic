@@ -223,6 +223,16 @@ It solves a different problem.
 
 So these methods are complementary.
 
+One important caveat from the controller side still applies here:
+
+- even a well-designed proposal-selection policy does **not** guarantee that
+  the in-trajectory guidance remains compatible with the pretrained BoltzGen
+  prior
+
+That unresolved issue is documented explicitly in
+`docs/guidance_design_notes.md` under **Prior compatibility with the BoltzGen
+model**.
+
 The practical interpretation is:
 
 > use gradients inside a particle, and use particle selection across particles.

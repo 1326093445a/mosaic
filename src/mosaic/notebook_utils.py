@@ -1,5 +1,22 @@
+import os
+from pathlib import Path
+
 from ipymolstar import PDBeMolstar
 import gemmi
+
+
+def required_structure_path(environment_variable: str) -> Path:
+    """Resolve a user-supplied structure without assuming repo-local data files."""
+    raw_path = os.environ.get(environment_variable)
+    if not raw_path:
+        raise RuntimeError(
+            f"Set {environment_variable} to the input PDB/mmCIF path before "
+            "running this example"
+        )
+    path = Path(raw_path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"{environment_variable} does not exist: {path}")
+    return path
 
 def pdb_viewer(st: gemmi.Structure):
     """Display a PDB file using Molstar"""

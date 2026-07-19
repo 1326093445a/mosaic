@@ -17,9 +17,13 @@ def boltz_to_ablang2_matrix(tokenizer):
 
 
 def load_ablang2():
+    print("[load_ablang2] loading torch checkpoint ablang2-paired", flush=True)
     model_pt, tokenizer, _hparams = load_model("ablang2-paired")
     model_pt.eval()
-    return from_torch(model_pt), tokenizer
+    print("[load_ablang2] converting torch model to JAX", flush=True)
+    model = from_torch(model_pt)
+    print("[load_ablang2] ready", flush=True)
+    return model, tokenizer
 
 
 class Ablang2PseudoLikelihood(LossTerm):

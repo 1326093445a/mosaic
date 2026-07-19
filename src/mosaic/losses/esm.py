@@ -21,10 +21,40 @@ from esm2quinox import ESM2
 from esm2quinox._esm2 import _alphabet as ESM_TOKENS
 from ..common import LossTerm, TOKENS
 
+ESM_VOCAB_SIZE = max(ESM_TOKENS.values()) + 1
+ESM_BOS_TOKEN = "^"
+ESM_EOS_TOKEN = "$"
+ESM_MASK_TOKEN = "#"
+
+
+def load_esm2(model_name: str = "esm2_t33_650M_UR50D"):
+    """Load an ESM2 torch checkpoint and convert it to the JAX/Equinox wrapper."""
+    print(f"[load_esm2] importing fair-esm for {model_name}", flush=True)
+    try:
+        import esm
+        import esm2quinox
+    except ImportError as exc:
+        raise ImportError(
+            "ESM2 loading requires the `esm` package from fair-esm. "
+            "Install it with `uv pip install fair-esm` or add fair-esm to the env."
+        ) from exc
+
+    loader = getattr(esm.pretrained, model_name, None)
+    if loader is None:
+        raise ValueError(f"Unknown ESM2 model '{model_name}' in esm.pretrained")
+
+    print(f"[load_esm2] loading torch checkpoint {model_name}", flush=True)
+    torch_model, _ = loader()
+    torch_model.eval()
+    print(f"[load_esm2] converting {model_name} from torch to JAX", flush=True)
+    model = esm2quinox.from_torch(torch_model)
+    print(f"[load_esm2] ready {model_name}", flush=True)
+    return model
+
 
 def boltz_to_esm_matrix():
     """Converts from standard tokenization (Boltz ... plus two???) to ESM2QUINOX tokenization"""
-    T = np.zeros((len(TOKENS), len(ESM_TOKENS)))
+    T = np.zeros((len(TOKENS), ESM_VOCAB_SIZE))
     for i, tok in enumerate(TOKENS):
         esm_idx = ESM_TOKENS[tok]
         T[i, esm_idx] = 1
@@ -63,15 +93,17 @@ class ESM2PseudoLikelihood(LossTerm):
         # add cls and eos tokens
         esm_toks = jnp.concatenate(
             [
-                jax.nn.one_hot([ESM_TOKENS["b"]], 33), 
+                jax.nn.one_hot([ESM_TOKENS[ESM_BOS_TOKEN]], ESM_VOCAB_SIZE),
                 esm_toks_unpadded,
-                jax.nn.one_hot([ESM_TOKENS["e"]], 33),
+                jax.nn.one_hot([ESM_TOKENS[ESM_EOS_TOKEN]], ESM_VOCAB_SIZE),
             ]
         )
 
         def single_ll(index: int):
             # replace token at index with mask
-            masked_tokens = esm_toks.at[index].set(jax.nn.one_hot(ESM_TOKENS["m"], 33))
+            masked_tokens = esm_toks.at[index].set(
+                jax.nn.one_hot(ESM_TOKENS[ESM_MASK_TOKEN], ESM_VOCAB_SIZE)
+            )
             # embed and run ESM
             embedding = masked_tokens @ self.esm.embedding.weight
             # set masked token embedding to zero
@@ -88,6 +120,3 @@ class ESM2PseudoLikelihood(LossTerm):
             masked_log_likelihoods = jax.lax.stop_gradient(masked_log_likelihoods)
         pll =  (masked_log_likelihoods * esm_toks_unpadded).sum(-1).mean()
         return -pll, {"esm_pll": pll}
-
-
-

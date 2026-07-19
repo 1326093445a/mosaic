@@ -134,6 +134,81 @@ class FixedPositionsPenalty(LossTerm):
         return FixedPositionsPenalty(jnp.array(position_mask), jnp.array(target))
 
 
+class EditBudget(LossTerm):
+    """Soft hinge penalty on edit distance from a reference sequence over a designable subset.
+
+    The continuous relaxation of Hamming distance for soft `s` against one-hot `s_ref`
+    over positions where `designable=True` is `E(s) = sum((1 - <s, s_ref>) * designable)`.
+    This is linear in `s` (so convex on the simplex) and equals 0 at native, lower-bounding
+    the rounded Hamming distance. The hinge `relu(E(s) - budget)` is zero within budget
+    and pulls toward `s_ref` only when the budget is exceeded — exactly the soft-barrier
+    behavior we want during gradient optimization or classifier-guided diffusion.
+    """
+
+    s_ref: Float[Array, "N 20"] = eqx.field(converter=jnp.array)
+    designable: Bool[Array, "N"] = eqx.field(converter=jnp.array)
+    budget: float = eqx.field(converter=jnp.array)
+
+    def __call__(self, seq: Float[Array, "N 20"], *, key=None):
+        deviation = (1.0 - (seq * self.s_ref).sum(-1)) * self.designable
+        E = deviation.sum()
+        violation = jax.nn.relu(E - self.budget)
+        return violation, {"E_soft": E, "edit_violation": violation}
+
+    @staticmethod
+    def from_residues(parent_sequence: str, designable_indices, budget: float):
+        """Build from a parent sequence string and a list/array of designable position indices."""
+        n = len(parent_sequence)
+        s_ref = np.zeros((n, len(TOKENS)), dtype=np.float32)
+        for i, AA in enumerate(parent_sequence):
+            if AA in TOKENS:
+                s_ref[i, TOKENS.index(AA)] = 1.0
+        designable = np.zeros(n, dtype=bool)
+        designable[np.asarray(designable_indices)] = True
+        return EditBudget(jnp.array(s_ref), jnp.array(designable), float(budget))
+
+
+class FixedLogitsSequenceLoss(LossTerm):
+    """Cross-entropy against fixed per-position amino-acid logits.
+
+    This is useful for applying a non-differentiable inverse-folding model as a
+    fixed-backbone sequence prior during a subsequent differentiable/discrete
+    search. Positions outside ``position_mask`` do not contribute.
+    """
+
+    log_probs: Float[Array, "N 20"] = eqx.field(converter=jnp.array)
+    position_mask: Bool[Array, "N"] = eqx.field(converter=jnp.array)
+    name: str = "fixed_logits_nll"
+
+    def __call__(self, seq: Float[Array, "N 20"], *, key=None):
+        if seq.shape != self.log_probs.shape:
+            raise ValueError(
+                f"Sequence shape {seq.shape} does not match logits "
+                f"shape {self.log_probs.shape}"
+            )
+        per_position = -(seq * self.log_probs).sum(axis=-1)
+        denominator = jnp.maximum(self.position_mask.sum(), 1)
+        value = (per_position * self.position_mask).sum() / denominator
+        return value, {self.name: value}
+
+    @staticmethod
+    def from_logits(logits, position_mask, *, name="fixed_logits_nll"):
+        logits = jnp.asarray(logits)
+        position_mask = jnp.asarray(position_mask, dtype=bool)
+        if logits.ndim != 2 or logits.shape[-1] != len(TOKENS):
+            raise ValueError(f"Expected logits with shape (N, 20), got {logits.shape}")
+        if position_mask.shape != logits.shape[:-1]:
+            raise ValueError(
+                f"Position mask shape {position_mask.shape} does not match "
+                f"logits shape {logits.shape}"
+            )
+        return FixedLogitsSequenceLoss(
+            log_probs=jax.nn.log_softmax(logits, axis=-1),
+            position_mask=position_mask,
+            name=name,
+        )
+
+
 @jax.custom_vjp
 def clip_gradient(threshold, x):
     return x
@@ -169,21 +244,19 @@ class ClippedGradient(LossTerm):
 
 
 @jax.custom_vjp
-def norm_gradient(scale, x):
+def norm_gradient(x):
     return x
 
 
-def norm_gradient_fwd(scale, x):
-    return x, (scale,)
+def norm_gradient_fwd(x):
+    return x, None
 
 
-def norm_gradient_bwd(res, g):
-    (scale,) = res
+def norm_gradient_bwd(_, g):
     g = g - g.mean(axis=-1, keepdims=True)
     norm = jnp.sqrt((g**2).sum() + 1e-8)
     return (
-        None,
-        scale * g / norm,
+        g / norm,
     )
 
 
@@ -191,73 +264,7 @@ norm_gradient.defvjp(norm_gradient_fwd, norm_gradient_bwd)
 
 
 class NormedGradient(LossTerm):
-    """Rescale this term's value *and* gradient by ``scale``.
-
-    On the backward pass the incoming gradient is centered across the vocab axis
-    (projected to the simplex tangent), normalized to unit norm, then multiplied
-    by ``scale`` — fixing the term's gradient *magnitude* at ``scale`` regardless
-    of its raw loss-value scale or any upstream attenuation (e.g.
-    recycling-gradient truncation). The forward *value* is multiplied by ``scale``
-    too, so one number weights the term consistently for both optimization (the
-    gradient) and any value-based selection (e.g. stage-1 best-PSSM-by-loss) —
-    no separate outer multiplier needed.
-
-    The value multiplier does not double-count the gradient: ``norm_gradient``
-    divides by the gradient's own norm, so the extra ``scale`` on the value
-    cancels there and the gradient norm stays exactly ``scale``.
-
-    So ``NormedGradient(structure, 1.0) + NormedGradient(pll, 0.15)`` combines the
-    two with both gradient norms and values in a fixed 1.0 : 0.15 ratio,
-    independent of how large or small each raw gradient/value happens to be.
-    """
-
     loss: LossTerm
-    scale: float = 1.0
 
     def __call__(self, sequence, *args, **kwargs):
-        v, aux = self.loss(norm_gradient(self.scale, sequence), *args, **kwargs)
-        return self.scale * v, aux
-
-
-class RandomChoice(LossTerm):
-    """Evaluate a uniformly-random member of a set of structurally-identical losses.
-
-    A cheap way to randomly sub-sample an ensemble each step (e.g. a
-    different model checkpoint, feature pack, or seed per APGM step) without
-    paying a recompile per member, and without summing them like a
-    ``LinearCombination``.
-    """
-
-    # Stacked array leaves of every member (each leaf gains a leading axis of
-    # size `n`); combined with `static` it reconstitutes a single member.
-    stacked: LossTerm
-    # Non-array part shared by all members (None where the arrays were). A plain
-    # field, not `static=True`: its non-array leaves are filtered out as static
-    # by the optimizer's `filter_jit`, exactly as for any other LossTerm config.
-    static: LossTerm
-    n: int = eqx.field(static=True)
-
-    def __init__(self, *losses: LossTerm):
-        if not losses:
-            raise ValueError("RandomChoice needs at least one loss.")
-        struct = jax.tree_util.tree_structure(losses[0])
-        for i, loss in enumerate(losses[1:], 1):
-            if jax.tree_util.tree_structure(loss) != struct:
-                raise ValueError(
-                    "RandomChoice requires identical pytree structure across "
-                    f"losses; loss[{i}] differs from loss[0]."
-                )
-        dynamic, static = zip(*(eqx.partition(loss, eqx.is_inexact_array) for loss in losses))
-        # `jnp.stack` raises if any array leaf has a mismatched shape/dtype.
-        self.stacked = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs), *dynamic)
-        self.static = static[0]
-        self.n = len(losses)
-
-    def __call__(self, *args, key, **kwargs):
-        k_pick, k_loss = jax.random.split(key)
-        i = jax.random.randint(k_pick, (), 0, self.n)
-        member = eqx.combine(
-            jax.tree_util.tree_map(lambda x: x[i], self.stacked), self.static
-        )
-        v, aux = member(*args, key=k_loss, **kwargs)
-        return v, {"loss_index": i, "": aux}
+        return self.loss(norm_gradient(sequence), *args, **kwargs)

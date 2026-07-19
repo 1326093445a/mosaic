@@ -1260,15 +1260,39 @@ def build_boltz2_guidance_loss(
     )
 
 
+@dataclass
+class GuidanceLosses:
+    """The three separate objectives Phase 1's guidance controller
+    (`guided_partial_diffusion`'s `guidance_fn_bind`/`_nat`/`_edit`) expects,
+    as opposed to the single pre-summed loss the old single-`guidance_fn`
+    interface took. See docs/guidance_design_notes.md section 5 / 10.
+
+    `bind` is the anchor objective guidance is built around; if it is
+    `None`, `guided_partial_diffusion` treats guidance as fully disabled
+    regardless of whether `nat`/`edit` are present (there is no anchor to
+    merge them against) — see `build_guidance_loss`'s fallback below for how
+    that's avoided when Boltz2 guidance isn't configured.
+    """
+
+    bind: LossTerm | None
+    nat: LossTerm | None
+    edit: LossTerm | None
+
+
 def build_guidance_loss(cfg: VHHDesignConfig, models: LoadedModels,
                         parent_one_hot: Float[Array, "N 20"],
                         designable_token_mask: Bool[Array, "N"],
-                        sequence_loss_indices: Int[Array, "M"]):
-    """Composite loss applied per diffusion step inside guided_partial_diffusion.
+                        sequence_loss_indices: Int[Array, "M"]) -> GuidanceLosses | None:
+    """Build the three separate per-step objectives for guided_partial_diffusion.
 
-    Operates on a soft sequence emitted by JAX BoltzGen-IF. Gradients
-    flow back through IF -> coords. Each term is wrapped in ClippedGradient so the
-    contributions stay balanced as guidance compounds across hundreds of steps.
+    Operates on a soft sequence emitted by JAX BoltzGen-IF. Gradients flow
+    back through IF -> coords. Each term is wrapped in ClippedGradient so the
+    per-objective sequence-space gradient stays bounded before it is pulled
+    back through the IF Jacobian; guided_partial_diffusion's own controller
+    (mask/de-mean/RMS-normalize/PCGrad-merge/trust-radius-clip) then handles
+    balancing the three *coordinate-space* gradients against each other,
+    which sequence-space clipping alone cannot guarantee (see
+    docs/guidance_design_notes.md section 3 for why).
     """
     edit_budget_term = EditBudget(
         s_ref=parent_one_hot,
@@ -1277,17 +1301,21 @@ def build_guidance_loss(cfg: VHHDesignConfig, models: LoadedModels,
     )
 
     if cfg.skip_guidance:
-        # v0 path: no guidance at all. Return None so guided_partial_diffusion
+        # v0 path: no guidance at all. Return None so the driver skips
+        # building any guidance_fn_* closures and guided_partial_diffusion
         # short-circuits the per-step gradient computation.
         return None
 
-    # In v1 we use ONLY edit budget; in v2/v3 we use the full composite.
-    # We always include the edit-budget term with high weight so the guided
-    # trajectory is biased to stay near parent, regardless of other terms.
-    aux_terms = [cfg.weight_edit_budget * edit_budget_term]
+    # Edit-budget is the locality/edit-restraint objective (L_edit). It is
+    # always available when guidance is active at all (unlike naturalness or
+    # Boltz2 binding, which are individually optional via their weights).
+    edit_loss = cfg.weight_edit_budget * edit_budget_term
 
+    # Naturalness (L_nat): ESM2 and AbLang2 combine into one objective if
+    # either or both are enabled.
+    nat_terms = []
     if cfg.weight_esm2 > 0:
-        aux_terms.append(
+        nat_terms.append(
             cfg.weight_esm2
             * SequenceSubsetLoss(
                 ClippedGradient(models.esm2_pll, cfg.clip_gradient_norm),
@@ -1298,29 +1326,41 @@ def build_guidance_loss(cfg: VHHDesignConfig, models: LoadedModels,
         ablang2_pll = make_ablang2_loss(
             models, sequence_loss_indices, stop_grad=False
         )
-        aux_terms.append(
+        nat_terms.append(
             cfg.weight_ablang2
             * SequenceSubsetLoss(
                 ClippedGradient(ablang2_pll, cfg.clip_gradient_norm),
                 sequence_loss_indices,
             )
         )
+    nat_loss = sum(nat_terms[1:], start=nat_terms[0]) if nat_terms else None
+
+    # Binding confidence (L_bind): the Boltz2-based interface-confidence
+    # surrogate, if configured.
+    bind_loss = None
     if uses_boltz2_guidance(cfg):
         boltz2_guidance_loss = build_boltz2_guidance_loss(
             cfg,
             models,
             binder_length=int(sequence_loss_indices.shape[0]),
         )
-        aux_terms.append(
-            SequenceSubsetLoss(
-                ClippedGradient(boltz2_guidance_loss, cfg.clip_gradient_norm),
-                sequence_loss_indices,
-            )
+        bind_loss = SequenceSubsetLoss(
+            ClippedGradient(boltz2_guidance_loss, cfg.clip_gradient_norm),
+            sequence_loss_indices,
         )
-    # Guidance uses sequence-only auxiliary terms plus the optional Boltz2
-    # target-aware loss through the JAX BoltzGen-IF soft-sequence bridge.
 
-    return sum(aux_terms[1:], start=aux_terms[0])
+    if bind_loss is not None:
+        return GuidanceLosses(bind=bind_loss, nat=nat_loss, edit=edit_loss)
+
+    # No Boltz2 binding signal configured — this is v1's "EditBudget-only
+    # guidance" mode. guided_partial_diffusion requires a bind objective for
+    # guidance to be active at all (it is the anchor everything else is
+    # projected against), so use edit_loss as the anchor in this case
+    # instead of as a separate regularizer. This preserves v1's original
+    # behavior exactly: with no naturalness terms either, guidance reduces
+    # to edit-budget alone driving the trajectory, matching what the single
+    # merged guidance_fn used to do when only weight_edit_budget was nonzero.
+    return GuidanceLosses(bind=edit_loss, nat=nat_loss, edit=None)
 
 
 def build_polish_loss(cfg: VHHDesignConfig, models: LoadedModels,
@@ -1455,7 +1495,7 @@ def run(cfg: VHHDesignConfig):
     stage_log("finished guidance model loading")
 
     stage_log("building guidance and polish losses")
-    guidance_loss = build_guidance_loss(
+    guidance_losses = build_guidance_loss(
         cfg, models, parent_one_hot, designable_token_mask, binder_token_indices
     )
     polish_loss = build_polish_loss(
@@ -1490,7 +1530,10 @@ def run(cfg: VHHDesignConfig):
             jax.random.key(cfg.seed + 7919 * outer),
             if_context.designable_positions,
         )
-        if guidance_loss is not None:
+        def _make_guidance_fn(loss_term):
+            """Wrap one GuidanceLosses field into a guidance_fn_* closure of
+            the shape guided_partial_diffusion expects: (x0) -> scalar,
+            gradient flowing x0 -> soft_seq (via JAX BoltzGen-IF) -> loss_term."""
             def guidance_fn(x0):
                 soft_seq = differentiable_jax_boltzgen_if(
                     models.boltzgen_if_jax,
@@ -1501,10 +1544,25 @@ def run(cfg: VHHDesignConfig):
                     avoid=cfg.boltzgen_if_avoid,
                     order=if_order,
                 )
-                v, _ = guidance_loss(soft_seq, key=jax.random.key(cfg.seed + outer))
+                v, _ = loss_term(soft_seq, key=jax.random.key(cfg.seed + outer))
                 return v
+            return guidance_fn
+
+        if guidance_losses is not None:
+            guidance_fn_bind = (
+                _make_guidance_fn(guidance_losses.bind)
+                if guidance_losses.bind is not None else None
+            )
+            guidance_fn_nat = (
+                _make_guidance_fn(guidance_losses.nat)
+                if guidance_losses.nat is not None else None
+            )
+            guidance_fn_edit = (
+                _make_guidance_fn(guidance_losses.edit)
+                if guidance_losses.edit is not None else None
+            )
         else:
-            guidance_fn = None
+            guidance_fn_bind = guidance_fn_nat = guidance_fn_edit = None
 
         stage_log(f"outer {outer}: starting guided partial diffusion")
         x_final = guided_partial_diffusion(
@@ -1517,8 +1575,10 @@ def run(cfg: VHHDesignConfig):
             start_sigma_frac=cfg.start_sigma_frac,
             step_scale=cfg.step_scale,
             noise_scale=cfg.noise_scale,
-            guidance_fn=guidance_fn,
-            guidance_lambda_fn=lambda_fn if guidance_fn is not None else None,
+            guidance_fn_bind=guidance_fn_bind,
+            guidance_fn_nat=guidance_fn_nat,
+            guidance_fn_edit=guidance_fn_edit,
+            guidance_lambda_fn=lambda_fn if guidance_fn_bind is not None else None,
             key=jax.random.key(cfg.seed + 1000 * outer),
         )
         stage_log(f"outer {outer}: finished guided partial diffusion")

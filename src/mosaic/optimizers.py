@@ -5,7 +5,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jaxtyping import Array, Float, Int, PyTree
+from jaxtyping import Array, Bool, Float, Int, PyTree
 from scipy.special import log_softmax, softmax
 
 from mosaic.common import LinearCombination, LossTerm
@@ -77,6 +77,22 @@ def batched_eval(
         v = jnp.nan_to_num(v, nan=1e6)
         g = jnp.nan_to_num(g - g.mean(axis=-1, keepdims=True))
         return v, aux, g
+
+    return jax.vmap(single)(xs, keys)
+
+
+@eqx.filter_jit
+def batched_value_eval(
+    loss: AbstractLoss,
+    xs: Float[Array, "B N K"],
+    keys: jax.Array,
+) -> tuple[Float[Array, "B"], PyTree]:
+    """Evaluate loss values for B sequences without materializing gradients."""
+    assert xs.ndim == 3, f"xs must be 3D [B, N, K], got {xs.ndim}D"
+
+    def single(x: Float[Array, "N K"], key: jax.Array):
+        v, aux = loss(x, key=key)
+        return jnp.nan_to_num(v, nan=1e6), aux
 
     return jax.vmap(single)(xs, keys)
 
@@ -476,6 +492,59 @@ def _topb_unseen_mutations(seq, g, seen, b):
     return np.stack(cands), np.asarray(deltas)
 
 
+def _topb_unseen_feasible_mutations(
+    seq, g, seen, b, parent, designable_mask, budget
+):
+    """Like `_topb_unseen_mutations` but enforces a hard edit-distance budget against `parent`.
+
+    A candidate is feasible iff hamming(candidate, parent) <= budget. Reverts toward parent
+    (Δedits=-1) and swaps within the already-edited set (Δedits=0) are always feasible;
+    only mutations that introduce a *new* deviation from parent count against the budget.
+    Mutations at non-designable positions are filtered out as well.
+
+    Returns None if no feasible unseen 1-hop neighbour exists.
+    """
+    N, K = g.shape
+    a0 = seq.astype(np.int64)
+    parent = np.asarray(parent, dtype=np.int64)
+    designable_mask = np.asarray(designable_mask, dtype=bool)
+    current_edits = int(((a0 != parent) & designable_mask).sum())
+    slack = int(budget) - current_edits  # how many more "new edits" we can afford
+
+    delta = g - g[np.arange(N), a0][:, None]
+    delta[np.arange(N), a0] = np.inf  # mask no-ops
+    # Forbid mutations at non-designable positions
+    delta[~designable_mask, :] = np.inf
+
+    order = np.argsort(delta.ravel(), kind="stable")
+
+    cands = []
+    deltas = []
+    for idx in order:
+        d = delta.ravel()[idx]
+        if not np.isfinite(d):
+            break
+        pos, aa = divmod(int(idx), K)
+        # Net change in edit count if we apply this single-position change
+        was_edit = int(a0[pos] != parent[pos])
+        will_be_edit = int(aa != parent[pos])
+        d_edits = will_be_edit - was_edit  # in {-1, 0, +1}
+        if d_edits > 0 and slack <= 0:
+            continue  # would push us over budget
+        cand = seq.copy()
+        cand[pos] = aa
+        if cand.tobytes() in seen:
+            continue
+        cands.append(cand)
+        deltas.append(float(d))
+        if len(cands) == b:
+            break
+
+    if not cands:
+        return None
+    return np.stack(cands), np.asarray(deltas)
+
+
 def batch_greedy_descent(
     loss: AbstractLoss,
     sequence: Int[Array, "N"],
@@ -564,113 +633,373 @@ def batch_greedy_descent(
     return best_seq, best_val
 
 
-def biohub_optimizer(
+def edit_budgeted_greedy_descent(
+    loss: AbstractLoss,
+    sequence: Int[Array, "N"],
     *,
-    loss_function,
-    logits: Float[Array, "B N 20"],
-    n_steps: int = 150,
-    learning_rate: float = 0.1,
-    temperature_min: float = 1e-2,
-    mask: Float[Array, "N 20"] | None = None,
-    key: jax.Array,
-    verbose: bool = False,
-    tail_loss_function=None,
-    tail_select_steps: int = 20,
-    beta: float = 0.0,
-    ranking_aux_name: str = "ranking_loss"
+    parent: Int[Array, "N"],
+    budget: int,
+    designable_mask: Bool[Array, "N"] | None = None,
+    batch_size: int = 16,
+    steps: int = 200,
+    alphabet_size: int = 20,
+    key: jax.Array | None = None,
 ):
-    """Standard Biohub ESMFold2 optimizer (Algorithm 11 in https://www.biorxiv.org/content/10.64898/2026.06.03.729735v1)
+    """Greedy hill-climb with a hard edit-distance budget against a reference sequence.
 
-    Returns `(best_designs, best_loss)` sorted best-first. `best_designs` is
-    argmax-ready only: improved tail iterates are stored as softmax
-    probabilities, so consume it via `best_designs.argmax(-1)`.
+    Each step proposes single-position mutations ranked by predicted Δloss, but filters
+    to only those that keep `hamming(candidate, parent) <= budget`. Reverts (Δedits=-1)
+    and swaps (Δedits=0) within the already-edited positions are always feasible; only
+    mutations that introduce a NEW deviation from parent consume budget.
+
+    Records a Pareto front {edit_count: (loss, sequence)} so the user can see the best
+    sequence at each edit count from 0..budget and pick a trade-off.
+
+    Args:
+        loss: composite mosaic loss; called as loss(one_hot_seq, key=...) -> (value, aux).
+        sequence: starting discrete sequence (e.g. argmax of guided-diffusion output).
+        parent: reference sequence; budget is enforced as hamming(_, parent) <= budget.
+        budget: maximum allowed edits from parent (e.g. 7).
+        designable_mask: positions allowed to change. If None, all positions are designable.
+        batch_size: number of candidate mutations evaluated per step.
+        steps: maximum step budget (loop usually terminates earlier when no improving
+            feasible mutation exists).
+        alphabet_size: token alphabet size (default 20).
+        key: jax random key (held fixed across all evals for deterministic comparison).
+
+    Returns:
+        best_seq: best feasible sequence found.
+        best_val: loss at best feasible sequence.
+        pareto: dict {edit_count: (loss, seq_array)} of best sequence at each edit count.
     """
-    assert 0 < tail_select_steps <= n_steps, (
-        "tail_select_steps must be in (0, n_steps]; otherwise no iterate is ever selected"
+    sequence = np.asarray(sequence, dtype=np.int32).copy()
+    parent = np.asarray(parent, dtype=np.int32).copy()
+    assert sequence.shape == parent.shape, "sequence and parent must have same shape"
+    assert sequence.ndim == 1, f"sequence must be 1D [N], got {sequence.ndim}D"
+
+    if designable_mask is None:
+        designable_mask = np.ones(sequence.shape, dtype=bool)
+    else:
+        designable_mask = np.asarray(designable_mask, dtype=bool).copy()
+
+    if key is None:
+        key = jax.random.key(np.random.randint(0, 10000))
+
+    B = max(1, int(batch_size))
+
+    def _hamming(s):
+        return int(((s != parent) & designable_mask).sum())
+
+    def _value_scores(cands: np.ndarray) -> np.ndarray:
+        """Score candidate sequences in fixed-size chunks to avoid recompiles."""
+        if len(cands) == 0:
+            return np.asarray([], dtype=np.float32)
+        chunks = []
+        for start in range(0, len(cands), B):
+            chunk = cands[start:start + B]
+            valid = len(chunk)
+            if valid < B:
+                pad = np.repeat(chunk[-1][None], B - valid, axis=0)
+                chunk = np.concatenate([chunk, pad], axis=0)
+            xs = jax.nn.one_hot(jnp.asarray(chunk), alphabet_size)
+            vals, _ = batched_value_eval(
+                loss, xs, jnp.broadcast_to(key, (xs.shape[0], *key.shape))
+            )
+            chunks.append(np.asarray(vals)[:valid])
+        return np.concatenate(chunks)
+
+    init_edits = _hamming(sequence)
+    if init_edits > budget:
+        # Starting sequence already violates the hard edit budget. Project it
+        # back by greedily choosing which diffusion edits to revert under the
+        # actual polish loss, instead of dropping arbitrary positions.
+        original_edits = init_edits
+        while _hamming(sequence) > budget:
+            edited_positions = np.where((sequence != parent) & designable_mask)[0]
+            candidates = []
+            for pos in edited_positions:
+                cand = sequence.copy()
+                cand[pos] = parent[pos]
+                candidates.append(cand)
+            candidates = np.stack(candidates)
+            vals = _value_scores(candidates)
+            sequence = candidates[int(np.argmin(vals))].copy()
+
+        init_edits = _hamming(sequence)
+        kept_positions = np.where((sequence != parent) & designable_mask)[0] + 1
+        print(
+            f"warn: starting sequence had {original_edits} edits > budget {budget}; "
+            f"loss-projected to {init_edits} edits before greedy descent. "
+            f"kept chain-order positions: {','.join(map(str, kept_positions))}"
+        )
+
+    # initial eval
+    x0 = jax.nn.one_hot(jnp.asarray(sequence[None]), alphabet_size)
+    vals, aux0, grads = batched_eval(
+        loss, x0, jnp.broadcast_to(key, (x0.shape[0], *key.shape))
     )
-    logits = jnp.array(logits)
+    v = float(np.asarray(vals)[0])
+    g = np.asarray(grads)[0]
+    aux = jax.tree.map(lambda a: a[0], aux0)
 
-    if mask is not None:
-        assert mask.ndim == 2
-        mask = jnp.array(mask)[None]
-        logits = jnp.where(mask > 0, logits, -1e9)
+    _print_iter("init", {"": aux, "edits": float(init_edits)}, v)
 
-    if tail_loss_function is None:
-        tail_loss_function = loss_function
+    best_seq = sequence.copy()
+    best_val = v
+    seen: set[bytes] = {sequence.tobytes()}
 
-    _warned_ranking = False
+    # Pareto front: best sequence at each edit count 0..budget
+    pareto: dict[int, tuple[float, np.ndarray]] = {init_edits: (v, sequence.copy())}
 
-    def get_ranking_values(values, aux):
-        nonlocal _warned_ranking
-        ranking_leaves = [leaf for (path, leaf) in jax.tree_util.tree_leaves_with_path(aux) if getattr(path[-1], "key", None) == ranking_aux_name]
-        if len(ranking_leaves) == 0:
-            if not _warned_ranking:
-                print(f"Warning: biohub_optimizer ranking by loss value, not {ranking_aux_name}")
-                _warned_ranking = True
-            return values
-        elif len(ranking_leaves) == 1:
-            return ranking_leaves[0]
-        else:
-            raise ValueError(f"biohub_optimizer found multiple leaves with key {ranking_aux_name}")
-
-
-    assert logits.ndim == 3, "biohub_optimizer is batched, `logits` must have shape [B, N, 20]"
-    B = logits.shape[0]
-
-    best_designs = np.asarray(logits).copy()
-    best_loss = np.full(B, np.inf)
-    v = np.zeros_like(logits)
-
-    for step in range(n_steps):
+    for it in range(steps):
         start_time = time.time()
-        t = (step + 1) / n_steps
-        temp = temperature_min + (1 - temperature_min) * 0.5 * (1 + np.cos(np.pi * t))
 
-        in_tail = step >= n_steps - tail_select_steps
-        lf = tail_loss_function if in_tail else loss_function
+        picked = _topb_unseen_feasible_mutations(
+            sequence, g, seen, B, parent, designable_mask, budget
+        )
+        if picked is None:
+            print(f"step {it}: feasible neighbourhood exhausted, stopping")
+            break
+        cands, _ = picked
+        m = cands.shape[0]
 
-        design = jax.nn.softmax(logits / temp, axis=-1)
-        values, aux, g_design = batched_eval(lf, design, jax.random.split(key, B))
-        key = jax.random.fold_in(key, 0)
+        xs = jax.nn.one_hot(jnp.asarray(cands), alphabet_size)
+        vals, auxs = batched_value_eval(
+            loss, xs, jnp.broadcast_to(key, (xs.shape[0], *key.shape))
+        )
+        vals_np = np.asarray(vals)
 
-        # best-of-tail
-        if in_tail:
-            # best loss according to ranking_loss aux _or_ the loss
-            ranking_values = get_ranking_values(values, aux)
-            improved = best_loss > ranking_values                      
-            design_np, vals_np = np.asarray(design), np.asarray(ranking_values)
-            best_designs[improved] = design_np[improved]
-            best_loss[improved] = vals_np[improved]
+        for c in cands:
+            seen.add(c.tobytes())
 
-        # chain-rule through softmax(logits / T): dL/dz = (design ⊙ g − design·(design·g)) / T
-        xg = (design * g_design).sum(-1, keepdims=True)
-        g_z = (design * (g_design - xg)) / temp
-        if mask is not None:
-            g_z = g_z * mask
+        # Update Pareto front with every feasible candidate's loss
+        for i in range(m):
+            cand_edits = _hamming(cands[i])
+            cand_v = float(vals_np[i])
+            existing = pareto.get(cand_edits)
+            if existing is None or cand_v < existing[0]:
+                pareto[cand_edits] = (cand_v, cands[i].copy())
 
-        # normalize per design to ‖·‖ = √(eff_L) (biohub normalized_gradient_tensor)
-        eff_L = (jnp.square(g_z).sum(-1) > 0).sum(-1)                        # [B]
-        gnorm = jnp.linalg.norm(g_z, axis=(-1, -2))                          # [B]
-        g_z = g_z / (gnorm[:, None, None] + 1e-7) * jnp.sqrt(eff_L)[:, None, None]
+        best_in_batch = int(np.argmin(vals_np[:m]))
+        v_best = float(vals_np[best_in_batch])
 
-        v = beta * v + (learning_rate * temp) * g_z
-
-        logits = logits - v
-
-        for i in range(B):
-            aux_i = jax.tree.map(lambda v: v[i], aux)
-            average_nnz = (
-                (design[i] > 0.01).sum(-1).mean()
+        if v_best < v:
+            sequence = cands[best_in_batch].copy()
+            v = v_best
+            aux = jax.tree.map(lambda a: a[best_in_batch], auxs)
+            x_current = jax.nn.one_hot(jnp.asarray(sequence[None]), alphabet_size)
+            _, _, grads = batched_eval(
+                loss,
+                x_current,
+                jnp.broadcast_to(key, (x_current.shape[0], *key.shape)),
             )
+            g = np.asarray(grads)[0]
+
+        if v < best_val:
+            best_val = v
+            best_seq = sequence.copy()
+
+        _print_iter(
+            it,
+            {"": aux, "edits": float(_hamming(sequence)), "time": time.time() - start_time},
+            v,
+        )
+
+    # Final invariant check
+    assert _hamming(best_seq) <= budget, (
+        f"internal error: best_seq has {_hamming(best_seq)} edits, exceeds budget {budget}"
+    )
+    return best_seq, best_val, pareto
+
+
+def edit_budgeted_gradient_mcmc(
+    loss: AbstractLoss,
+    sequence: Int[Array, "N"],
+    *,
+    parent: Int[Array, "N"],
+    budget: int,
+    designable_mask: Bool[Array, "N"] | None = None,
+    steps: int = 100,
+    batch_size: int = 3,
+    temp: float = 0.02,
+    proposal_temp: float = 0.01,
+    max_path_length: int = 2,
+    alphabet_size: int = 20,
+    key: jax.Array | None = None,
+):
+    """Budgeted, CDR-restricted gradient-assisted MCMC over discrete sequences.
+
+    The state is a hard sequence. Proposals are 1..`max_path_length` mutations
+    sampled from a gradient-biased proposal distribution, while rejecting any
+    path that leaves the designable mask or exceeds the edit budget relative to
+    `parent`. The Metropolis accept/reject step uses the actual loss value.
+
+    Returns:
+        best_seq: best accepted/evaluated feasible sequence found.
+        best_val: loss at best_seq.
+        pareto: dict {edit_count: (loss, seq_array)}.
+    """
+    sequence = np.asarray(sequence, dtype=np.int32).copy()
+    parent = np.asarray(parent, dtype=np.int32).copy()
+    assert sequence.shape == parent.shape, "sequence and parent must have same shape"
+    assert sequence.ndim == 1, f"sequence must be 1D [N], got {sequence.ndim}D"
+
+    if designable_mask is None:
+        designable_mask = np.ones(sequence.shape, dtype=bool)
+    else:
+        designable_mask = np.asarray(designable_mask, dtype=bool).copy()
+
+    if key is None:
+        key = jax.random.key(np.random.randint(0, 10000))
+    rng_seed = int(np.asarray(jax.random.randint(key, (), 0, 2**31 - 1)))
+    rng = np.random.default_rng(rng_seed)
+    max_path_length = max(1, int(max_path_length))
+    B = max(1, int(batch_size))
+
+    def _hamming(s):
+        return int(((s != parent) & designable_mask).sum())
+
+    def _eval(seq):
+        x = jax.nn.one_hot(jnp.asarray(seq[None]), alphabet_size)
+        vals, auxs, grads = batched_eval(
+            loss, x, jnp.broadcast_to(key, (x.shape[0], *key.shape))
+        )
+        return (
+            float(np.asarray(vals)[0]),
+            jax.tree.map(lambda a: a[0], auxs),
+            np.asarray(grads)[0],
+        )
+
+    def _value_scores(cands: np.ndarray) -> np.ndarray:
+        if len(cands) == 0:
+            return np.asarray([], dtype=np.float32)
+        chunks = []
+        for start in range(0, len(cands), B):
+            chunk = cands[start:start + B]
+            valid = len(chunk)
+            if valid < B:
+                pad = np.repeat(chunk[-1][None], B - valid, axis=0)
+                chunk = np.concatenate([chunk, pad], axis=0)
+            xs = jax.nn.one_hot(jnp.asarray(chunk), alphabet_size)
+            vals, _ = batched_value_eval(
+                loss, xs, jnp.broadcast_to(key, (xs.shape[0], *key.shape))
+            )
+            chunks.append(np.asarray(vals)[:valid])
+        return np.concatenate(chunks)
+
+    init_edits = _hamming(sequence)
+    if init_edits > budget:
+        original_edits = init_edits
+        while _hamming(sequence) > budget:
+            edited_positions = np.where((sequence != parent) & designable_mask)[0]
+            candidates = []
+            for pos in edited_positions:
+                cand = sequence.copy()
+                cand[pos] = parent[pos]
+                candidates.append(cand)
+            candidates = np.stack(candidates)
+            vals = _value_scores(candidates)
+            sequence = candidates[int(np.argmin(vals))].copy()
+        init_edits = _hamming(sequence)
+        kept_positions = np.where((sequence != parent) & designable_mask)[0] + 1
+        print(
+            f"warn: MCMC starting sequence had {original_edits} edits > budget {budget}; "
+            f"loss-projected to {init_edits} edits. "
+            f"kept chain-order positions: {','.join(map(str, kept_positions))}"
+        )
+
+    def _sample_one_mutation(seq, g):
+        N, K = g.shape
+        a0 = seq.astype(np.int64)
+        current_edits = _hamming(a0)
+        slack = int(budget) - current_edits
+
+        delta = g - g[np.arange(N), a0][:, None]
+        delta[np.arange(N), a0] = np.inf
+        delta[~designable_mask, :] = np.inf
+
+        for pos in range(N):
+            was_edit = int(a0[pos] != parent[pos])
+            for aa in range(K):
+                if not np.isfinite(delta[pos, aa]):
+                    continue
+                will_be_edit = int(aa != parent[pos])
+                if will_be_edit - was_edit > 0 and slack <= 0:
+                    delta[pos, aa] = np.inf
+
+        flat = delta.ravel()
+        valid = np.flatnonzero(np.isfinite(flat))
+        if len(valid) == 0:
+            return None
+        logits = -flat[valid] / max(float(proposal_temp), 1e-8)
+        probs = softmax(logits)
+        choice_i = int(rng.choice(len(valid), p=probs))
+        flat_idx = int(valid[choice_i])
+        pos, aa = divmod(flat_idx, K)
+        cand = seq.copy()
+        cand[pos] = aa
+        return cand, (pos, aa), float(np.log(probs[choice_i] + 1e-300))
+
+    v, aux, g = _eval(sequence)
+    _print_iter("mcmc init", {"": aux, "edits": float(init_edits)}, v)
+
+    best_seq = sequence.copy()
+    best_val = v
+    pareto: dict[int, tuple[float, np.ndarray]] = {init_edits: (v, sequence.copy())}
+    accepted = 0
+
+    for it in range(int(steps)):
+        start_time = time.time()
+        proposal = sequence.copy()
+        mutations = []
+        path_len = int(rng.integers(1, max_path_length + 1))
+
+        for _ in range(path_len):
+            sampled = _sample_one_mutation(proposal, g)
+            if sampled is None:
+                break
+            proposal, mutation, _ = sampled
+            mutations.append(mutation)
+
+        if not mutations or np.array_equal(proposal, sequence):
+            print(f"mcmc {it}: no feasible nontrivial proposal, stopping")
+            break
+
+        v_prop, aux_prop, g_prop = _eval(proposal)
+        prop_edits = _hamming(proposal)
+        existing = pareto.get(prop_edits)
+        if existing is None or v_prop < existing[0]:
+            pareto[prop_edits] = (v_prop, proposal.copy())
+
+        if temp <= 0:
+            log_accept = 0.0 if v_prop < v else -np.inf
+        else:
+            log_accept = min(0.0, (v - v_prop) / float(temp))
+        accept = np.log(rng.random() + 1e-300) < log_accept
+
+        if accept:
+            sequence = proposal.copy()
+            v, aux, g = v_prop, aux_prop, g_prop
+            accepted += 1
+
+        if v_prop < best_val:
+            best_val = v_prop
+            best_seq = proposal.copy()
+
+        if it == 0 or (it + 1) % 10 == 0 or accept:
             _print_iter(
-                f"{step}[{i}]",
-                {"loss": values[i], "time": time.time() - start_time, "": aux_i, "nnz": average_nnz, "temp": temp},
-                values[i],
-
+                f"mcmc {it}",
+                {
+                    "": aux,
+                    "proposal_loss": float(v_prop),
+                    "accepted": float(accepted),
+                    "edits": float(_hamming(sequence)),
+                    "time": time.time() - start_time,
+                },
+                v,
             )
-        if mask is not None:
-            logits = jnp.where(mask > 0, logits, -1e9)
 
-    order = np.argsort(best_loss)
-
-    return best_designs[order], best_loss[order]
+    assert _hamming(best_seq) <= budget, (
+        f"internal error: best_seq has {_hamming(best_seq)} edits, exceeds budget {budget}"
+    )
+    return best_seq, best_val, pareto

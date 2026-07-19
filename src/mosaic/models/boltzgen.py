@@ -32,7 +32,7 @@ from boltzgen.model.models.boltz import Boltz
 from boltzgen.model.modules.masker import BoltzMasker
 from boltzgen.task.predict.data_from_yaml import DataConfig, FromYamlDataModule
 from boltzgen.task.predict.writer import DesignWriter
-from jaxtyping import Array, Float, PyTree
+from jaxtyping import Array, Bool, Float, Int, PyTree
 
 from ..util import pairwise_distance
 
@@ -40,10 +40,12 @@ from ..util import pairwise_distance
 
 def load_boltzgen(checkpoint_dir=Path("~/.boltz/").expanduser(), model_diverse=True):
     checkpoints = ["boltzgen1_adherence.ckpt", "boltzgen1_diverse.ckpt"]
+    print(f"[load_boltzgen] checking checkpoints in {checkpoint_dir}", flush=True)
     if not all((checkpoint_dir / ckpt).exists() for ckpt in checkpoints):
-        print(f"Downloading Boltz folding checkpoints to {checkpoint_dir}")
+        print(f"[load_boltzgen] downloading Boltz checkpoints to {checkpoint_dir}", flush=True)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         for ckpt in checkpoints:
+            print(f"[load_boltzgen] downloading {ckpt}", flush=True)
             subprocess.run(
                 [
                     "wget",
@@ -53,6 +55,7 @@ def load_boltzgen(checkpoint_dir=Path("~/.boltz/").expanduser(), model_diverse=T
                 ],
             )
             # ugh, torch is trash
+            print(f"[load_boltzgen] cleaning checkpoint metadata for {ckpt}", flush=True)
             cpkt = torch.load(
                 checkpoint_dir / ckpt, map_location="cpu", weights_only=False
             )
@@ -60,6 +63,7 @@ def load_boltzgen(checkpoint_dir=Path("~/.boltz/").expanduser(), model_diverse=T
             del cpkt["validators"]
             torch.save(cpkt, checkpoint_dir / ckpt)
 
+        print("[load_boltzgen] downloading mols.zip", flush=True)
         subprocess.run(
             [
                 "wget",
@@ -69,16 +73,22 @@ def load_boltzgen(checkpoint_dir=Path("~/.boltz/").expanduser(), model_diverse=T
             ]
         )
 
+    checkpoint = checkpoint_dir / (checkpoints[0] if not model_diverse else checkpoints[1])
+    print(f"[load_boltzgen] loading torch checkpoint {checkpoint}", flush=True)
     torch_model = Boltz.load_from_checkpoint(
-        checkpoint_dir / (checkpoints[0] if not model_diverse else checkpoints[1]),
+        checkpoint,
         strict=True,
         map_location="cpu",
     ).eval()
     torch_model.structure_module.time_dilation = 2.667
 
+    print("[load_boltzgen] converting torch model to JAX", flush=True)
     model = joltzgen.from_torch(torch_model)
+    print("[load_boltzgen] moving model arrays to JAX device", flush=True)
     _model_params, _model_static = eqx.partition(model, eqx.is_inexact_array)
-    return eqx.combine(jax.device_put(_model_params), _model_static)
+    loaded = eqx.combine(jax.device_put(_model_params), _model_static)
+    print("[load_boltzgen] ready", flush=True)
+    return loaded
 
 
 def _generate_mmcif(
@@ -271,7 +281,24 @@ def load_features_and_structure_writer(
     yaml_string: str,
     moldir: Path = Path("~/.boltz/").expanduser() / "mols.zip",
     files: dict[str, Path] = {},
+    mask: bool = True,
+    mask_backbone: bool = False,
+    mask_disto: bool = True,
 ):
+    """Load BoltzGen features from a design YAML.
+
+    Args:
+        yaml_string: BoltzGen design specification YAML (see boltzgen/example/).
+        moldir: path to mols.zip for small-molecule support.
+        files: optional {filename: path} map to copy into the YAML's working directory
+            (use this to resolve `path: <name>.cif` references inside the YAML).
+        mask: whether to apply BoltzMasker to the features at all. Set False for
+            inverse-fold-style runs where the structure is fully specified.
+        mask_backbone: if True, also mask the backbone atoms of designed residues.
+            Default False matches partial-design / sequence-redesign use cases that
+            keep the parent backbone visible to the trunk.
+        mask_disto: whether to mask the distogram loss over designed residues.
+    """
     with TemporaryDirectory() as temp_dir:
         with open(f"{temp_dir}/yaml.yaml", "w") as yaml_file:
             yaml_file.write(yaml_string)
@@ -302,7 +329,9 @@ def load_features_and_structure_writer(
         features = next(iter(dl))
 
     features["structure_bonds"] = []
-    torch_masker = BoltzMasker(mask=True, mask_backbone=False, mask_disto=True)
+    torch_masker = BoltzMasker(
+        mask=mask, mask_backbone=mask_backbone, mask_disto=mask_disto
+    )
     features = torch_masker(features)
 
     # convert features to jax
@@ -494,4 +523,628 @@ class BoltzGenOutput(eqx.Module):
     def structure_coordinates(self):
         return self.sample
 
+
+def differentiable_inverse_fold(
+    mpnn,
+    coords: Float[Array, "N 4 3"],
+    *,
+    parent_sequence: Float[Array, "N 20"],
+    asym_id: Int[Array, "N"],
+    residue_idx: Int[Array, "N"],
+    designable_mask: Float[Array, "N"],
+    temperature: float = 0.1,
+    jacobi_iterations: int = 1,
+    key,
+) -> Float[Array, "N 20"]:
+    """Soft inverse-fold: given backbone coords, return a per-position softmax over AAs.
+
+    Gradient flows from the output soft sequence back to the input coords via
+    `mpnn.encode` (structural features) and through any Jacobi refinement steps
+    (which use a softmax instead of argmax). This is the differentiable bridge used
+    inside `guided_partial_diffusion` to pull sequence-space loss gradients into
+    coord-space.
+
+    The soft sequence is built only at `designable_mask` positions; non-designable
+    positions stay at `parent_sequence`. The MPNN decoder always sees the current
+    soft sequence as autoregressive context.
+
+    Args:
+        mpnn: a `ProteinMPNN` instance (e.g. ABMPNN for VHH design).
+        coords: backbone coords, shape (N, 4, 3) for [N, CA, C, O] atoms per residue.
+        parent_sequence: one-hot or soft sequence at non-designable positions; also
+            the initialization at designable positions before Jacobi refinement.
+            Shape (N, 20) in mosaic's TOKENS alphabet.
+        asym_id: chain id per token, shape (N,).
+        residue_idx: residue index within chain, shape (N,).
+        designable_mask: float (N,), 1.0 where positions are designable, 0.0 otherwise.
+        temperature: softmax temperature. Lower → sharper. Use ~0.1 for guidance,
+            ~0.001 for final decoding to a near-one-hot sequence.
+        jacobi_iterations: number of Jacobi refinement steps. 1 is enough for
+            guidance (gradient signal); higher for a higher-quality final decode.
+        key: jax random key (controls decoding order).
+
+    Returns:
+        Soft sequence of shape (N, 20) in mosaic's TOKENS alphabet, with
+        non-designable positions equal to `parent_sequence`.
+    """
+    from ..losses.protein_mpnn import boltz_to_mpnn_matrix
+
+    total_length = parent_sequence.shape[0]
+    mpnn_mask = jnp.ones(total_length, dtype=jnp.int32)
+
+    # Adjust residue idx so chains don't overlap; add 100-residue gap between chains
+    # (matches the convention in mosaic.losses.protein_mpnn.inverse_fold)
+    chain_lengths = (asym_id[:, None] == np.arange(16)[None]).sum(-2)
+    res_idx_adjustment = jnp.cumsum(chain_lengths, -1) - chain_lengths
+    adjusted_residue_idx = (
+        residue_idx
+        + (asym_id[:, None] == np.arange(16)[None]) @ res_idx_adjustment
+        + 100 * asym_id
+    )
+
+    # Encode structure (gradient flows from coords here)
+    h_V, h_E, E_idx = mpnn.encode(
+        X=coords,
+        mask=mpnn_mask,
+        residue_idx=adjusted_residue_idx,
+        chain_encoding_all=asym_id,
+        key=key,
+    )
+
+    # Decoding order: designable positions get +2.0 so they sort to the end
+    # (decoded last, with full structural and non-designable context)
+    decoding_order = (
+        jax.random.uniform(key, shape=(total_length,))
+        + 2.0 * designable_mask.astype(jnp.float32)
+    )
+
+    T = jnp.array(boltz_to_mpnn_matrix())  # (20, 21) boltz -> MPNN
+
+    def step(soft_seq, _):
+        sequence_mpnn = soft_seq @ T  # (N, 21)
+        log_probs_mpnn = mpnn.decode(
+            S=sequence_mpnn,
+            h_V=h_V,
+            h_E=h_E,
+            E_idx=E_idx,
+            mask=mpnn_mask,
+            decoding_order=decoding_order,
+        )[0]
+        # Convert back to boltz alphabet by selecting the 20 boltz columns from
+        # the 21-token MPNN logits.
+        logits_boltz = log_probs_mpnn @ T.T  # (N, 20)
+        new_soft = jax.nn.softmax(logits_boltz / temperature, axis=-1)
+        # Only update designable positions; framework / target stays at parent
+        new_soft = jnp.where(
+            designable_mask[:, None].astype(bool), new_soft, parent_sequence
+        )
+        return new_soft, None
+
+    soft_seq, _ = jax.lax.scan(step, parent_sequence, length=jacobi_iterations)
+    return soft_seq
+
+
+def _center(coords, atom_mask):
+    """Thin alias for joltzgen.center; matches batched [b m 3] / [b m] convention.
+
+    Imported lazily so this module loads even without joltzgen present (e.g.
+    during pure-Python syntax checks).
+    """
+    from joltzgen import center as _joltzgen_center
+    return _joltzgen_center(coords, atom_mask.astype(coords.dtype))
+
+
+# ---------------------------------------------------------------------------
+# Guidance controller primitives (Phase 1 of docs/guidance_implementation_todo.md)
+#
+# These implement the per-objective mask -> de-mean -> normalize -> PCGrad-style
+# conflict projection -> trust-region clip pipeline from
+# docs/guidance_design_notes.md section 5 / 10. All operate on batched
+# [B, M, 3] coordinate-shaped gradients and [B, M] atom masks.
+# ---------------------------------------------------------------------------
+
+
+def _mask_center_normalize(
+    g: Float[Array, "B M 3"],
+    atom_partial_mask: Float[Array, "B M"],
+    eps: float = 1e-8,
+) -> Float[Array, "B M 3"]:
+    """Mask to designable atoms, remove rigid-translation drift, RMS-normalize.
+
+    Three steps, each addressing a distinct failure mode identified in
+    docs/guidance_design_notes.md section 3:
+      1. mask: zero the gradient on frozen atoms, so guidance never touches
+         framework/target atoms even transiently.
+      2. de-mean: subtract the per-batch mean gradient vector over designable
+         atoms, removing the "just translate the whole loop" degenerate
+         direction (a rigid shift is nearly free for many losses to exploit
+         and carries little real structural information).
+      3. RMS-normalize: rescale to unit RMS magnitude over designable atoms,
+         so different objectives (which can differ in raw coordinate-space
+         gradient magnitude by orders of magnitude once pulled back through
+         the inverse-fold Jacobian) become comparable before merging.
+    """
+    mask = (atom_partial_mask > 0)[..., None]  # (B, M, 1)
+    g = jnp.where(mask, g, 0.0)
+
+    n_design = jnp.maximum(jnp.sum(atom_partial_mask, axis=-1, keepdims=True), 1.0)  # (B, 1)
+    mean = jnp.sum(g, axis=1) / n_design  # (B, 3)
+    g = jnp.where(mask, g - mean[:, None, :], 0.0)
+
+    sum_sq = jnp.sum(g * g, axis=(1, 2), keepdims=True)  # (B, 1, 1)
+    rms = jnp.sqrt(sum_sq / (n_design[..., None] * 3.0) + eps)
+    return g / rms
+
+
+def _compat_project(
+    g_aux: Float[Array, "B M 3"],
+    g_anchor: Float[Array, "B M 3"],
+    eps: float = 1e-8,
+) -> Float[Array, "B M 3"]:
+    """PCGrad-style asymmetric conflict projection.
+
+    If `g_aux` agrees with `g_anchor` (positive dot product), it passes
+    through unchanged. If it conflicts (negative dot product), the
+    conflicting component is removed. `g_anchor` itself is never modified —
+    this is the asymmetric variant from docs/guidance_design_notes.md
+    section 4.5: binding leads, auxiliary objectives only regularize.
+    """
+    dot = jnp.sum(g_aux * g_anchor, axis=(1, 2), keepdims=True)
+    anchor_sq = jnp.sum(g_anchor * g_anchor, axis=(1, 2), keepdims=True) + eps
+    conflict = jnp.minimum(0.0, dot) / anchor_sq
+    return g_aux - conflict * g_anchor
+
+
+def _clip_rms(
+    delta: Float[Array, "B M 3"],
+    tau: Float[Array, "..."],
+    atom_partial_mask: Float[Array, "B M"],
+    eps: float = 1e-8,
+) -> Float[Array, "B M 3"]:
+    """Trust-region clip: cap delta's RMS magnitude (over designable atoms) at tau.
+
+    This is the guardrail docs/guidance_design_notes.md section 4.6 calls "the
+    key missing guardrail" — bounds the worst-case per-step coordinate
+    displacement independent of how well-behaved the upstream normalization
+    and merge turned out to be.
+    """
+    mask = (atom_partial_mask > 0)[..., None]
+    n_design = jnp.maximum(jnp.sum(atom_partial_mask, axis=-1, keepdims=True), 1.0)
+    sum_sq = jnp.sum(jnp.where(mask, delta, 0.0) ** 2, axis=(1, 2), keepdims=True)
+    rms = jnp.sqrt(sum_sq / (n_design[..., None] * 3.0) + eps)
+    scale = jnp.minimum(1.0, tau / rms)
+    return delta * scale
+
+
+def default_lambda_schedule(t_hat, lam_max: float = 1.0):
+    """Default overall guidance-strength schedule: linear decay to 0 as t_hat -> 0.
+
+    First-pass default (docs/guidance_implementation_todo.md Phase 1: "pin
+    down actual functional forms"). `lambda ~ t_hat` is one of the "standard
+    EDM choices" already noted in this function's docstring history and
+    matches the qualitative requirement in guidance_design_notes.md section 9
+    ("late diffusion: sharply reduce coordinate guidance magnitude"). Tune
+    `lam_max` per target; treat the linear-in-sigma shape itself as a
+    starting point pending Phase 2 diagnostics, not a final answer.
+    """
+    return lam_max * t_hat
+
+
+def default_tau_schedule(t_hat, tau_max: float = 2.0, tau_min: float = 0.05):
+    """Default trust-radius schedule: proportional to the current noise level,
+    floored so the cap never collapses to exactly zero.
+
+    Moving no further than a fraction of the noise currently being injected
+    is a physically motivated default: at high sigma the model itself is
+    still exploring broadly, so a larger guided step is in proportion to what
+    the denoiser is already doing; at low sigma the structure should mostly
+    be settling, so the cap shrinks with it. `tau_min` prevents a hard stop
+    at the final step. First-pass default, same caveat as
+    `default_lambda_schedule` — tune against Phase 2 diagnostics.
+    """
+    return jnp.maximum(tau_max * t_hat, tau_min)
+
+
+def default_alpha_schedule(t_hat, alpha_max: float = 1.0):
+    """Default naturalness-objective weight: ramps up as t_hat -> 0.
+
+    Per guidance_design_notes.md section 9: naturalness should be weak early
+    (high sigma, still exploring structurally) and matter more as the
+    trajectory progresses. `alpha_max / (1 + t_hat)` increases monotonically
+    as t_hat decreases without needing the schedule's start/end sigma bounds
+    threaded in as extra arguments. First-pass default, tune against Phase 2
+    diagnostics.
+    """
+    return alpha_max / (1.0 + t_hat)
+
+
+def default_beta_schedule(t_hat, beta_max: float = 1.0):
+    """Default edit-locality-objective weight: same shape as
+    `default_alpha_schedule` (ramps up as t_hat -> 0), matching
+    guidance_design_notes.md section 9's "edit/locality penalty turns on"
+    guidance for mid-to-late diffusion. First-pass default, tune against
+    Phase 2 diagnostics.
+    """
+    return beta_max / (1.0 + t_hat)
+
+
+def guided_partial_diffusion(
+    *,
+    sampler: "Sampler",
+    structure_module,
+    initial_coords: Float[Array, "M 3"],
+    atom_partial_mask: Float[Array, "M"],
+    atom_mask: Float[Array, "M"],
+    num_sampling_steps: int,
+    start_sigma_frac: float,
+    step_scale: float,
+    noise_scale: float,
+    guidance_fn_bind=None,
+    guidance_fn_nat=None,
+    guidance_fn_edit=None,
+    guidance_alpha_fn=None,
+    guidance_beta_fn=None,
+    guidance_lambda_fn=None,
+    guidance_tau_fn=None,
+    sidechain_mask: Float[Array, "M"] | None = None,
+    sidechain_noise_multiplier: float = 1.0,
+    key=None,
+    return_diagnostics: bool = False,
+):
+    """Partial diffusion of BoltzGen, optionally with multi-objective classifier guidance.
+
+    With all `guidance_fn_*` left as `None` this runs vanilla partial
+    diffusion: schedule truncation + parent-anchored sampling, no auxiliary
+    signal. With `guidance_fn_bind` provided (the only required one of the
+    three — naturalness and edit-locality are optional regularizers), each
+    step pulls auxiliary-model gradients into the denoised coords via the
+    differentiable inverse-fold bridge (classifier-guided diffusion).
+
+    This is the Phase 1 controller rewrite from
+    docs/guidance_implementation_todo.md: rather than one merged scalar loss
+    differentiated once (the earlier, "too brutal" design analyzed in
+    docs/guidance_design_notes.md sections 2-3), three objectives are
+    evaluated and differentiated *separately* — `L_bind` (primary, e.g.
+    interface confidence), `L_nat` (naturalness prior), `L_edit`
+    (locality/edit-restraint prior) — each masked to the designable region,
+    de-meaned, and RMS-normalized before being merged. Binding is the anchor
+    direction: naturalness and edit gradients are only kept where they agree
+    with it (PCGrad-style conflict projection), never the reverse. The merged
+    result is trust-region clipped before being applied.
+
+    Why this lives in mosaic and not in joltzgen: partial diffusion is purely a
+    sampling-time orchestration on top of the unchanged denoiser network. The
+    mechanics here mirror the user's torch-side boltzgen fork at `diffusion.py`,
+    but importantly, joltzgen itself needs no custom modification — it only needs
+    to expose `preconditioned_network_forward`, which is the standard upstream API.
+
+    Per-step recipe (mirrors `boltzgen/src/.../diffusion.py:580-728`):
+
+      1. Truncate the schedule to start at `start_sigma_frac` (so we begin from a
+         partially-noised initial structure rather than pure noise).
+      2. Initialize `atom_coords = where(partial_mask, parent + init_sigma*eps, parent)`.
+      3. For each step k:
+         a. Re-center both `atom_coords` and `initial_coords_rep` on the protein COM
+            (keeps them in the same frame for the re-anchor step).
+         b. EDM stochastic-churn step: `t_hat = sigma_{k-1} * (1+gamma)`, inject
+            additional noise scaled by `(t_hat^2 - sigma_{k-1}^2)`.
+         c. Call the BoltzGen denoiser under `jax.lax.stop_gradient` to get
+            `x0_hat = D(noisy, t_hat)`. We deliberately do NOT backprop through D —
+            the guidance gradient flows only through the small IF + aux-loss subgraph.
+            (This is the boundary docs/guidance_design_notes.md section 6 flags as
+            the still-open prior-compatibility question: nothing here yet ties the
+            guidance direction back to what D itself would predict.)
+         d. Compute one gradient per objective: `g_k = ∇_{x0} L_k(x0_hat)` for
+            k in {bind, nat, edit}. Mask, de-mean, RMS-normalize each
+            independently (`_mask_center_normalize`).
+         e. Merge asymmetrically, binding as anchor:
+            `g_total = g_bind + alpha(t_hat)*compat(g_nat, g_bind) + beta(t_hat)*compat(g_edit, g_bind)`.
+         f. Trust-region clip: `delta = clip_rms(lambda(t_hat) * g_total, tau(t_hat))`.
+         g. Apply: `x0_guided = x0_hat - delta`.
+         h. Euler step in EDM parameterization:
+            `x_next = noisy + step_scale * (sigma_k - t_hat) * (noisy - x0_guided)/t_hat`.
+         i. Re-anchor frozen atoms: `where(partial_mask, x_next, initial_coords_rep)`.
+
+    INCLUDED:
+      - `weighted_rigid_align` between noisy and denoised, gated on
+        `structure_module.alignment_reverse_diff`. The BoltzGen-1 release
+        checkpoints set this to True.
+
+    SKIPPED (low impact for guidance — port back if needed):
+      - Coordinate augmentation per step (`diffusion.py:661-674`). Both inputs are
+        rotated identically and the IF model is SE(3) invariant, so this is a
+        Monte Carlo de-biasing trick that does not affect the search dynamics.
+      - Heun second-derivative correction. The torch reference uses Euler only,
+        so we do too.
+
+    Args:
+        sampler: a `Sampler` built via `Sampler.from_features(...)`. Provides the
+            cached trunk embeddings and diffusion conditioning so we don't re-run
+            the trunk per sample.
+        structure_module: `boltzgen.structure_module` (the JAX `AtomDiffusion`).
+            Must expose `preconditioned_network_forward(x, sigma, ...)` and
+            `sample_schedule_dilated(num_sampling_steps)` separately. If joltzgen
+            does not expose `preconditioned_network_forward` directly, port the
+            method from `boltzgen/src/boltzgen/model/modules/diffusion.py`.
+        initial_coords: parent atom coords, shape (M, 3). Frozen atoms stay here.
+        atom_partial_mask: float (M,), 1.0 at designable atoms, 0.0 elsewhere.
+            Construct from a token-level mask via `atom_to_token @ token_mask`.
+        atom_mask: float (M,), 1.0 at real atoms (not pad).
+        num_sampling_steps: number of full-schedule steps. After truncation by
+            `start_sigma_frac`, the actual loop length is shorter.
+        start_sigma_frac: in (0, 1]. 1.0 = full diffusion from pure noise; smaller
+            = start later in the schedule (less noise, more local refinement).
+            Typical: 0.3-0.5 for CDR-scale local edits.
+        step_scale, noise_scale: EDM step / noise scale (scalars). Match the
+            BoltzGen training defaults: ~2.0 and ~0.88 respectively.
+        guidance_fn_bind: callable `(x0: Float[B,M,3]) -> scalar`, the primary
+            (anchor) objective — e.g. interface-confidence surrogate. If
+            `None`, guidance is a no-op regardless of the other two
+            `guidance_fn_*` args (there is no anchor to merge against).
+        guidance_fn_nat: optional callable, same signature, naturalness prior.
+            Only contributes if `guidance_fn_bind` is also provided.
+        guidance_fn_edit: optional callable, same signature, locality/edit
+            restraint prior. Only contributes if `guidance_fn_bind` is also
+            provided.
+        guidance_alpha_fn: callable `(t_hat) -> scalar`, naturalness weight in
+            the merge. Defaults to `default_alpha_schedule` if not given and
+            `guidance_fn_nat` is provided.
+        guidance_beta_fn: callable `(t_hat) -> scalar`, edit-restraint weight
+            in the merge. Defaults to `default_beta_schedule` if not given and
+            `guidance_fn_edit` is provided.
+        guidance_lambda_fn: callable `(t_hat) -> scalar`, overall guidance
+            strength. Defaults to `default_lambda_schedule` if not given.
+        guidance_tau_fn: callable `(t_hat) -> scalar`, trust-radius cap on the
+            RMS coordinate displacement per step. Defaults to
+            `default_tau_schedule` if not given.
+        sidechain_mask: optional float (M,), 1.0 at sidechain atoms whose noise
+            should be amplified by `sidechain_noise_multiplier`. Useful when you
+            trust the parent backbone but want to fully scramble CDR sidechains.
+        sidechain_noise_multiplier: amplifier on sidechain init noise (1.0 = same).
+        key: jax random key.
+        return_diagnostics: if True, `step_body`'s per-step scan output
+            switches from `None` to a dict of per-step arrays (stacked over
+            the trajectory by `jax.lax.scan`) intended for
+            docs/guidance_implementation_todo.md Phase 2 logging:
+              - "unguided_direction": the actual `(atom_coords_noisy - x0_hat)
+                / t_hat` reverse-update direction the sampler would have used
+                with no guidance at all (computed from the same
+                `atom_coords_noisy` — post-churn, post optional rigid
+                realignment — that the real step uses, not a hand-derived
+                shorthand).
+              - "guided_direction": the same quantity but with `x0_guided`.
+              - "g_bind", "g_nat", "g_edit": the masked/de-meaned/normalized
+                per-objective gradients (zeros where the corresponding
+                `guidance_fn_*` was not provided), for the pairwise
+                objective-vs-objective conflict logging Phase 2 also calls for.
+            `False` by default: this branch is resolved at trace time (a plain
+            Python bool, not a JAX value), so when unused it costs nothing —
+            none of the diagnostic computation is even added to the traced
+            graph.
+
+    Returns:
+        Final atom coords, shape (M, 3), if `return_diagnostics=False`.
+        `(final_coords, diagnostics)` if `return_diagnostics=True`, where
+        `diagnostics` is a dict of arrays each with a leading `n_steps` axis.
+    """
+    if key is None:
+        key = jax.random.key(np.random.randint(0, 1_000_000))
+
+    # ---- Shape normalization (must come BEFORE init code) ------------------
+    # joltzgen expects batched shapes [b, m, 3] / [b, m]. The driver typically
+    # passes feature arrays already with a leading batch dim of 1; if they're
+    # passed unbatched we add one and remember to squeeze back at the end.
+    unbatched_input = (initial_coords.ndim == 2)
+    if unbatched_input:
+        initial_coords = initial_coords[None]                # (1, M, 3)
+        atom_partial_mask = atom_partial_mask[None]          # (1, M)
+        atom_mask = atom_mask[None]                          # (1, M)
+        if sidechain_mask is not None:
+            sidechain_mask = sidechain_mask[None]
+    # -------------------------------------------------------------------------
+
+    # 1. Build truncated schedule (mirrors diffusion.py:586-595)
+    full_sigmas = structure_module.sample_schedule_dilated(num_sampling_steps)
+    start_idx = int((1.0 - start_sigma_frac) * (len(full_sigmas) - 1))
+    sigmas = full_sigmas[start_idx:]
+
+    # gamma schedule: gamma_0 if sigma > gamma_min else 0 (diffusion.py:596)
+    gamma_0 = structure_module.gamma_0
+    gamma_min = structure_module.gamma_min
+    gammas = jnp.where(sigmas > gamma_min, gamma_0, 0.0)
+
+    # 2. Initialize coords: parent + init_sigma noise on designable atoms only.
+    # Shapes after batching: initial_coords (1, M, 3), partial mask (1, M).
+    # `[..., None]` adds a trailing axis (broadcasts with the trailing 3 of coords).
+    init_sigma = sigmas[0]
+    key, sub = jax.random.split(key)
+    noise = jax.random.normal(sub, initial_coords.shape)
+    if sidechain_mask is not None and sidechain_noise_multiplier != 1.0:
+        sc_sigma = sidechain_noise_multiplier * init_sigma
+        atom_coords = jnp.where(
+            ((sidechain_mask > 0) & (atom_partial_mask > 0))[..., None],
+            initial_coords + sc_sigma * noise,
+            jnp.where(
+                (atom_partial_mask > 0)[..., None],
+                initial_coords + init_sigma * noise,
+                initial_coords,
+            ),
+        )
+    else:
+        atom_coords = jnp.where(
+            (atom_partial_mask > 0)[..., None],
+            initial_coords + init_sigma * noise,
+            initial_coords,
+        )
+
+    # Build the guidance subgraph only if we have a primary (binding) guidance
+    # function. Resolved at trace time (plain Python None-checks, not JAX
+    # values), so JIT sees a single static path per call — no guidance
+    # machinery is even traced when guidance_fn_bind is None.
+    grad_bind = jax.grad(guidance_fn_bind) if guidance_fn_bind is not None else None
+    grad_nat = jax.grad(guidance_fn_nat) if guidance_fn_nat is not None else None
+    grad_edit = jax.grad(guidance_fn_edit) if guidance_fn_edit is not None else None
+
+    lambda_fn = guidance_lambda_fn if guidance_lambda_fn is not None else default_lambda_schedule
+    tau_fn = guidance_tau_fn if guidance_tau_fn is not None else default_tau_schedule
+    alpha_fn = guidance_alpha_fn if guidance_alpha_fn is not None else default_alpha_schedule
+    beta_fn = guidance_beta_fn if guidance_beta_fn is not None else default_beta_schedule
+
+    # network_condition_kwargs MUST match what joltzgen.AtomDiffusion.sample
+    # passes through to preconditioned_network_forward — i.e. everything except
+    # `atom_mask` and the explicit sample-loop kwargs. Verified against
+    # joltzgen 0.1.0 sample() signature.
+    diffusion_conditioning = {
+        "q": sampler.q,
+        "c": sampler.c,
+        "to_keys": sampler.to_keys,
+        "atom_enc_bias": sampler.atom_enc_bias,
+        "atom_dec_bias": sampler.atom_dec_bias,
+        "token_trans_bias": sampler.token_trans_bias,
+    }
+    network_condition_kwargs = dict(
+        s_trunk=sampler.trunk_s,
+        s_inputs=sampler.s_inputs,
+        feats=sampler.feats,
+        diffusion_conditioning=diffusion_conditioning,
+        multiplicity=1,
+    )
+
+    def step_body(carry, idx):
+        atom_coords, init_coords_rep, key = carry
+        sigma_tm = sigmas[idx]
+        sigma_t = sigmas[idx + 1]
+        gamma = gammas[idx + 1]
+
+        t_hat = sigma_tm * (1.0 + gamma)
+        noise_var = noise_scale**2 * (t_hat**2 - sigma_tm**2)
+
+        # Re-center both (diffusion.py:656-659)
+        atom_coords = _center(atom_coords, atom_mask)
+        init_coords_rep = _center(init_coords_rep, atom_mask)
+
+        # EDM churn noise (diffusion.py:676-677). Matches joltzgen's
+        # `noise_scale * sqrt(noise_var)` which expands to
+        # `noise_scale^2 * sqrt(t_hat^2 - sigma^2)`.
+        key, sub = jax.random.split(key)
+        eps = (
+            noise_scale
+            * jnp.sqrt(jnp.maximum(noise_var, 0.0))
+            * jax.random.normal(sub, atom_coords.shape)
+        )
+        atom_coords_noisy = atom_coords + eps
+
+        # Frozen denoiser call. stop_gradient ensures we do NOT backprop through
+        # the BoltzGen network — guidance gradients flow only through the much
+        # smaller IF + aux-loss subgraph below.
+        # joltzgen 0.1.0 signature:
+        #   preconditioned_network_forward(noised_coords, sigma,
+        #                                  network_condition_kwargs: dict,
+        #                                  *, key) -> denoised_coords  [b m 3]
+        key, sub = jax.random.split(key)
+        x0_hat = structure_module.preconditioned_network_forward(
+            atom_coords_noisy,
+            t_hat,
+            network_condition_kwargs=network_condition_kwargs,
+            key=sub,
+        )
+        x0_hat = jax.lax.stop_gradient(x0_hat)
+
+        # Optional rigid alignment of noisy onto denoised (matches joltzgen.sample
+        # when alignment_reverse_diff=True; the BoltzGen-1 release ckpts have
+        # this set to True). The denoiser is SE(3) equivariant but doesn't pin a
+        # global frame, so without this the per-step (noisy - x0_hat)/t_hat term
+        # picks up a rigid-body component that compounds across steps. Aligns
+        # `atom_coords_noisy` to `x0_hat` (NOT to x0_guided) so the Euler step
+        # operates in a frame defined purely by the model's prediction.
+        if structure_module.alignment_reverse_diff:
+            from joltzgen import weighted_rigid_align
+            atom_coords_noisy = weighted_rigid_align(
+                atom_coords_noisy, x0_hat, atom_mask, atom_mask,
+            )
+
+        # The reverse-update direction the sampler would use with NO guidance
+        # at all, computed from the same atom_coords_noisy the real step uses
+        # (post-churn, post optional rigid realignment above) — not a
+        # hand-derived shorthand. This is the quantity
+        # docs/guidance_implementation_todo.md Phase 1 calls out to expose
+        # for Phase 2's prior-compatibility diagnostics.
+        unguided_direction = (atom_coords_noisy - x0_hat) / t_hat
+
+        # === GUIDANCE INJECTION (Phase 1 controller; no-op when guidance_fn_bind is None) ===
+        zeros_like_g = jnp.zeros_like(x0_hat)
+        if grad_bind is not None:
+            g_bind = _mask_center_normalize(grad_bind(x0_hat), atom_partial_mask)
+            g_total = g_bind
+
+            if grad_nat is not None:
+                g_nat = _mask_center_normalize(grad_nat(x0_hat), atom_partial_mask)
+                g_total = g_total + alpha_fn(t_hat) * _compat_project(g_nat, g_bind)
+            else:
+                g_nat = zeros_like_g
+
+            if grad_edit is not None:
+                g_edit = _mask_center_normalize(grad_edit(x0_hat), atom_partial_mask)
+                g_total = g_total + beta_fn(t_hat) * _compat_project(g_edit, g_bind)
+            else:
+                g_edit = zeros_like_g
+
+            delta = lambda_fn(t_hat) * g_total
+            delta = _clip_rms(delta, tau_fn(t_hat), atom_partial_mask)
+            x0_guided = x0_hat - delta
+        else:
+            g_bind = zeros_like_g
+            g_nat = zeros_like_g
+            g_edit = zeros_like_g
+            x0_guided = x0_hat
+        # ===========================
+
+        # Euler step in EDM parameterization (diffusion.py:702-705)
+        denoised_over_sigma = (atom_coords_noisy - x0_guided) / t_hat
+        atom_coords_next = (
+            atom_coords_noisy + step_scale * (sigma_t - t_hat) * denoised_over_sigma
+        )
+
+        # Re-anchor frozen atoms (diffusion.py:707-713)
+        atom_coords_next = jnp.where(
+            (atom_partial_mask > 0)[..., None], atom_coords_next, init_coords_rep
+        )
+
+        if return_diagnostics:
+            diagnostics = {
+                "unguided_direction": unguided_direction,
+                "guided_direction": denoised_over_sigma,
+                "g_bind": g_bind,
+                "g_nat": g_nat,
+                "g_edit": g_edit,
+            }
+        else:
+            diagnostics = None
+        return (atom_coords_next, init_coords_rep, key), diagnostics
+
+    n_steps = len(sigmas) - 1
+    (atom_coords_final, _, _), diagnostics = jax.lax.scan(
+        step_body, (atom_coords, initial_coords, key), jnp.arange(n_steps)
+    )
+    if unbatched_input:
+        atom_coords_final = atom_coords_final[0]
+    if return_diagnostics:
+        return atom_coords_final, diagnostics
+    return atom_coords_final
+
+
+def build_atom_partial_mask(
+    features: dict,
+    designable_token_mask: Bool[Array, "N"],
+) -> Float[Array, "M"]:
+    """Convert a token-level designable mask to atom-level via the feature's atom_to_token.
+
+    Mirrors the torch sampler's mask conversion at `diffusion.py:565-574`.
+    Returns a float array (1.0 at designable atoms, 0.0 elsewhere) for use as
+    `atom_partial_mask` in `guided_partial_diffusion`.
+    """
+    atom_to_token = features["atom_to_token"]  # (B, M, N) or (M, N)
+    if atom_to_token.ndim == 3:
+        atom_to_token = atom_to_token[0]
+    return (atom_to_token.astype(jnp.float32) @ designable_token_mask.astype(jnp.float32))
 

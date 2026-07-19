@@ -216,7 +216,108 @@ This is the key guardrail missing from the current implementation.
 
 ---
 
-## 6. Which losses should be used
+## 6. Prior compatibility with the BoltzGen model
+
+The controller must do more than keep the guidance step small. It must also
+avoid pushing the sampler away from the structural patterns learned by the
+pretrained BoltzGen denoiser.
+
+This point is important enough to state explicitly:
+
+> a bounded external gradient is still dangerous if it points consistently away
+> from the model's learned structural prior.
+
+So "trust radius" and "guidance decay" are necessary but not sufficient.
+They control **magnitude**. They do not guarantee **prior compatibility of the
+direction**.
+
+### 6.1 What this means in practice
+
+The current notes already propose:
+
+- masking
+- de-meaning
+- per-objective normalization
+- conflict-aware merge
+- trust-region clipping
+- sigma-dependent decay
+
+Those controls are still useful, but they only answer:
+
+- how much should the external objective move the sample?
+
+They do **not** fully answer:
+
+- is the direction of that move still consistent with what BoltzGen itself has
+  learned as a plausible denoising trajectory?
+
+### 6.2 Why this matters
+
+If the guidance term is too disconnected from the learned BoltzGen prior, then
+the system stops behaving like a guided generative model and starts behaving
+like an unstable coordinate-space optimizer.
+
+That creates exactly the failure mode we want to avoid:
+
+- the model is no longer refining plausible samples
+- it is being dragged toward an external objective that may exploit local
+  artifacts of the bridge or the proxy loss
+- the resulting sample may score well locally but decode or refold badly
+
+### 6.3 Design principle
+
+The controller should therefore be viewed as three coupled parts:
+
+```text
+external objective
++ prior-compatibility guard
++ step-size control
+```
+
+not just:
+
+```text
+external objective
++ step-size control
+```
+
+### 6.4 What is still unresolved
+
+This document does **not** yet specify a final prior-compatibility mechanism.
+That is a real remaining design question.
+
+Reasonable candidate mechanisms include:
+
+1. **Denoiser-consistency penalty**
+   - penalize updates that move too far from a denoiser-consistent direction
+
+2. **Forward-prediction / self-consistency loss**
+   - shape the external objective through a loss tied back to the pretrained
+     denoiser's own prediction structure
+
+3. **Projection against a model-prior direction**
+   - allow only the component of the external guidance that is compatible with
+     the denoiser's own local geometry preference
+
+4. **Prior-residual diagnostics**
+   - even before a full mechanism is implemented, log a measure of how strongly
+     the external guidance is fighting the model prior
+
+### 6.5 Current status
+
+At present, the design should be read as:
+
+- the proposed controller fixes scale imbalance, objective conflict, and
+  over-aggressive late-step motion
+- it does **not yet** fully solve the stronger problem of explicitly tying the
+  guidance direction back to the learned BoltzGen prior
+
+That omission should be treated as deliberate and unresolved, not as something
+already handled by trust-radius clipping alone.
+
+---
+
+## 7. Which losses should be used
 
 ### 5.1 Primary guidance during diffusion
 
@@ -257,7 +358,7 @@ we have a stable smooth surrogate for it.
 
 ---
 
-## 7. Two different time axes
+## 8. Two different time axes
 
 This redesign uses two different schedules. They should not be conflated.
 
@@ -296,7 +397,7 @@ The clean rule is:
 
 ---
 
-## 8. Noise-dependent schedule
+## 9. Noise-dependent schedule
 
 The guidance should change over the diffusion trajectory.
 
@@ -328,7 +429,7 @@ This is where a trust radius is most important.
 
 ---
 
-## 9. Proposed algorithm
+## 10. Proposed algorithm
 
 ```text
 Input:
@@ -384,7 +485,7 @@ Step 10: use x0_guided in the EDM reverse update
 
 ---
 
-## 10. Practical recommendation for Mosaic
+## 11. Practical recommendation for Mosaic
 
 For the next implementation pass, the most useful changes are:
 
@@ -414,7 +515,7 @@ changing the whole pipeline.
 
 ---
 
-## 11. Implementation scope
+## 12. Implementation scope
 
 This is a real rewrite of the guidance injection block, not a small
 hyperparameter patch.
@@ -433,7 +534,7 @@ So this should be sized as a real implementation phase inside
 
 ---
 
-## 12. Relationship to prior work
+## 13. Relationship to prior work
 
 The proposed controller is closest in spirit to:
 
