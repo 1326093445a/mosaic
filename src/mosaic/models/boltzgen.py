@@ -716,6 +716,18 @@ def _clip_rms(
     return delta * scale
 
 
+def _euler_step_delta(direction, step_scale: float, sigma_t, t_hat):
+    """Scale a raw `(atom_coords_noisy - x0) / t_hat` direction by the same
+    `step_scale * (sigma_t - t_hat)` factor the EDM Euler update applies, so
+    the result is the actual physical per-step coordinate displacement (not
+    just a scale-invariant direction). Used for both the unguided and guided
+    diagnostics in `guided_partial_diffusion` — see docs/guidance_implementation_todo.md
+    Phase 1/Phase 2 on why the raw direction alone is insufficient for a
+    norm-ratio diagnostic.
+    """
+    return step_scale * (sigma_t - t_hat) * direction
+
+
 def default_lambda_schedule(t_hat, lam_max: float = 1.0):
     """Default overall guidance-strength schedule: linear decay to 0 as t_hat -> 0.
 
@@ -913,6 +925,14 @@ def guided_partial_diffusion(
                 realignment — that the real step uses, not a hand-derived
                 shorthand).
               - "guided_direction": the same quantity but with `x0_guided`.
+              - "unguided_direction"/"guided_direction" are raw derivatives,
+                scale-invariant and valid for cosine-similarity diagnostics,
+                but NOT comparable to actual per-step coordinate motion.
+              - "unguided_step_delta", "guided_step_delta": the above two
+                directions scaled by the same `step_scale * (sigma_t - t_hat)`
+                factor the real Euler update applies, i.e. the actual physical
+                displacement each would produce. Use these (not the raw
+                directions) for the norm-ratio diagnostic Phase 2 calls for.
               - "g_bind", "g_nat", "g_edit": the masked/de-meaned/normalized
                 per-objective gradients (zeros where the corresponding
                 `guidance_fn_*` was not provided), for the pairwise
@@ -1101,9 +1121,8 @@ def guided_partial_diffusion(
 
         # Euler step in EDM parameterization (diffusion.py:702-705)
         denoised_over_sigma = (atom_coords_noisy - x0_guided) / t_hat
-        atom_coords_next = (
-            atom_coords_noisy + step_scale * (sigma_t - t_hat) * denoised_over_sigma
-        )
+        guided_step_delta = _euler_step_delta(denoised_over_sigma, step_scale, sigma_t, t_hat)
+        atom_coords_next = atom_coords_noisy + guided_step_delta
 
         # Re-anchor frozen atoms (diffusion.py:707-713)
         atom_coords_next = jnp.where(
@@ -1111,9 +1130,20 @@ def guided_partial_diffusion(
         )
 
         if return_diagnostics:
+            # unguided_direction/guided_direction are the raw (atom_coords_noisy
+            # - x0)/t_hat derivatives -- valid for cosine comparisons (scale
+            # invariant) but NOT for the physical displacement norm ratio that
+            # docs/guidance_implementation_todo.md's Phase 2 diagnostics call
+            # for. *_step_delta below apply the same step_scale * (sigma_t -
+            # t_hat) factor the real Euler update uses, so their norms are
+            # directly comparable to the actual per-step coordinate motion.
             diagnostics = {
                 "unguided_direction": unguided_direction,
                 "guided_direction": denoised_over_sigma,
+                "unguided_step_delta": _euler_step_delta(
+                    unguided_direction, step_scale, sigma_t, t_hat
+                ),
+                "guided_step_delta": guided_step_delta,
                 "g_bind": g_bind,
                 "g_nat": g_nat,
                 "g_edit": g_edit,

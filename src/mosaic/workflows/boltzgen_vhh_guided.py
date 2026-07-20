@@ -810,11 +810,13 @@ def _append_option(cmd: list[str], flag: str, value):
 
 
 def uses_boltz2_guidance(cfg: VHHDesignConfig) -> bool:
+    # weight_boltz2_ipsae is deliberately excluded: ipSAE is post-refold-only
+    # (see build_boltz2_guidance_loss), so it never triggers in-loop Boltz2
+    # guidance on its own.
     return (
         cfg.weight_boltz2_ptm_energy > 0
         or cfg.weight_boltz2_interface_pae > 0
         or cfg.weight_boltz2_iptm > 0
-        or cfg.weight_boltz2_ipsae > 0
     )
 
 
@@ -1192,7 +1194,6 @@ def build_boltz2_guidance_loss(
     from mosaic.losses.structure_prediction import (
         BinderTargetPAE,
         IPTMLoss,
-        IPSAE_min,
         TargetBinderPAE,
         pTMEnergy,
     )
@@ -1235,8 +1236,16 @@ def build_boltz2_guidance_loss(
     if cfg.weight_boltz2_iptm > 0:
         loss_terms.append(cfg.weight_boltz2_iptm * IPTMLoss())
     if cfg.weight_boltz2_ipsae > 0:
-        loss_terms.append(
-            cfg.weight_boltz2_ipsae * IPSAE_min(pae_cutoff=cfg.ipsae_pae_cutoff)
+        # ipSAE's PAE-cutoff masking makes it a discontinuous, hard-thresholded
+        # objective -- unsuitable as a step-wise in-loop gradient target (see
+        # docs/guidance_design_notes.md / guidance_search_summary.md, both of
+        # which independently conclude ipSAE must stay post-refold only).
+        # Use it via --skip-refold=false ranking instead of in-loop guidance.
+        raise ValueError(
+            "--weight-boltz2-ipsae is not supported for in-loop guidance; "
+            "ipSAE is a post-refold-only ranking metric. Set "
+            "--weight-boltz2-ipsae 0 and use ipsae_pae_cutoff-based refold "
+            "ranking (--skip-refold false) instead."
         )
     if not loss_terms:
         raise ValueError("Boltz2 guidance requested without positive loss weights")
@@ -1247,8 +1256,6 @@ def build_boltz2_guidance_loss(
         f"(pTMEnergy={cfg.weight_boltz2_ptm_energy}, "
         f"interface_PAE={cfg.weight_boltz2_interface_pae}, "
         f"ipTM={cfg.weight_boltz2_iptm}, "
-        f"ipSAE={cfg.weight_boltz2_ipsae}, "
-        f"ipSAE_pae_cutoff={cfg.ipsae_pae_cutoff}, "
         f"recycle={cfg.boltz2_guidance_recycling_steps}, "
         f"sample_steps={cfg.boltz2_guidance_sampling_steps})"
     )
@@ -1414,6 +1421,19 @@ def run(cfg: VHHDesignConfig):
         raise ValueError("--boltzgen-if-guidance-temperature must be > 0")
     if cfg.weight_boltzgen_if_prior < 0:
         raise ValueError("--weight-boltzgen-if-prior must be >= 0")
+    if cfg.weight_boltz2_ipsae > 0:
+        # Validated unconditionally here, not inside build_boltz2_guidance_loss:
+        # uses_boltz2_guidance() deliberately excludes weight_boltz2_ipsae (see
+        # its docstring), so if ipSAE were the *only* positive Boltz2 weight,
+        # build_boltz2_guidance_loss would never be called and its ValueError
+        # guard would never fire -- ipSAE would be silently ignored instead of
+        # rejected. Checking here catches that case too.
+        raise ValueError(
+            "--weight-boltz2-ipsae is not supported for in-loop guidance; "
+            "ipSAE is a post-refold-only ranking metric. Set "
+            "--weight-boltz2-ipsae 0 and use ipsae_pae_cutoff-based refold "
+            "ranking (--skip-refold false) instead."
+        )
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     with open(cfg.output_dir / "config.json", "w") as f:
         json.dump({k: (str(v) if isinstance(v, Path) else v)
@@ -2163,7 +2183,8 @@ if __name__ == "__main__":
     p.add_argument("--weight-boltz2-iptm", type=float,
                    help="Boltz2 guidance weight for maximizing ipTM")
     p.add_argument("--weight-boltz2-ipsae", type=float,
-                   help="Boltz2 guidance weight for maximizing min directional ipSAE")
+                   help="Disabled for in-loop guidance (ipSAE is post-refold-"
+                        "only); setting > 0 raises an error")
     p.add_argument("--boltz2-guidance-recycling-steps", type=int,
                    help="Boltz2 recycling steps inside per-step guidance")
     p.add_argument("--boltz2-guidance-sampling-steps", type=int,

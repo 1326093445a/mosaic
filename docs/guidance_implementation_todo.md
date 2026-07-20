@@ -35,7 +35,7 @@ question below, and every piece is standard, well-understood technique.
       component)
 - [x] RMS-normalize each gradient over designable atoms
       — masking, de-meaning, and normalization implemented together in
-      `_mask_center_normalize`, numerically unit-tested (frozen atoms exactly
+      `_mask_center_normalize`, unit-tested (frozen atoms exactly
       zero, pure rigid-translation gradient fully cancels, RMS = 1.0 on
       designable atoms)
 - [x] Implement `compat()` — PCGrad-style projection, asymmetric:
@@ -80,12 +80,35 @@ question below, and every piece is standard, well-understood technique.
       bool), so no diagnostic computation is added to the graph when unused.
       Also exposes `guided_direction`, `g_bind`, `g_nat`, `g_edit` per step —
       the last three are what Phase 2's pairwise objective-conflict logging
-      needs.
+      needs. Initial version only exposed the raw (unscaled) directions,
+      valid for cosine comparisons but not the norm-ratio diagnostic the note
+      above calls for — fixed by adding `unguided_step_delta` and
+      `guided_step_delta` (the same directions multiplied by
+      `step_scale*(sigma_t - t_hat)`, i.e. the actual physical per-step
+      displacement) to the diagnostics dict.
 - [x] Confirm `ipSAE` stays post-refold only, never an in-loop gradient
       target (agreed independently across both design docs and both the
-      Gradient Guidance and NOS papers) — holds: no `ipSAE` term appears
-      anywhere in the new controller; `L_bind`/`L_nat`/`L_edit` are the only
-      in-loop objectives.
+      Gradient Guidance and NOS papers) — holds for the controller itself:
+      no `ipSAE` term appears anywhere in `guided_partial_diffusion`;
+      `L_bind`/`L_nat`/`L_edit` are its only in-loop objectives. It did NOT
+      hold for the caller: `build_boltz2_guidance_loss` in
+      `boltzgen_vhh_guided.py` wired `IPSAE_min` into the in-loop `L_bind`
+      objective whenever `--weight-boltz2-ipsae > 0` — a real contradiction
+      of this design decision, caught in review. Fixed: that branch now
+      raises `ValueError` instead of silently building the loss term (ipSAE's
+      PAE-cutoff masking makes it a discontinuous, hard-thresholded objective,
+      unsuitable for step-wise gradient guidance); `uses_boltz2_guidance` no
+      longer treats `weight_boltz2_ipsae` as a trigger for in-loop guidance
+      either. `ipsae_pae_cutoff`-based post-refold ranking (`BinderTargetIPSAE`
+      / `TargetBinderIPSAE` / `IPSAE_min` in the refold-and-rank path) is
+      untouched and remains the only place ipSAE is used.
+      Second review pass caught a follow-on gap: because
+      `uses_boltz2_guidance` excludes `weight_boltz2_ipsae`,
+      `build_boltz2_guidance_loss` (and its `ValueError` guard) was never
+      reached when ipSAE was the only positive Boltz2 weight, so it was
+      silently ignored rather than rejected. Fixed by adding the same
+      `ValueError` unconditionally at the top of `run()`, before any model
+      loading — see `tests/test_boltzgen_vhh_guided_config.py`.
 
 **Caller wired up:** `src/mosaic/workflows/boltzgen_vhh_guided.py`'s
 `build_guidance_loss` now returns a `GuidanceLosses(bind, nat, edit)`
@@ -100,6 +123,25 @@ when no Boltz2 binding signal is configured, `edit` is promoted to fill the
 requires a bind objective for guidance to be active at all. Full module
 import verified end-to-end (`import mosaic.workflows.boltzgen_vhh_guided`
 succeeds, including `GuidanceLosses` and the updated `build_guidance_loss`).
+
+**Reproducing the verification claims above:** `uv run` currently hangs on
+this machine trying to re-resolve a floating git dependency
+(`Biohub/transformers.git` pinned to `main`, no fixed ref, so every
+invocation re-checks the remote) — this affects everyone on this box, not
+just one session. Use the already-built virtualenv directly instead:
+
+```bash
+.venv/bin/python -m pytest tests/test_guidance_controller.py -v
+.venv/bin/python -c "import sys; sys.path.insert(0, 'src'); import mosaic.workflows.boltzgen_vhh_guided"
+```
+
+The 8 controller-primitive tests (masking, de-meaning, RMS-normalization,
+PCGrad agree/conflict, trust-radius clip cap/no-op, default-schedule shape)
+live at `tests/test_guidance_controller.py` and are tracked in git (staged
+with `git add`; not yet committed, since no commit has been requested) — not
+just run once in an ephemeral session — so they're independently re-runnable
+by anyone, not only reproducible by re-reading this note.
+
 Not yet done: an actual end-to-end run with real BoltzGen weights (needs the
 checkpoint download and GPU time SETUP.md's v0 smoke test describes) —
 everything above is verified at the import/unit-test level, not by running
