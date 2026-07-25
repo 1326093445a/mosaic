@@ -157,9 +157,9 @@ def measure_wt_pose_drift(*, opendde, features, reference_distances, binder_seq,
     return float(aux["binder_target_distogram_drift"])
 
 
-def build_composite_loss(*, opendde, features, ablang2_model, ablang2_tokenizer,
-                          reference_distances, binder_seq, designable_idx,
-                          edit_budget: int, stop_grad_ablang2: bool, pose_drift_tolerance: float):
+def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenizer,
+                           reference_distances, binder_seq, designable_idx,
+                           edit_budget: int, stop_grad_ablang2: bool, pose_drift_tolerance: float):
     bind_and_pose = (
         WEIGHT_OPENDDE_CONTACT * BinderTargetContact(
             paratope_idx=designable_idx, contact_distance=CONTACT_DISTANCE,
@@ -191,11 +191,12 @@ def build_composite_loss(*, opendde, features, ablang2_model, ablang2_tokenizer,
 
     full_loss = opendde_loss + WEIGHT_ABLANG2 * ablang2_loss + edit_loss
     wildtype_tokens = jax.numpy.array([TOKENS.index(aa) for aa in binder_seq], dtype=jax.numpy.int32)
-    return SetPositions(
+    variable_only_loss = SetPositions(
         wildtype_tokens,
         jax.numpy.array(designable_idx, dtype=jax.numpy.int32),
         full_loss,
     )
+    return full_loss, variable_only_loss
 
 
 def main():
@@ -245,7 +246,7 @@ def main():
     print(f"WT baseline distogram drift: {wt_drift:.2f}A -> tolerance = "
           f"{wt_drift:.2f} + {POSE_DRIFT_MARGIN} margin = {pose_drift_tolerance:.2f}A", flush=True)
 
-    loss = build_composite_loss(
+    full_loss, variable_only_loss = build_composite_losses(
         opendde=opendde, features=features,
         ablang2_model=ablang2_model, ablang2_tokenizer=ablang2_tokenizer,
         reference_distances=reference_distances, binder_seq=binder_seq,
@@ -256,10 +257,10 @@ def main():
     print(f"\n[1/2] continuous relaxation (simplex_APGM, {APGM_STEPS} steps)...", flush=True)
     x0 = seq_to_one_hot("".join(binder_seq[i] for i in designable_idx))
     x_final, x_best = simplex_APGM(
-        loss_function=loss, x=x0, n_steps=APGM_STEPS, stepsize=APGM_STEPSIZE,
+        loss_function=variable_only_loss, x=x0, n_steps=APGM_STEPS, stepsize=APGM_STEPSIZE,
         momentum=APGM_MOMENTUM, scale=APGM_SCALE, key=key,
     )
-    full_continuous = np.asarray(loss.sequence(x_best))
+    full_continuous = np.asarray(variable_only_loss.sequence(x_best))
     continuous_seq = full_continuous.argmax(-1)
     print(f"continuous result (argmax): {one_hot_to_seq(full_continuous)}", flush=True)
 
@@ -267,13 +268,13 @@ def main():
     parent = np.array([TOKENS.index(c) for c in binder_seq], dtype=np.int32)
     if args.policy == "greedy":
         best_seq, best_val, pareto = edit_budgeted_greedy_descent(
-            loss, continuous_seq, parent=parent, budget=args.edit_budget,
+            full_loss, continuous_seq, parent=parent, budget=args.edit_budget,
             designable_mask=designable_mask, batch_size=GREEDY_BATCH_SIZE,
             steps=GREEDY_STEPS, key=key,
         )
     else:
         best_seq, best_val, pareto = edit_budgeted_gradient_mcmc(
-            loss, continuous_seq, parent=parent, budget=args.edit_budget,
+            full_loss, continuous_seq, parent=parent, budget=args.edit_budget,
             designable_mask=designable_mask, steps=MCMC_STEPS, key=key,
         )
 
