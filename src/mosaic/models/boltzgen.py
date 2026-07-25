@@ -35,6 +35,7 @@ from boltzgen.task.predict.writer import DesignWriter
 from jaxtyping import Array, Bool, Float, Int, PyTree
 
 from ..util import pairwise_distance
+from .guidance_lookahead import build_lookahead_grad_fn
 
 
 
@@ -780,6 +781,151 @@ def default_beta_schedule(t_hat, beta_max: float = 1.0):
     return beta_max / (1.0 + t_hat)
 
 
+def _merge_aux_gradients(x0, grad_bind, grad_nat, grad_edit, atom_partial_mask, alpha_fn, beta_fn, t_hat):
+    """One evaluation of the asymmetric mask/normalize/PCGrad merge at a
+    given point `x0`. Factored out of the one-shot guidance path so the NOS
+    iterative loop (`_nos_iterative_merge`, docs/guidance_alphaseq_testing_notes.md
+    section 12a) can call it fresh at each inner step -- re-evaluating
+    grad_bind/grad_nat/grad_edit AT THE CURRENT point, not just once at
+    x0_hat, is exactly what makes NOS's real mechanism structurally
+    different from a one-shot squared-distance penalty (verified directly
+    to be a pure rescale of the auxiliary gradient before this was built).
+    """
+    zeros_like_g = jnp.zeros_like(x0)
+    g_bind = _mask_center_normalize(grad_bind(x0), atom_partial_mask)
+    g_total = g_bind
+    if grad_nat is not None:
+        g_nat = _mask_center_normalize(grad_nat(x0), atom_partial_mask)
+        g_total = g_total + alpha_fn(t_hat) * _compat_project(g_nat, g_bind)
+    else:
+        g_nat = zeros_like_g
+    if grad_edit is not None:
+        g_edit = _mask_center_normalize(grad_edit(x0), atom_partial_mask)
+        g_total = g_total + beta_fn(t_hat) * _compat_project(g_edit, g_bind)
+    else:
+        g_edit = zeros_like_g
+    return g_total, g_bind, g_nat, g_edit
+
+
+def default_nos_inner_step_schedule(t_hat, step_max: float = 0.05):
+    """Default per-inner-step size for the NOS iterative loop (docs/
+    guidance_alphaseq_testing_notes.md section 12a): a small constant, not a
+    function of t_hat. NOS's own Langevin step size is fixed per training
+    round (their setting is discrete-diffusion at one noise level per round,
+    not a continuous EDM sigma schedule), so there is no literature-grounded
+    noise-dependent shape to copy here. First-pass default -- tune against
+    results. The outer `_clip_rms(..., tau_fn(t_hat))` safety cap still
+    applies to the accumulated result regardless of this value, so a
+    too-large step size is bounded, not unsafe.
+    """
+    return step_max
+
+
+def default_nos_lambda_kl_schedule(t_hat, lam_kl_max: float = 1.0):
+    """Default weight on the NOS consistency term inside the inner loop
+    (section 12a). Constant -- same caveat as
+    `default_nos_inner_step_schedule`: no noise-dependent shape for this
+    term is grounded in the source paper (arXiv:2305.20009), which does not
+    operate on a continuous sigma schedule.
+    """
+    return lam_kl_max
+
+
+def default_nos_langevin_noise_schedule(t_hat, noise_max: float = 0.0):
+    """Default injected-noise std for the NOS inner loop (section 12a).
+    Zero by default -- deterministic inner descent, not full Langevin
+    sampling. Set > 0 to match NOS's actual stochastic Langevin updates more
+    closely; left off by default since injected noise is a real, separate
+    behavioral change (genuine sampling stochasticity, not just a different
+    guidance direction) that should not turn on silently.
+    """
+    return noise_max
+
+
+def _nos_iterative_merge(
+    x0_hat,
+    grad_bind,
+    grad_nat,
+    grad_edit,
+    atom_partial_mask,
+    alpha_fn,
+    beta_fn,
+    tau_fn,
+    t_hat,
+    n_inner_steps: int,
+    inner_step_fn,
+    lambda_kl_fn,
+    noise_fn,
+    key,
+):
+    """Real, iterative NOS-style prior-compatibility mechanism
+    (docs/guidance_alphaseq_testing_notes.md section 12a) -- not the
+    one-shot squared-distance penalty tried first and found to be
+    mathematically a no-op (identically zero gradient) or, in a two-stage
+    variant, provably just a rescale of the auxiliary gradient with no new
+    directional information. Both failures share one cause: a single
+    evaluation forces the "current point" to be an affine function of the
+    same gradient set being regularized. Genuine iteration breaks that: `K`
+    inner steps, each re-evaluating grad_bind/grad_nat/grad_edit at the
+    CURRENT (already-moved) point -- not just once at x0_hat -- while a
+    consistency gradient keeps pulling back toward the fixed original
+    x0_hat.
+
+    Stability, found and fixed during testing (not from the source paper --
+    a real property of this translation): the consistency term alone gives
+    the linear recursion `(x0_i+1 - anchor) = (1 - 2*step*lambda_kl) *
+    (x0_i - anchor)`, which diverges geometrically whenever
+    `2*step*lambda_kl > 1` (confirmed directly: `step=0.1, lambda_kl=50`
+    grew a small perturbation to a distance of ~2000 over 5 steps instead of
+    shrinking it). To keep a hyperparameter sweep (section 12c) from
+    silently producing exploded garbage for an unstable `(inner_step_fn,
+    lambda_kl_fn)` combination, each inner step's raw displacement is capped
+    via the same `_clip_rms` guardrail already used for the outer step,
+    scaled down by `n_inner_steps` so `K` capped inner steps can't
+    dramatically exceed the outer trust region even before the final outer
+    clip in `step_body` runs.
+
+    Requires `n_inner_steps >= 1` (the caller only invokes this when the
+    static `guidance_nos_inner_steps > 0`, mirroring the `grad_bind is not
+    None` trace-time gating already used elsewhere in this function).
+
+    Returns `(x0_candidate, last_g_bind, last_g_nat, last_g_edit)` -- the
+    caller forms `delta = lambda_fn(t_hat) * (x0_hat - x0_candidate)` (the
+    same outer strength schedule the one-shot path applies to `g_total` --
+    dropping this multiplication was a real bug, found and fixed, see
+    docs/guidance_alphaseq_testing_notes.md section 12a) and applies the
+    existing outer trust-region clip, exactly like the one-shot path.
+    """
+    anchor = jax.lax.stop_gradient(x0_hat)
+    mask = (atom_partial_mask > 0)[..., None]
+    inner_tau = tau_fn(t_hat) / n_inner_steps
+
+    def inner_step(carry, _):
+        x0_i, step_key = carry
+        g_total_i, g_bind_i, g_nat_i, g_edit_i = _merge_aux_gradients(
+            x0_i, grad_bind, grad_nat, grad_edit, atom_partial_mask, alpha_fn, beta_fn, t_hat
+        )
+        # Consistency gradient: d/dx0_i[ ||x0_i - anchor||^2 ] = 2*(x0_i - anchor).
+        # Nonzero whenever x0_i has moved from the fixed anchor -- true from
+        # inner step 1 onward whenever g_total_i != 0 at step 0.
+        g_consistency_i = jnp.where(mask, 2.0 * (x0_i - anchor), 0.0)
+        g_total_i = g_total_i + lambda_kl_fn(t_hat) * g_consistency_i
+
+        step_key, sub = jax.random.split(step_key)
+        noise = noise_fn(t_hat) * jax.random.normal(sub, x0_i.shape)
+        noise = jnp.where(mask, noise, 0.0)
+
+        raw_step = inner_step_fn(t_hat) * g_total_i
+        clipped_step = _clip_rms(raw_step, inner_tau, atom_partial_mask)
+        x0_next = x0_i - clipped_step + noise
+        return (x0_next, step_key), (g_bind_i, g_nat_i, g_edit_i)
+
+    (x0_final, _), (g_bind_hist, g_nat_hist, g_edit_hist) = jax.lax.scan(
+        inner_step, (x0_hat, key), jnp.arange(n_inner_steps)
+    )
+    return x0_final, g_bind_hist[-1], g_nat_hist[-1], g_edit_hist[-1]
+
+
 def guided_partial_diffusion(
     *,
     sampler: "Sampler",
@@ -798,6 +944,11 @@ def guided_partial_diffusion(
     guidance_beta_fn=None,
     guidance_lambda_fn=None,
     guidance_tau_fn=None,
+    guidance_nos_inner_steps: int = 0,
+    guidance_nos_inner_step_fn=None,
+    guidance_nos_lambda_kl_fn=None,
+    guidance_nos_noise_fn=None,
+    guidance_lookahead: bool = False,
     sidechain_mask: Float[Array, "M"] | None = None,
     sidechain_noise_multiplier: float = 1.0,
     key=None,
@@ -909,6 +1060,37 @@ def guided_partial_diffusion(
         guidance_tau_fn: callable `(t_hat) -> scalar`, trust-radius cap on the
             RMS coordinate displacement per step. Defaults to
             `default_tau_schedule` if not given.
+        guidance_nos_inner_steps: int, static (trace-time, not a JAX value).
+            `0` (default) = one-shot merge, identical to prior behavior.
+            `> 0` = real iterative NOS-style prior-compatibility mechanism
+            (docs/guidance_alphaseq_testing_notes.md section 12a):
+            `guidance_fn_bind`/`_nat`/`_edit` are re-evaluated at each of
+            `guidance_nos_inner_steps` inner points, with a consistency
+            gradient pulling back toward the outer step's original x0_hat.
+            Real added cost: `guidance_nos_inner_steps` extra forward+backward
+            passes through the guidance losses per outer diffusion step.
+        guidance_nos_inner_step_fn: callable `(t_hat) -> scalar`, per-inner-
+            step size for the NOS loop. Defaults to
+            `default_nos_inner_step_schedule`. Only used when
+            `guidance_nos_inner_steps > 0`.
+        guidance_nos_lambda_kl_fn: callable `(t_hat) -> scalar`, weight on
+            the NOS consistency term. Defaults to
+            `default_nos_lambda_kl_schedule`.
+        guidance_nos_noise_fn: callable `(t_hat) -> scalar`, injected
+            Langevin noise std for the NOS loop. Defaults to
+            `default_nos_langevin_noise_schedule` (0.0 = deterministic).
+        guidance_lookahead: bool, static (trace-time). `False` (default) =
+            unchanged behavior. `True` = real look-ahead mechanism (docs/
+            guidance_alphaseq_testing_notes.md section 12b, arXiv:2404.14743):
+            `guidance_fn_bind`/`_nat`/`_edit` are differentiated through the
+            *entire* denoiser forward pass with respect to `atom_coords_noisy`
+            (removing the `stop_gradient` boundary the other two paths keep),
+            instead of with respect to the frozen `x0_hat`. Real added cost: a
+            full backward pass through the denoiser trunk per guidance term
+            per outer diffusion step, not just through the small guidance-loss
+            subgraph. Mutually exclusive with `guidance_nos_inner_steps > 0`
+            (raises `ValueError` if both are set -- combining them would mean
+            K full denoiser backward passes per step, not scoped or tested).
         sidechain_mask: optional float (M,), 1.0 at sidechain atoms whose noise
             should be amplified by `sidechain_noise_multiplier`. Useful when you
             trust the parent backbone but want to fully scramble CDR sidechains.
@@ -937,6 +1119,8 @@ def guided_partial_diffusion(
                 per-objective gradients (zeros where the corresponding
                 `guidance_fn_*` was not provided), for the pairwise
                 objective-vs-objective conflict logging Phase 2 also calls for.
+              - "t_hat", "sigma_t": the noise-axis position of each step
+                (scalars), for stratifying any of the above by sigma.
             `False` by default: this branch is resolved at trace time (a plain
             Python bool, not a JAX value), so when unused it costs nothing —
             none of the diagnostic computation is even added to the traced
@@ -1009,6 +1193,22 @@ def guided_partial_diffusion(
     tau_fn = guidance_tau_fn if guidance_tau_fn is not None else default_tau_schedule
     alpha_fn = guidance_alpha_fn if guidance_alpha_fn is not None else default_alpha_schedule
     beta_fn = guidance_beta_fn if guidance_beta_fn is not None else default_beta_schedule
+    nos_inner_steps = guidance_nos_inner_steps
+    nos_inner_step_fn = (
+        guidance_nos_inner_step_fn if guidance_nos_inner_step_fn is not None else default_nos_inner_step_schedule
+    )
+    nos_lambda_kl_fn = (
+        guidance_nos_lambda_kl_fn if guidance_nos_lambda_kl_fn is not None else default_nos_lambda_kl_schedule
+    )
+    nos_noise_fn = (
+        guidance_nos_noise_fn if guidance_nos_noise_fn is not None else default_nos_langevin_noise_schedule
+    )
+    if guidance_lookahead and nos_inner_steps > 0:
+        raise ValueError(
+            "guidance_lookahead=True and guidance_nos_inner_steps > 0 are mutually "
+            "exclusive -- combining them would mean K full denoiser backward passes "
+            "per diffusion step, not scoped or tested. Pick one mechanism."
+        )
 
     # network_condition_kwargs MUST match what joltzgen.AtomDiffusion.sample
     # passes through to preconditioned_network_forward — i.e. everything except
@@ -1094,22 +1294,84 @@ def guided_partial_diffusion(
         # === GUIDANCE INJECTION (Phase 1 controller; no-op when guidance_fn_bind is None) ===
         zeros_like_g = jnp.zeros_like(x0_hat)
         if grad_bind is not None:
-            g_bind = _mask_center_normalize(grad_bind(x0_hat), atom_partial_mask)
-            g_total = g_bind
+            if nos_inner_steps > 0:
+                # Real iterative NOS-style path (section 12a) -- static
+                # branch, resolved at trace time like `grad_bind is not
+                # None` above, so the one-shot path below costs nothing when
+                # this is off (the default).
+                key, nos_key = jax.random.split(key)
+                x0_candidate, g_bind, g_nat, g_edit = _nos_iterative_merge(
+                    x0_hat, grad_bind, grad_nat, grad_edit, atom_partial_mask,
+                    alpha_fn, beta_fn, tau_fn, t_hat, nos_inner_steps,
+                    nos_inner_step_fn, nos_lambda_kl_fn, nos_noise_fn, nos_key,
+                )
+                # lambda_fn(t_hat) must still scale the merged displacement here,
+                # exactly as it does in the one-shot path below -- otherwise
+                # --lambda-max/--lambda-schedule silently stop controlling
+                # guidance strength for NOS runs (real bug, found by review,
+                # verified directly against this code before fixing; see
+                # docs/guidance_alphaseq_testing_notes.md section 12a).
+                # nos_inner_step_size/nos_lambda_kl remain the inner solver's
+                # own step size and prior-compatibility strength -- mechanism-
+                # internal parameters, not a substitute for the outer schedule.
+                delta = lambda_fn(t_hat) * (x0_hat - x0_candidate)
+            elif guidance_lookahead:
+                # Real look-ahead path (section 12b): differentiate through
+                # the FULL denoiser with respect to atom_coords_noisy,
+                # instead of with respect to the frozen x0_hat. A fresh
+                # denoiser closure is built per step (t_hat and
+                # network_condition_kwargs vary step to step, unlike
+                # grad_bind/grad_nat/grad_edit above, which are built once
+                # outside the scan since they only close over the guidance
+                # loss). _merge_aux_gradients is reused unchanged -- the
+                # merge machinery doesn't care which point space a closure
+                # differentiates in, only that it returns a same-shaped
+                # gradient.
+                key, la_key = jax.random.split(key)
 
-            if grad_nat is not None:
-                g_nat = _mask_center_normalize(grad_nat(x0_hat), atom_partial_mask)
-                g_total = g_total + alpha_fn(t_hat) * _compat_project(g_nat, g_bind)
+                def _denoiser_fn(coords, _t_hat=t_hat, _key=la_key):
+                    return structure_module.preconditioned_network_forward(
+                        coords, _t_hat, network_condition_kwargs=network_condition_kwargs, key=_key,
+                    )
+
+                grad_bind_la = build_lookahead_grad_fn(_denoiser_fn, guidance_fn_bind)
+                grad_nat_la = (
+                    build_lookahead_grad_fn(_denoiser_fn, guidance_fn_nat) if guidance_fn_nat is not None else None
+                )
+                grad_edit_la = (
+                    build_lookahead_grad_fn(_denoiser_fn, guidance_fn_edit) if guidance_fn_edit is not None else None
+                )
+                g_total, g_bind, g_nat, g_edit = _merge_aux_gradients(
+                    atom_coords_noisy, grad_bind_la, grad_nat_la, grad_edit_la,
+                    atom_partial_mask, alpha_fn, beta_fn, t_hat,
+                )
+                # Sign/scale: an earlier version of this line derived a
+                # direction-space equivalence by hand (adjust
+                # denoised_over_sigma, solve for an x0-equivalent delta) and
+                # got it wrong -- shipped as `delta = -t_hat * lambda_fn(t_hat)
+                # * g_total`, which empirically made the toy guidance loss
+                # WORSE, not better (caught by review, reproduced directly:
+                # guidance_loss(x0_hat)=9.12, guidance_loss(x0_hat + t_hat*
+                # lam*g_total)=12.67 -- confirms the bug -- vs
+                # guidance_loss(x0_hat - lam*g_total)=5.17, a real decrease).
+                # That hand derivation was internally self-consistent but
+                # never checked against an actual loss decrease, which is
+                # the only thing that actually matters here -- self-
+                # consistency of an unvalidated premise is not correctness.
+                # g_total here (d(loss)/d(atom_coords_noisy) via the chain
+                # rule through the denoiser) is empirically well-aligned in
+                # direction with d(loss)/d(x0) evaluated at x0_hat (cosine
+                # ~0.93 in the toy case checked) -- descending along it in
+                # x0-space works the same way descending g_bind does in the
+                # one-shot path. No special sign or extra t_hat scaling:
+                # treat it exactly like the one-shot/NOS merged gradient.
+                delta = lambda_fn(t_hat) * g_total
             else:
-                g_nat = zeros_like_g
+                g_total, g_bind, g_nat, g_edit = _merge_aux_gradients(
+                    x0_hat, grad_bind, grad_nat, grad_edit, atom_partial_mask, alpha_fn, beta_fn, t_hat
+                )
+                delta = lambda_fn(t_hat) * g_total
 
-            if grad_edit is not None:
-                g_edit = _mask_center_normalize(grad_edit(x0_hat), atom_partial_mask)
-                g_total = g_total + beta_fn(t_hat) * _compat_project(g_edit, g_bind)
-            else:
-                g_edit = zeros_like_g
-
-            delta = lambda_fn(t_hat) * g_total
             delta = _clip_rms(delta, tau_fn(t_hat), atom_partial_mask)
             x0_guided = x0_hat - delta
         else:
@@ -1147,6 +1409,13 @@ def guided_partial_diffusion(
                 "g_bind": g_bind,
                 "g_nat": g_nat,
                 "g_edit": g_edit,
+                # noise-axis position of this step, for stratifying Phase 2
+                # diagnostics by sigma (docs/guidance_implementation_todo.md
+                # Phase 2). t_hat is the churned noise level the guidance
+                # gradients above were actually evaluated at; sigma_t is the
+                # step's target noise level.
+                "t_hat": t_hat,
+                "sigma_t": sigma_t,
             }
         else:
             diagnostics = None

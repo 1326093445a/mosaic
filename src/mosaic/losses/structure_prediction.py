@@ -301,6 +301,128 @@ class BinderTargetContact(LossTerm):
         return -average_log_prob, {"target_contact": average_log_prob}
 
 
+class BinderPoseRMSD(LossTerm):
+    """Penalize the binder's predicted pose drifting from a reference (e.g.
+    real WT-bound) pose -- for hallucination-style design against a fixed
+    target template, to stop pure binding-confidence optimization from
+    finding a different docking mode OpenDDE/Boltz also happens to score
+    well, rather than refining the known real interface.
+
+    Aligned on the TARGET, not the whole complex: Kabsch-align the
+    predicted target Calphas onto `reference_target_ca`, apply that same
+    rigid transform to the predicted binder Calphas, then measure RMSD
+    against `reference_binder_ca`. This is deliberately NOT a whole-complex
+    superposition -- aligning on everything would let the binder and target
+    drift together and hide exactly the relative pose drift this is meant
+    to catch. Invariant to any rigid transform of the whole predicted
+    complex (a real property, not assumed -- see
+    tests/test_binder_pose_rmsd.py), since only the target-relative pose is
+    ever measured.
+
+    Soft hinge, the same pattern `EditBudget` already uses for edit
+    distance: zero value AND zero gradient while the pose stays within
+    `rmsd_tolerance` (Angstroms), growing linearly beyond it. This is the
+    concrete answer to "if RMSD is too big, the loss can dominate" --
+    an un-hinged raw RMSD contributes its full magnitude regardless of
+    whether the pose is already fine; this contributes nothing until there
+    is an actual problem. Still wrap in `ClippedGradient` (the same
+    `clip_gradient_norm` every other guidance term already uses) so that
+    once the hinge is active, its gradient can't dominate the merge either
+    -- the hinge bounds the VALUE, ClippedGradient bounds the GRADIENT;
+    together they cover both halves of the dominance concern.
+
+    Assumes `sequence`'s first `sequence.shape[0]` tokens in `output` are
+    the binder and the rest are the target -- the same convention every
+    other structure loss here follows (e.g. `BinderTargetContact` above).
+    `reference_target_ca` must be the same fixed target template's Calpha
+    coordinates, same count and residue order as the target region of
+    `output.backbone_coordinates` (true by construction when the target is
+    a fixed structure-input template, not itself being predicted/redesigned).
+    """
+    reference_binder_ca: Float[Array, "Nb 3"] = eqx.field(converter=jnp.array)
+    reference_target_ca: Float[Array, "Nt 3"] = eqx.field(converter=jnp.array)
+    rmsd_tolerance: float = 2.0
+
+    def __call__(
+        self,
+        sequence: Float[Array, "N 20"],
+        output: StructureModelOutput,
+        key,
+    ):
+        from ..util import kabsch, unaligned_rmsd
+
+        binder_len = sequence.shape[0]
+        # backbone_coordinates is [N, 4, 3] in [N, CA, C, O] order -- index 1 is Calpha.
+        pred_target_ca = output.backbone_coordinates[binder_len:, 1]
+        pred_binder_ca = output.backbone_coordinates[:binder_len, 1]
+
+        R, t = kabsch(pred_target_ca, self.reference_target_ca)
+        aligned_binder_ca = pred_binder_ca @ R + t
+
+        rmsd = unaligned_rmsd(aligned_binder_ca, self.reference_binder_ca)
+        violation = jax.nn.relu(rmsd - self.rmsd_tolerance)
+        return violation, {"binder_pose_rmsd": rmsd, "binder_pose_rmsd_violation": violation}
+
+
+class BinderPoseDistogramDrift(LossTerm):
+    """Cheap alternative to `BinderPoseRMSD` for use INSIDE a hallucination
+    search loop -- `BinderPoseRMSD` needs real 3D coordinates
+    (`output.backbone_coordinates`), which OpenDDE's cheap guidance mode
+    (`build_distogram_only_loss`, used by `DistogramIPTMProxy`/
+    `BinderTargetContact` above) deliberately does not produce -- its
+    `_DistogramOnlyOutput` stand-in exists specifically to avoid paying for
+    real diffusion coordinate sampling when a loss doesn't need it. Since a
+    search loop can call this thousands of times
+    (`edit_budgeted_greedy_descent` alone: up to `steps * batch_size`),
+    needing real coordinates on every call would mean paying real
+    diffusion-sampling cost thousands of times over -- likely far more,
+    in aggregate, than a single guided-diffusion trajectory would cost,
+    defeating the reason to use hallucination at all. Use
+    `BinderPoseRMSD` post-hoc instead, on the small number of final
+    candidates, via a real (paid-for-once) structure prediction/refold.
+
+    Works directly from the distogram: expected pairwise distance is
+    `(softmax(distogram_logits) * distogram_bins).sum(-1)` (same pattern
+    `DistogramRadiusOfGyration` above already uses), computed on the
+    binder-target block `[:binder_len, binder_len:]` (same slicing
+    `BinderTargetContact` above uses). This is translation/rotation-
+    invariant BY CONSTRUCTION -- pairwise distances don't care about a
+    global frame -- so unlike `BinderPoseRMSD`, no Kabsch alignment step is
+    needed at all. Simpler, not just cheaper.
+
+    Same soft-hinge pattern as `EditBudget`/`BinderPoseRMSD`: zero value and
+    gradient while the predicted binder-target distance map stays within
+    `tolerance` (mean absolute deviation, Angstroms) of the reference (real
+    WT-bound) distance map, growing linearly beyond it.
+
+    `reference_distances` must be the real WT-bound complex's binder-target
+    Calpha-Calpha pairwise distance matrix, shape `[binder_len,
+    target_len]`, same residue order/count as the target region of
+    `output.distogram_logits` -- true by construction when the target is a
+    fixed structure-input template, same assumption `BinderPoseRMSD` makes.
+    """
+    reference_distances: Float[Array, "Nb Nt"] = eqx.field(converter=jnp.array)
+    tolerance: float = 2.0
+
+    def __call__(
+        self,
+        sequence: Float[Array, "N 20"],
+        output: StructureModelOutput,
+        key,
+    ):
+        binder_len = sequence.shape[0]
+        probs = jax.nn.softmax(output.distogram_logits, axis=-1)
+        expected_dist = (probs * output.distogram_bins[None, None, :]).sum(-1)
+        predicted = expected_dist[:binder_len, binder_len:]
+
+        deviation = jnp.abs(predicted - self.reference_distances).mean()
+        violation = jax.nn.relu(deviation - self.tolerance)
+        return violation, {
+            "binder_target_distogram_drift": deviation,
+            "binder_target_distogram_drift_violation": violation,
+        }
+
+
 class HelixLoss(LossTerm):
     max_distance: float = 6.0
     target_value: float = -2.0
@@ -519,7 +641,13 @@ class DistogramIPTMProxy(LossTerm):
     (high `P_contact`) and confident about the contact distance (low
     `H(p_cut)`). The proxy averages the `binder_len` lowest scores across
     all (i, j) pairs (the "minibinder" preset from the paper) and maps to
-    [0, 1] via `clip(1 − S̄ / log n_contact_bins, 0, 1)`. Loss = −proxy.
+    [0, 1] via `clip(1 − S̄ / log n_contact_bins, 0, 1)`.
+
+    The reported proxy is clipped, but the optimization loss is the underlying
+    normalized cross-entropy `S̄ / log n_contact_bins`. In the proxy's interior
+    this has exactly the same gradient as `-proxy` (they differ by a constant);
+    outside it, the unclipped loss avoids a zero-gradient plateau for weak
+    starting interfaces.
     """
 
     contact_distance: float = 8.0
@@ -547,8 +675,9 @@ class DistogramIPTMProxy(LossTerm):
         S_bar = bottom_k.mean()
 
         log_norm = jnp.log(n_contact_bins.astype(S_bar.dtype))
-        proxy = jnp.clip(1.0 - S_bar / log_norm, 0.0, 1.0)
-        return -proxy, {"distogram_iptm": proxy}
+        normalized_cross_entropy = S_bar / log_norm
+        proxy = jnp.clip(1.0 - normalized_cross_entropy, 0.0, 1.0)
+        return normalized_cross_entropy, {"distogram_iptm": proxy}
 
 
 class BinderTargetIPTM(LossTerm):
@@ -593,6 +722,7 @@ class BinderPTMLoss(LossTerm):
 
 class BinderTargetIPSAE(LossTerm):
     reduce: Callable = jnp.max
+    pae_cutoff: float = 10.0
 
     def __call__(
         self,
@@ -611,7 +741,7 @@ class BinderTargetIPSAE(LossTerm):
                 asym_id=asym_id,
                 logits=output.pae_logits,
                 bin_centers=output.pae_bins,
-                pae_cutoff=10.0,
+                pae_cutoff=self.pae_cutoff,
             )[:binder_len]
         )
         return -bt_ipsae, {"bt_ipsae": bt_ipsae}
@@ -619,6 +749,7 @@ class BinderTargetIPSAE(LossTerm):
 
 class TargetBinderIPSAE(LossTerm):
     reduce: Callable = jnp.max
+    pae_cutoff: float = 10.0
 
     def __call__(
         self,
@@ -637,13 +768,15 @@ class TargetBinderIPSAE(LossTerm):
                 asym_id=asym_id,
                 logits=output.pae_logits,
                 bin_centers=output.pae_bins,
-                pae_cutoff=10.0,
+                pae_cutoff=self.pae_cutoff,
             )[binder_len:]
         )
         return -tb_ipsae, {"tb_ipsae": tb_ipsae}
 
 
 class IPSAE_min(LossTerm):
+    pae_cutoff: float = 10.0
+
     def __call__(
         self,
         sequence: Float[Array, "N 20"],
@@ -653,7 +786,7 @@ class IPSAE_min(LossTerm):
         bt_ipsae = (
             -1
             * (
-                BinderTargetIPSAE()(
+                BinderTargetIPSAE(pae_cutoff=self.pae_cutoff)(
                     sequence=sequence,
                     output=output,
                     key=key,
@@ -663,7 +796,7 @@ class IPSAE_min(LossTerm):
         tb_ipsae = (
             -1
             * (
-                TargetBinderIPSAE()(
+                TargetBinderIPSAE(pae_cutoff=self.pae_cutoff)(
                     sequence=sequence,
                     output=output,
                     key=key,

@@ -90,6 +90,12 @@ boltz = { git = "https://github.com/escalante-bio/boltz.git" }
 boltzgen = { git = "https://github.com/escalante-bio/boltzgen.git" }
 esmjfold2 = { git = "https://github.com/escalante-bio/esmjfold2.git" }
 esm = { git = "https://github.com/Biohub/esm.git" }
+# Pinned (not floating on main): esm's own metadata pulls in
+# Biohub/transformers.git@main with no fixed ref, which `uv sync`/`uv run`
+# re-resolves (re-fetches remote refs) on every invocation, causing multi-
+# minute hangs/timeouts. Pinned to main's HEAD as of 2026-07-22; bump this
+# rev deliberately if a newer commit is needed, don't drop back to floating.
+transformers = { git = "https://github.com/Biohub/transformers.git", rev = "ef32577f55da19a4989cd7b22e004dc43a4998cb" }
 jpromera = { git = "https://github.com/escalante-bio/jpromera.git"}
 jopendde = { git = "https://github.com/escalante-bio/jopendde.git" }
 opendde = { git = "https://github.com/escalante-bio/jopendde.git", subdirectory = "OpenDDE" }

@@ -327,7 +327,7 @@ post hoc score.
 Recommended candidates:
 
 - `ipTM`-style confidence term
-- interface `PAE` penalty
+- interface `PAE` / iPAE penalty
 - optional pTM-energy-like stabilizing term
 
 These should drive diffusion-time guidance because they are smooth enough to
@@ -353,8 +353,10 @@ Use stronger downstream metrics for filtering and ranking:
 - RMSD / pose filter
 - interface geometry terms
 
-`ipSAE` is valuable, but it is better treated as a downstream rank/filter unless
-we have a stable smooth surrogate for it.
+`ipSAE` is valuable, but it is not the in-loop gradient target: the hard
+PAE-cutoff mask and best-row/max-style reduction make it unsuitable as a
+smooth differentiable per-step objective. Use it after refolding for ranking;
+use differentiable `ipTM` and interface `PAE`/iPAE during diffusion.
 
 ---
 
@@ -448,7 +450,7 @@ Step 2: decode soft sequence representation
 Step 3: evaluate objectives
   L_bind = w_iptm * L_iptm(p_seq, x0_hat)
          + w_ipae * L_ipae(p_seq, x0_hat)
-         + w_ptm  * L_ptm_energy(p_seq, x0_hat)
+         + optional w_ptm * L_ptm_energy(p_seq, x0_hat)
 
   L_nat  = w_nat  * L_antibody_lm(p_seq)
   L_edit = w_edit * L_locality(x0_hat, x_parent)
@@ -507,8 +509,10 @@ For the next implementation pass, the most useful changes are:
 6. **Decay guidance harder near the end**
    - late steps should refine, not strongly redirect
 
-7. **Use ipSAE mainly after refolding**
-   - use smooth confidence surrogates inside diffusion
+7. **Keep ipSAE out of the gradient loop**
+   - ipSAE is non-smooth / effectively non-differentiable for this purpose
+   - use differentiable `ipTM` + iPAE/interface-PAE inside diffusion
+   - use ipSAE after refolding for final rank/filter
 
 This is the smallest redesign that fixes the main conceptual weakness without
 changing the whole pipeline.

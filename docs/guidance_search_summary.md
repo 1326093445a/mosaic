@@ -302,7 +302,7 @@ The clean split is:
 Use smooth differentiable surrogates:
 
 - ipTM-style confidence
-- interface PAE penalty
+- interface PAE / iPAE penalty
 - optional pTM-energy-like stabilizer
 - weak naturalness prior
 - weak locality / edit restraint
@@ -335,18 +335,21 @@ This is the final acceptance stage.
 
 ## 11. Why ipSAE should not lead diffusion-time guidance
 
-ipSAE is useful, but it should mainly act as a downstream rank/filter unless a
-stable smooth surrogate is available.
+ipSAE is useful, but it should act as a downstream rank/filter, not the
+diffusion-time guidance signal.
 
 The reason is simple:
 
-- it is not the cleanest differentiable in-loop objective
+- its hard PAE-cutoff mask and best-row/max-style reduction are not suitable
+  as a smooth differentiable per-step objective
+- ipTM and interface PAE/iPAE are the intended differentiable binding guidance
+  terms
 - it is better suited to comparing completed candidates
 - it is most meaningful after the structure has been decoded/refolded
 
 So a sensible split is:
 
-- **during diffusion**: smoother confidence surrogates
+- **during diffusion**: ipTM + interface PAE/iPAE
 - **after generation/refold**: ipSAE for ranking
 
 ---

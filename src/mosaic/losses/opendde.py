@@ -564,3 +564,58 @@ class MultiSampleOpenDDELoss(LossTerm):
             return v
 
         return self.reduction(vs), jax.tree.map(_sort_if_scalar, auxs)
+
+
+class _DistogramOnlyOutput(eqx.Module):
+    """Minimal duck-typed stand-in for `StructureModelOutput`, exposing only
+    the two fields distogram-based losses actually read
+    (`DistogramIPTMProxy`, `BinderTargetContact`, and friends in
+    `mosaic.losses.structure_prediction` that never touch `.pae`/`.plddt`/
+    coordinates). Used by `DistogramOnlyOpenDDELoss` below to avoid paying
+    for `opendde_forward_from_trunk`'s diffusion coordinate sampling and
+    confidence head, which `distogram_logits = model.distogram_head(z)` does
+    not depend on at all -- those are wasted work for a distogram-only loss.
+    """
+
+    distogram_logits: Float[Array, "N N Bins"]
+    distogram_bins: Float[Array, "Bins"]
+
+
+class DistogramOnlyOpenDDELoss(LossTerm):
+    """Distogram-only guidance loss: runs the trunk + distogram head only,
+    skipping `opendde_forward_from_trunk`'s diffusion coordinate sampling and
+    confidence head entirely.
+
+    ONLY valid for losses that read `output.distogram_logits`/
+    `output.distogram_bins` and nothing else -- `output` here is a
+    `_DistogramOnlyOutput`, not a full `StructureModelOutput`, so any loss
+    that touches `.pae`, `.plddt`, `.structure_coordinates`, etc. will raise
+    an `AttributeError`. This is intentional: it forces a loud failure
+    instead of silently guiding on stale/zero data if someone later swaps in
+    a PAE-based loss here without switching back to `MultiSampleOpenDDELoss`.
+
+    Called once per BoltzGen diffusion step inside `guided_partial_diffusion`
+    (via `jax.grad`), so skipping the diffusion sampling here removes a
+    `n_step`-step (default 20) inner sampling loop from every one of those
+    calls -- unlike post-refold scoring, which runs once per Pareto
+    candidate and does need real coordinates, so it still goes through
+    `opendde_forward_from_trunk`/`MultiSampleOpenDDELoss`.
+    """
+
+    model: JaxOpenDDE
+    features: OpenDDEFeatures
+    loss: LossTerm | LinearCombination
+    num_cycles: int = eqx.field(static=True, default=4)
+
+    def __call__(self, sequence: Float[Array, "N 20"], key):
+        key, geom_key = jax.random.split(key)
+        feat = set_binder_sequence(sequence, self.features, geom_key)
+        s_inputs, s, z = self.model.get_pairformer_output(feat, self.num_cycles)
+        distogram_logits = self.model.distogram_head(z)
+        distogram_bins = _bin_centers(
+            self.model.dist_min_bin, self.model.dist_max_bin, self.model.dist_no_bins
+        )
+        output = _DistogramOnlyOutput(
+            distogram_logits=distogram_logits, distogram_bins=distogram_bins
+        )
+        return self.loss(sequence=sequence, output=output, key=key)

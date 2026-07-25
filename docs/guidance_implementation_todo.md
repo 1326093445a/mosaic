@@ -87,17 +87,18 @@ question below, and every piece is standard, well-understood technique.
       `step_scale*(sigma_t - t_hat)`, i.e. the actual physical per-step
       displacement) to the diagnostics dict.
 - [x] Confirm `ipSAE` stays post-refold only, never an in-loop gradient
-      target (agreed independently across both design docs and both the
-      Gradient Guidance and NOS papers) — holds for the controller itself:
+      target because it is not a usable differentiable per-step objective
+      here (hard PAE-cutoff mask plus best-row/max-style reduction). The
+      in-loop differentiable binding terms are `ipTM` and interface
+      `PAE`/iPAE — holds for the controller itself:
       no `ipSAE` term appears anywhere in `guided_partial_diffusion`;
       `L_bind`/`L_nat`/`L_edit` are its only in-loop objectives. It did NOT
       hold for the caller: `build_boltz2_guidance_loss` in
       `boltzgen_vhh_guided.py` wired `IPSAE_min` into the in-loop `L_bind`
       objective whenever `--weight-boltz2-ipsae > 0` — a real contradiction
       of this design decision, caught in review. Fixed: that branch now
-      raises `ValueError` instead of silently building the loss term (ipSAE's
-      PAE-cutoff masking makes it a discontinuous, hard-thresholded objective,
-      unsuitable for step-wise gradient guidance); `uses_boltz2_guidance` no
+      raises `ValueError` instead of silently building the loss term;
+      `uses_boltz2_guidance` no
       longer treats `weight_boltz2_ipsae` as a trigger for in-loop guidance
       either. `ipsae_pae_cutoff`-based post-refold ranking (`BinderTargetIPSAE`
       / `TargetBinderIPSAE` / `IPSAE_min` in the refold-and-rank path) is
@@ -112,17 +113,37 @@ question below, and every piece is standard, well-understood technique.
 
 **Caller wired up:** `src/mosaic/workflows/boltzgen_vhh_guided.py`'s
 `build_guidance_loss` now returns a `GuidanceLosses(bind, nat, edit)`
-dataclass instead of one pre-summed loss — `bind` = the Boltz2
-interface-confidence surrogate (`L_bind`), `nat` = combined ESM2 + AbLang2
-(`L_nat`), `edit` = the edit-budget/locality term (`L_edit`). The driver
-builds three separate `guidance_fn_*` closures (one per non-`None` field)
-and calls `guided_partial_diffusion` with the new signature. v1's
-"EditBudget-only guidance" behavior is preserved via an explicit fallback:
-when no Boltz2 binding signal is configured, `edit` is promoted to fill the
-`bind` (anchor) slot instead of being dropped, since the new controller
-requires a bind objective for guidance to be active at all. Full module
-import verified end-to-end (`import mosaic.workflows.boltzgen_vhh_guided`
-succeeds, including `GuidanceLosses` and the updated `build_guidance_loss`).
+dataclass instead of one pre-summed loss — `bind` = the interface-confidence
+surrogate (`L_bind`), `nat` = AbLang2 (`L_nat`), `edit` =
+the edit-budget/locality term (`L_edit`). The driver builds three separate
+`guidance_fn_*` closures (one per non-`None` field) and calls
+`guided_partial_diffusion` with the new signature. v1's "EditBudget-only
+guidance" behavior is preserved via an explicit fallback: when no binding
+signal is configured, `edit` is promoted to fill the `bind` (anchor) slot
+instead of being dropped, since the new controller requires a bind
+objective for guidance to be active at all. Full module import verified
+end-to-end (`import mosaic.workflows.boltzgen_vhh_guided` succeeds,
+including `GuidanceLosses` and the updated `build_guidance_loss`).
+
+**OpenDDE added as a second `bind` source (later work, not part of the
+original Phase 1 pass above):** `build_opendde_guidance_loss` is a second,
+selectable builder for `L_bind` alongside `build_boltz2_guidance_loss` --
+`uses_boltz2_guidance`/`uses_opendde_guidance` gate which one runs (mutually
+exclusive, checked in `run()` before any model loads). Unlike Boltz2's
+PAE-based terms, OpenDDE's `bind` objective reads `distogram_logits` only
+(`DistogramIPTMProxy`/`BinderTargetContact`) via `build_distogram_only_loss`,
+since OpenDDE's PAE/pLDDT are documented as scoring-only, not a gradient
+channel. `refold_pareto_with_opendde` is the OpenDDE analog of
+`refold_pareto_with_boltz2` for post-refold ranking, selected via
+`cfg.refold_backend` (now defaults to `"opendde"`; guidance weights
+`weight_opendde_iptm`/`weight_opendde_contact` still default to `0.0`, so
+in-loop guidance itself still falls back to EditBudget-only unless one is
+set explicitly). The differentiable guidance smoke now passes on GPU,
+including a real loss-decreasing `-gradient` step. The refold smoke still
+needs a larger-memory GPU: on the local 24 GB 4090 it OOMs inside OpenDDE's
+full coordinate/PAE forward path with a 6.06 GiB allocation, even with
+`MOSAIC_OPENDDE_SMOKE_STEPS=1`; see `examples/opendde_smoke_test.py` and
+`examples/opendde_refold_smoke_test.py`.
 
 **Reproducing the verification claims above:** `uv run` currently hangs on
 this machine trying to re-resolve a floating git dependency
@@ -156,18 +177,39 @@ prior-compatibility fix. The goal is to find out empirically whether
 external guidance is actually fighting the BoltzGen prior often enough to
 matter for this pipeline, not to assume it either way.
 
-- [ ] Log cosine similarity: guided step direction vs. unguided direction
+- [x] Log cosine similarity: guided step direction vs. unguided direction
       (uses the exposed value from Phase 1)
-- [ ] Log norm ratio: `‖guided step‖ / ‖unguided step‖`
-- [ ] Log fraction of steps with strong directional disagreement (pick and
-      justify a threshold)
-- [ ] Stratify disagreement by `sigma` (noise axis)
+- [x] Log norm ratio: `‖guided step‖ / ‖unguided step‖`
+      — both implemented in `mosaic.diagnostics.per_step_metrics`
+      (`src/mosaic/diagnostics.py`): `cos_guided_unguided` uses the raw
+      (scale-invariant) `unguided_direction`/`guided_direction` fields;
+      `norm_ratio` uses the physically-scaled `unguided_step_delta`/
+      `guided_step_delta` fields added to Phase 1's diagnostics dict.
+      Unit-tested with synthetic diagnostics dicts (identical directions ->
+      cosine 1, orthogonal -> cosine 0, known displacement scale -> exact
+      norm ratio) — `tests/test_guidance_diagnostics.py`.
+- [x] Log fraction of steps with strong directional disagreement (pick and
+      justify a threshold) — `mosaic.diagnostics.summarize`'s
+      `frac_strong_disagreement`, threshold configurable via
+      `--guidance-diagnostics-cos-threshold` (default 0.0, i.e. orthogonal
+      or worse; explicitly documented as a starting point to tighten once
+      real trajectories are available, not a validated cutoff).
+- [x] Stratify disagreement by `sigma` (noise axis) — `summarize`'s
+      `by_sigma_bin`, quantile-binned on `t_hat` (now exposed per-step by
+      Phase 1's diagnostics dict alongside `sigma_t`), bin count
+      configurable via `--guidance-diagnostics-sigma-bins` (default 4).
+      Unit-tested that bins partition all steps with no gaps/overlaps.
 - [ ] Stratify disagreement by **which objective** is driving it — separate
       stats for `g_bind` vs. `g_nat` vs. `g_edit`, not just the merged
       total. This determines whether an eventual fix should be global or
       objective-specific (e.g. only AbLang2's naturalness term may be the
       source of conflict, not the structurally-grounded binding term).
-- [ ] Log per-step pairwise conflict *between the objectives themselves*:
+      Not yet implemented: `per_step_metrics`/`summarize` currently report
+      `cos_guided_unguided` only for the *merged* `g_total`-driven step, not
+      per-objective disagreement against the unguided prior. `g_bind`/
+      `g_nat`/`g_edit` are captured per step in the raw diagnostics dict, so
+      this is a follow-on aggregation, not a data-availability gap.
+- [x] Log per-step pairwise conflict *between the objectives themselves*:
       `cos(g_bind, g_nat)` and `cos(g_bind, g_edit)`, separate from the
       objective-vs-prior stratification above. This distinguishes two
       different problems that could otherwise be conflated: objectives
@@ -177,12 +219,41 @@ matter for this pipeline, not to assume it either way.
       as a sanity check on whether Phase 1's conflict-projection logic is
       doing meaningful work at all, or solving a conflict that rarely
       occurs in practice.
+      — `per_step_metrics`'s `cos_bind_nat`/`cos_bind_edit`, NaN (not 0.0) at
+      steps where the objective wasn't active, so an unused objective can't
+      masquerade as "perfectly orthogonal". Unit-tested for both the NaN and
+      real-value cases.
 - [ ] Correlate disagreement against final outcome, using **both** pose
       RMSD and ipSAE, not just one metric. (These two metrics have been
       directly observed to disagree on the same designs in this project's
       own validation work — do not trust either alone as ground truth for
       "good outcome.")
+      Partially implemented: `mosaic.diagnostics.correlate_with_outcomes`
+      exists and is unit-tested (Pearson correlation of summary stats
+      against `{ipsae, rmsd}`, `None` — not a silently-wrong number — for
+      <3 records or zero-variance input). **Not yet wired to real refold
+      output**: refolding happens once, after the whole outer loop, over
+      the merged Pareto front (`refold_pareto_with_boltz2`), not per outer
+      iteration, so there's no automatic mapping yet from a refolded
+      candidate's ipSAE/RMSD back to the guidance-diagnostics summary of
+      the trajectory that produced it. `write_report`'s per-trajectory
+      records currently always have `outcome=None`. Joining the two is a
+      follow-on task once real refolded runs exist to join against.
 - [ ] Run on a modest sample of real trajectories, not synthetic/toy cases
+      — blocked on GPU/checkpoint access; not yet done. Everything above is
+      verified against synthetic diagnostics dicts shaped like the real
+      output, not real BoltzGen trajectories.
+
+**Driver wiring:** `src/mosaic/workflows/boltzgen_vhh_guided.py` gained
+`--log-guidance-diagnostics` (off by default), `--guidance-diagnostics-cos-threshold`,
+and `--guidance-diagnostics-sigma-bins`. When enabled (and guidance is
+actually active — a no-op controller would trivially report cosine ~1
+everywhere), each outer iteration calls `guided_partial_diffusion(...,
+return_diagnostics=True)`, reduces the result through
+`per_step_metrics`/`summarize`, prints a one-block human-readable summary via
+`format_summary_text`, and appends to `<output_dir>/guidance_diagnostics.json`
+— rewritten after every outer iteration (not just at the end of `run()`) so a
+preempted or crashed cluster job still leaves partial diagnostics on disk.
 
 **Decision gate — stated precisely, in three parts:**
 

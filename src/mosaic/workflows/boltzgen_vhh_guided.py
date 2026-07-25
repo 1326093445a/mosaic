@@ -2,8 +2,9 @@
 
 Pipeline (per outer-loop iteration):
   1. guided_partial_diffusion: BoltzGen partial diffusion with classifier guidance
-     from ESM2/AbLang2/EditBudget and optional Boltz2 target-aware terms,
-     perturbing CDR atoms only.
+     from AbLang2/EditBudget and an optional target-aware binding term
+     (Boltz2 PAE/ipTM-based, or OpenDDE distogram-based -- mutually exclusive,
+     see uses_boltz2_guidance/uses_opendde_guidance), perturbing CDR atoms only.
   2. Convert guided coordinates to soft sequences with JAX BoltzGen-IF; all
      sequence-loss gradients flow through this bridge back to coordinates.
   3. Greedy/MCMC search: polish the discrete sequence under the full multi-model
@@ -12,8 +13,11 @@ Pipeline (per outer-loop iteration):
   4. Record a Pareto front {edit_count: (loss, sequence)}.
   5. Update parent if improved, repeat.
 
-After convergence: refold final candidates with Boltz2, rank primarily by ipSAE,
-and write interface metrics, target-aligned RMSD, and CIFs.
+After convergence: refold final candidates (Boltz2 or OpenDDE, see
+cfg.refold_backend -- defaults to OpenDDE), rank primarily by ipSAE, and write
+interface metrics, target-aligned RMSD, and CIFs. OpenDDE's featurizer does
+not support templates, unlike Boltz2's optional target/binder templating --
+see opendde_refold_ignores_template_config.
 
 Toggles for incremental milestones:
   v0 (task #7):  skip_guidance=True,  skip_polish=True
@@ -61,8 +65,13 @@ import yaml
 from jaxtyping import Array, Bool, Float, Int
 
 from mosaic.common import TOKENS, LossTerm
+from mosaic.diagnostics import (
+    format_summary_text,
+    per_step_metrics,
+    summarize as summarize_guidance_diagnostics,
+    write_report as write_guidance_diagnostics_report,
+)
 from mosaic.losses.ablang2 import Ablang2PseudoLikelihood, load_ablang2
-from mosaic.losses.esm import ESM2PseudoLikelihood, load_esm2
 from mosaic.losses.transformations import (
     ClippedGradient,
     EditBudget,
@@ -111,7 +120,6 @@ class VHHDesignConfig:
     edit_budget: int = 7
 
     # ---- Guidance composite loss weights ----
-    weight_esm2: float = 0.10
     weight_ablang2: float = 0.10
     weight_edit_budget: float = 5.00
     weight_boltz2_ptm_energy: float = 0.0
@@ -121,8 +129,19 @@ class VHHDesignConfig:
     boltz2_guidance_recycling_steps: int = 0
     boltz2_guidance_sampling_steps: int = 5
     boltz2_guidance_target_template: bool = True
+    # OpenDDE alternative to Boltz2 guidance (mutually exclusive -- see
+    # uses_boltz2_guidance/uses_opendde_guidance). PAE/pLDDT are scoring-only
+    # for OpenDDE (see build_opendde_guidance_loss), so these read the
+    # distogram instead of PAE.
+    weight_opendde_iptm: float = 0.0
+    weight_opendde_contact: float = 0.0
+    opendde_guidance_recycling_steps: int = 4
+    # No opendde_guidance_sampling_steps: both OpenDDE guidance losses are
+    # distogram-only (build_opendde_guidance_loss uses
+    # build_distogram_only_loss), which skips diffusion sampling entirely --
+    # a sampling-steps knob here would be dead configuration.
+    opendde_contact_distance: float = 8.0  # BinderTargetContact.contact_distance
     clip_gradient_norm: float = 1.0  # per-term gradient clip for balance
-    esm2_model_name: str = "esm2_t33_650M_UR50D"
 
     # ---- Diffusion ----
     num_sampling_steps: int = 200
@@ -131,6 +150,20 @@ class VHHDesignConfig:
     noise_scale: float = 0.88
     lambda_max: float = 1.0
     lambda_schedule: str = "sigma_squared"  # one of {sigma_squared, sigma, constant}
+    # Real iterative NOS-style prior-compatibility mechanism (section 12a of
+    # docs/guidance_alphaseq_testing_notes.md) -- off by default (0 inner
+    # steps = one-shot merge, unchanged behavior). A one-shot squared-distance
+    # translation of NOS's KL term was tried first and found to be
+    # mathematically a no-op; genuine inner iteration is required instead,
+    # see guided_partial_diffusion's docstring in models/boltzgen.py.
+    nos_inner_steps: int = 0
+    nos_inner_step_size: float = 0.05
+    nos_lambda_kl: float = 1.0
+    nos_langevin_noise: float = 0.0  # 0 = deterministic inner descent
+    # Real look-ahead mechanism (section 12b): differentiate through the
+    # full denoiser wrt atom_coords_noisy instead of the frozen x0_hat.
+    # Mutually exclusive with nos_inner_steps > 0 (raises ValueError).
+    lookahead: bool = False
 
     # ---- Outer loop ----
     n_outer_iterations: int = 3
@@ -161,6 +194,11 @@ class VHHDesignConfig:
     skip_polish: bool = False
     skip_refold: bool = True  # default off; task #15 wires this back in
 
+    # ---- Phase 2 guidance diagnostics (docs/guidance_implementation_todo.md) ----
+    log_guidance_diagnostics: bool = False
+    guidance_diagnostics_cos_threshold: float = 0.0
+    guidance_diagnostics_sigma_bins: int = 4
+
     # ---- Misc ----
     recycling_steps: int = 3
     refold_sampling_steps: int = 25
@@ -170,6 +208,12 @@ class VHHDesignConfig:
     refold_binder_template_mode: str = "full"  # one of {full, framework, none}
     ipsae_pae_cutoff: float = 12.0
     refold_rmsd_threshold: float = 2.5
+    # one of {boltz2, opendde}. Defaults to opendde per explicit request --
+    # The differentiable guidance path is GPU-smoke-tested; the full refold
+    # path has a separate smoke in examples/opendde_refold_smoke_test.py and
+    # still needs completion on a GPU with enough free VRAM. Override with
+    # --refold-backend boltz2 when that validation requirement matters.
+    refold_backend: str = "opendde"
     seed: int = 0
 
 
@@ -820,6 +864,45 @@ def uses_boltz2_guidance(cfg: VHHDesignConfig) -> bool:
     )
 
 
+def uses_opendde_guidance(cfg: VHHDesignConfig) -> bool:
+    return cfg.weight_opendde_iptm > 0 or cfg.weight_opendde_contact > 0
+
+
+def guidance_anchor_is_empty_edit_budget(cfg: VHHDesignConfig) -> bool:
+    """True when build_guidance_loss will promote edit_loss into the `bind`
+    anchor slot (no Boltz2/OpenDDE binding signal configured -- see its
+    fallback branch) *and* that promoted anchor is itself a no-op because
+    `weight_edit_budget <= 0`.
+
+    In that case guided_partial_diffusion still runs (grad_bind is not None
+    -- edit_loss exists as an object), but its gradient is all-zero, so
+    `_compat_project(g_nat, g_bind=0)` returns g_nat completely unprojected
+    (a zero anchor has nothing to conflict with) and g_total collapses to
+    `alpha_fn(t_hat) * g_nat` alone. Guidance silently becomes
+    naturalness-only despite `GuidanceLosses.bind`'s docstring calling it
+    "the anchor objective guidance is built around" -- see the warning in
+    run() that uses this."""
+    return (
+        not cfg.skip_guidance
+        and not uses_boltz2_guidance(cfg)
+        and not uses_opendde_guidance(cfg)
+        and cfg.weight_edit_budget <= 0
+    )
+
+
+def opendde_refold_ignores_template_config(cfg: VHHDesignConfig) -> bool:
+    """True when refold_binder_template config implies templated refolding
+    that --refold-backend opendde silently can't do (its featurizer rejects
+    templates outright -- see models/opendde.py). Both refold_binder_template
+    fields default to template-on, so this is true for most default-config
+    OpenDDE refold runs -- see the warning in run() that uses this."""
+    return (
+        cfg.refold_backend == "opendde"
+        and cfg.refold_binder_template
+        and cfg.refold_binder_template_mode != "none"
+    )
+
+
 def build_single_design_command(args, *, seed: int, output_dir: Path) -> list[str]:
     """Reconstruct the CLI for one child design job."""
     cmd = [
@@ -851,6 +934,11 @@ def build_single_design_command(args, *, seed: int, output_dir: Path) -> list[st
     _append_option(cmd, "--noise-scale", args.noise_scale)
     _append_option(cmd, "--lambda-max", args.lambda_max)
     _append_option(cmd, "--lambda-schedule", args.lambda_schedule)
+    _append_option(cmd, "--nos-inner-steps", args.nos_inner_steps)
+    _append_option(cmd, "--nos-inner-step-size", args.nos_inner_step_size)
+    _append_option(cmd, "--nos-lambda-kl", args.nos_lambda_kl)
+    _append_option(cmd, "--nos-langevin-noise", args.nos_langevin_noise)
+    _append_option(cmd, "--lookahead", args.lookahead)
     _append_option(cmd, "--n-outer-iterations", args.n_outer_iterations)
     _append_option(cmd, "--search-mode", args.search_mode)
     _append_option(cmd, "--polish-steps", args.polish_steps)
@@ -886,8 +974,6 @@ def build_single_design_command(args, *, seed: int, output_dir: Path) -> list[st
     )
     _append_option(cmd, "--ipsae-pae-cutoff", args.ipsae_pae_cutoff)
     _append_option(cmd, "--refold-rmsd-threshold", args.refold_rmsd_threshold)
-    _append_option(cmd, "--esm2-model", args.esm2_model)
-    _append_option(cmd, "--weight-esm2", args.weight_esm2)
     _append_option(cmd, "--weight-ablang2", args.weight_ablang2)
     _append_option(cmd, "--weight-edit-budget", args.weight_edit_budget)
     _append_option(cmd, "--weight-boltz2-ptm-energy", args.weight_boltz2_ptm_energy)
@@ -913,10 +999,30 @@ def build_single_design_command(args, *, seed: int, output_dir: Path) -> list[st
         "--boltz2-guidance-target-template",
         args.boltz2_guidance_target_template,
     )
+    _append_option(cmd, "--weight-opendde-iptm", args.weight_opendde_iptm)
+    _append_option(cmd, "--weight-opendde-contact", args.weight_opendde_contact)
+    _append_option(
+        cmd,
+        "--opendde-guidance-recycling-steps",
+        args.opendde_guidance_recycling_steps,
+    )
+    _append_option(cmd, "--opendde-contact-distance", args.opendde_contact_distance)
+    _append_option(cmd, "--refold-backend", args.refold_backend)
     _append_option(cmd, "--clip-gradient-norm", args.clip_gradient_norm)
     _append_option(cmd, "--skip-guidance", args.skip_guidance)
     _append_option(cmd, "--skip-polish", args.skip_polish)
     _append_option(cmd, "--skip-refold", args.skip_refold)
+    _append_option(cmd, "--log-guidance-diagnostics", args.log_guidance_diagnostics)
+    _append_option(
+        cmd,
+        "--guidance-diagnostics-cos-threshold",
+        args.guidance_diagnostics_cos_threshold,
+    )
+    _append_option(
+        cmd,
+        "--guidance-diagnostics-sigma-bins",
+        args.guidance_diagnostics_sigma_bins,
+    )
     return cmd
 
 
@@ -1066,10 +1172,10 @@ class LoadedModels:
     boltzgen: any
     boltzgen_if_jax: any = None
     boltzgen_if_torch: any = None
-    esm2_pll: any = None
     ablang2_model: any = None
     ablang2_tokenizer: any = None
     boltz2: any = None
+    opendde: any = None
 
 
 def load_core_models(cfg: VHHDesignConfig) -> LoadedModels:
@@ -1084,26 +1190,25 @@ def load_core_models(cfg: VHHDesignConfig) -> LoadedModels:
 def load_guidance_models(cfg: VHHDesignConfig, models: LoadedModels) -> LoadedModels:
     """Load IF/language guidance models after BoltzGen trunk conditioning.
 
-    `Sampler.from_features` has a large compile/runtime peak. Deferring ESM2 and
-    AbLang2 until after that stage avoids keeping those model weights resident
-    during the BoltzGen sampler allocation.
+    `Sampler.from_features` has a large compile/runtime peak. Deferring AbLang2
+    until after that stage avoids keeping those model weights resident during
+    the BoltzGen sampler allocation.
     """
-    # stop_grad=False on the language models because we need gradients to flow
+    # stop_grad=False on the language model because we need gradients to flow
     # back to coords through the differentiable IF bridge during guidance.
-    if cfg.weight_esm2 > 0 and models.esm2_pll is None:
-        stage_log(f"loading ESM2 model {cfg.esm2_model_name}")
-        esm2 = load_esm2(cfg.esm2_model_name)
-        models.esm2_pll = ESM2PseudoLikelihood(esm2, stop_grad=False)
-        stage_log(f"loaded ESM2 model {cfg.esm2_model_name}")
-    elif cfg.weight_esm2 <= 0:
-        stage_log("skipping ESM2 model because weight_esm2 <= 0")
-
     if cfg.weight_ablang2 > 0 and models.ablang2_model is None:
         stage_log("loading AbLang2 model")
         models.ablang2_model, models.ablang2_tokenizer = load_ablang2()
         stage_log("loaded AbLang2 model")
     elif cfg.weight_ablang2 <= 0:
         stage_log("skipping AbLang2 model because weight_ablang2 <= 0")
+
+    if uses_boltz2_guidance(cfg) and uses_opendde_guidance(cfg):
+        raise ValueError(
+            "Both Boltz2 (--weight-boltz2-*) and OpenDDE (--weight-opendde-*) "
+            "in-loop guidance weights are set; only one can own the bind "
+            "objective. Zero out one backend's weights."
+        )
 
     if uses_boltz2_guidance(cfg) and models.boltz2 is None:
         stage_log("loading Boltz2 model for target-aware guidance")
@@ -1113,6 +1218,15 @@ def load_guidance_models(cfg: VHHDesignConfig, models: LoadedModels) -> LoadedMo
         stage_log("loaded Boltz2 model for target-aware guidance")
     elif not uses_boltz2_guidance(cfg):
         stage_log("skipping Boltz2 guidance model because its weights are <= 0")
+
+    if uses_opendde_guidance(cfg) and models.opendde is None:
+        stage_log("loading OpenDDE (Abag) model for target-aware guidance")
+        from mosaic.models.opendde import OpenDDEModelAbag
+
+        models.opendde = OpenDDEModelAbag()
+        stage_log("loaded OpenDDE (Abag) model for target-aware guidance")
+    elif not uses_opendde_guidance(cfg):
+        stage_log("skipping OpenDDE guidance model because its weights are <= 0")
     return models
 
 
@@ -1236,16 +1350,15 @@ def build_boltz2_guidance_loss(
     if cfg.weight_boltz2_iptm > 0:
         loss_terms.append(cfg.weight_boltz2_iptm * IPTMLoss())
     if cfg.weight_boltz2_ipsae > 0:
-        # ipSAE's PAE-cutoff masking makes it a discontinuous, hard-thresholded
-        # objective -- unsuitable as a step-wise in-loop gradient target (see
-        # docs/guidance_design_notes.md / guidance_search_summary.md, both of
-        # which independently conclude ipSAE must stay post-refold only).
-        # Use it via --skip-refold=false ranking instead of in-loop guidance.
+        # ipSAE's hard PAE cutoff and max/best-row reduction are not a stable
+        # differentiable per-step objective. In-loop binding guidance should use
+        # ipTM and interface PAE/iPAE; ipSAE stays a post-refold rank/filter.
         raise ValueError(
             "--weight-boltz2-ipsae is not supported for in-loop guidance; "
-            "ipSAE is a post-refold-only ranking metric. Set "
-            "--weight-boltz2-ipsae 0 and use ipsae_pae_cutoff-based refold "
-            "ranking (--skip-refold false) instead."
+            "ipSAE is not differentiable enough for per-step guidance. Use "
+            "--weight-boltz2-iptm and/or --weight-boltz2-interface-pae for "
+            "guidance, then use ipsae_pae_cutoff-based refold ranking "
+            "(--skip-refold false) afterward."
         )
     if not loss_terms:
         raise ValueError("Boltz2 guidance requested without positive loss weights")
@@ -1264,6 +1377,100 @@ def build_boltz2_guidance_loss(
         features=features,
         recycling_steps=cfg.boltz2_guidance_recycling_steps,
         sampling_steps=cfg.boltz2_guidance_sampling_steps,
+    )
+
+
+def build_opendde_guidance_loss(
+    cfg: VHHDesignConfig,
+    models: LoadedModels,
+    designable_token_mask: Bool[Array, "N"],
+    sequence_loss_indices: Int[Array, "M"],
+) -> LossTerm:
+    """Build the target-aware sequence loss used inside diffusion guidance,
+    OpenDDE backend (alternative to `build_boltz2_guidance_loss`).
+
+    OpenDDE's PAE/pLDDT are scoring-only, not a gradient channel (see
+    src/mosaic/models/opendde.py's module docstring: "the differentiable
+    design signal rides the distogram... pae/pLDDT are consumed as scored
+    values, not as a gradient channel"). So unlike the Boltz2 loss above
+    (built from PAE/ipTM), this reads `distogram_logits` via
+    `DistogramIPTMProxy`/`BinderTargetContact` -- both already generic over
+    `StructureModelOutput`, no OpenDDE-specific loss classes needed.
+
+    OpenDDE's featurizer does not support templates (`TargetChain(...,
+    template_chain=...)` raises `NotImplementedError` there), unlike Boltz2's
+    optional target templating -- target chains are always template-free here.
+
+    Both currently-supported OpenDDE guidance losses (`DistogramIPTMProxy`,
+    `BinderTargetContact`) read only `distogram_logits`/`distogram_bins`, so
+    this uses `build_distogram_only_loss` rather than `build_loss` --
+    `build_loss` always runs OpenDDE's diffusion coordinate sampling and
+    confidence head regardless of whether the wrapped loss touches them,
+    which would otherwise be paid on every BoltzGen diffusion step for
+    nothing. This would matter again only if a PAE/coordinate-based OpenDDE
+    guidance loss is added later, which `build_distogram_only_loss`'s
+    `_DistogramOnlyOutput` stand-in deliberately can't support -- see
+    `mosaic.losses.opendde.DistogramOnlyOpenDDELoss`.
+    """
+    if models.opendde is None:
+        raise ValueError("OpenDDE model was not loaded; check OpenDDE guidance weights")
+
+    from mosaic.losses.structure_prediction import BinderTargetContact, DistogramIPTMProxy
+    from mosaic.structure_prediction import TargetChain
+
+    if cfg.opendde_guidance_recycling_steps < 0:
+        raise ValueError("--opendde-guidance-recycling-steps must be >= 0")
+
+    binder_length = int(sequence_loss_indices.shape[0])
+
+    stage_log(f"OpenDDE guidance: reading target chains from {cfg.complex_cif_path}")
+    target_struct = gemmi.read_structure(str(cfg.complex_cif_path))
+    target_struct.setup_entities()
+    target_chains = []
+    for cid in cfg.target_chain_ids:
+        chain = target_struct[0][cid]
+        seq = gemmi.one_letter_code([r.name for r in chain])
+        target_chains.append(TargetChain(seq, use_msa=False))
+
+    stage_log(
+        "OpenDDE guidance: featurizing binder placeholder + target "
+        f"(binder_len={binder_length})"
+    )
+    features, _ = models.opendde.binder_features(binder_length, target_chains)
+
+    # Binder-local (0-indexed into the binder-only sequence array) positions
+    # of the designable/CDR residues, for BinderTargetContact's paratope_idx --
+    # mirrors examples/protenij_vhh.py's pattern of restricting contact scoring
+    # to the redesigned positions rather than the whole binder chain.
+    paratope_idx = np.nonzero(
+        np.asarray(designable_token_mask)[np.asarray(sequence_loss_indices)]
+    )[0]
+
+    loss_terms = []
+    if cfg.weight_opendde_iptm > 0:
+        loss_terms.append(cfg.weight_opendde_iptm * DistogramIPTMProxy())
+    if cfg.weight_opendde_contact > 0:
+        loss_terms.append(
+            cfg.weight_opendde_contact * BinderTargetContact(
+                paratope_idx=paratope_idx,
+                contact_distance=cfg.opendde_contact_distance,
+            )
+        )
+    if not loss_terms:
+        raise ValueError("OpenDDE guidance requested without positive loss weights")
+
+    opendde_sequence_loss = sum(loss_terms[1:], start=loss_terms[0])
+    stage_log(
+        "OpenDDE guidance: built distogram-only loss "
+        f"(distogram_iptm={cfg.weight_opendde_iptm}, "
+        f"contact={cfg.weight_opendde_contact}, "
+        f"recycle={cfg.opendde_guidance_recycling_steps}; "
+        "diffusion sampling skipped, see build_distogram_only_loss)"
+    )
+    return models.opendde.build_distogram_only_loss(
+        loss=opendde_sequence_loss,
+        features=features,
+        recycling_steps=cfg.opendde_guidance_recycling_steps,
     )
 
 
@@ -1318,17 +1525,8 @@ def build_guidance_loss(cfg: VHHDesignConfig, models: LoadedModels,
     # Boltz2 binding, which are individually optional via their weights).
     edit_loss = cfg.weight_edit_budget * edit_budget_term
 
-    # Naturalness (L_nat): ESM2 and AbLang2 combine into one objective if
-    # either or both are enabled.
+    # Naturalness (L_nat): AbLang2, if enabled.
     nat_terms = []
-    if cfg.weight_esm2 > 0:
-        nat_terms.append(
-            cfg.weight_esm2
-            * SequenceSubsetLoss(
-                ClippedGradient(models.esm2_pll, cfg.clip_gradient_norm),
-                sequence_loss_indices,
-            )
-        )
     if cfg.weight_ablang2 > 0:
         ablang2_pll = make_ablang2_loss(
             models, sequence_loss_indices, stop_grad=False
@@ -1342,8 +1540,9 @@ def build_guidance_loss(cfg: VHHDesignConfig, models: LoadedModels,
         )
     nat_loss = sum(nat_terms[1:], start=nat_terms[0]) if nat_terms else None
 
-    # Binding confidence (L_bind): the Boltz2-based interface-confidence
-    # surrogate, if configured.
+    # Binding confidence (L_bind): the Boltz2- or OpenDDE-based
+    # interface-confidence surrogate, if either is configured. Mutually
+    # exclusive -- load_guidance_models raises if both are set.
     bind_loss = None
     if uses_boltz2_guidance(cfg):
         boltz2_guidance_loss = build_boltz2_guidance_loss(
@@ -1355,18 +1554,30 @@ def build_guidance_loss(cfg: VHHDesignConfig, models: LoadedModels,
             ClippedGradient(boltz2_guidance_loss, cfg.clip_gradient_norm),
             sequence_loss_indices,
         )
+    elif uses_opendde_guidance(cfg):
+        opendde_guidance_loss = build_opendde_guidance_loss(
+            cfg,
+            models,
+            designable_token_mask,
+            sequence_loss_indices,
+        )
+        bind_loss = SequenceSubsetLoss(
+            ClippedGradient(opendde_guidance_loss, cfg.clip_gradient_norm),
+            sequence_loss_indices,
+        )
 
     if bind_loss is not None:
         return GuidanceLosses(bind=bind_loss, nat=nat_loss, edit=edit_loss)
 
-    # No Boltz2 binding signal configured — this is v1's "EditBudget-only
-    # guidance" mode. guided_partial_diffusion requires a bind objective for
-    # guidance to be active at all (it is the anchor everything else is
-    # projected against), so use edit_loss as the anchor in this case
-    # instead of as a separate regularizer. This preserves v1's original
-    # behavior exactly: with no naturalness terms either, guidance reduces
-    # to edit-budget alone driving the trajectory, matching what the single
-    # merged guidance_fn used to do when only weight_edit_budget was nonzero.
+    # No Boltz2/OpenDDE binding signal configured — this is v1's
+    # "EditBudget-only guidance" mode. guided_partial_diffusion requires a
+    # bind objective for guidance to be active at all (it is the anchor
+    # everything else is projected against), so use edit_loss as the anchor
+    # in this case instead of as a separate regularizer. This preserves v1's
+    # original behavior exactly: with no naturalness terms either, guidance
+    # reduces to edit-budget alone driving the trajectory, matching what the
+    # single merged guidance_fn used to do when only weight_edit_budget was
+    # nonzero.
     return GuidanceLosses(bind=edit_loss, nat=nat_loss, edit=None)
 
 
@@ -1387,10 +1598,6 @@ def build_polish_loss(cfg: VHHDesignConfig, models: LoadedModels,
         budget=cfg.edit_budget,
     )
     terms = [cfg.weight_edit_budget * edit_term]
-    if cfg.weight_esm2 > 0:
-        terms.append(
-            cfg.weight_esm2 * SequenceSubsetLoss(models.esm2_pll, sequence_loss_indices)
-        )
     if cfg.weight_ablang2 > 0:
         ablang2_pll = make_ablang2_loss(
             models, sequence_loss_indices, stop_grad=False
@@ -1430,10 +1637,80 @@ def run(cfg: VHHDesignConfig):
         # rejected. Checking here catches that case too.
         raise ValueError(
             "--weight-boltz2-ipsae is not supported for in-loop guidance; "
-            "ipSAE is a post-refold-only ranking metric. Set "
-            "--weight-boltz2-ipsae 0 and use ipsae_pae_cutoff-based refold "
-            "ranking (--skip-refold false) instead."
+            "ipSAE is not differentiable enough for per-step guidance. Use "
+            "--weight-boltz2-iptm and/or --weight-boltz2-interface-pae for "
+            "guidance, then use ipsae_pae_cutoff-based refold ranking "
+            "(--skip-refold false) afterward."
         )
+    if uses_boltz2_guidance(cfg) and uses_opendde_guidance(cfg):
+        # Same reasoning as the ipSAE check above: validated here (before any
+        # model loading) rather than only inside load_guidance_models, so it
+        # fails fast and is cheaply testable without a real BoltzGen load.
+        raise ValueError(
+            "Both Boltz2 (--weight-boltz2-*) and OpenDDE (--weight-opendde-*) "
+            "in-loop guidance weights are set; only one can own the bind "
+            "objective. Zero out one backend's weights."
+        )
+    if cfg.refold_backend not in {"boltz2", "opendde"}:
+        raise ValueError("--refold-backend must be one of boltz2, opendde")
+    if guidance_anchor_is_empty_edit_budget(cfg):
+        # Warned here (before any model loading), same reasoning as the
+        # other config-only checks in this block.
+        print(
+            "[guidance] WARNING: no Boltz2/OpenDDE binding signal is "
+            "configured and --weight-edit-budget <= 0, so the promoted "
+            "`bind` anchor (see build_guidance_loss) has an all-zero "
+            "gradient. Guidance will collapse to naturalness-only "
+            "(AbLang2) if --weight-ablang2 > 0, or be a no-op entirely if "
+            "it is not, despite the anchor/regularizer framing implying "
+            "edit-budget is driving the trajectory. Set "
+            "--weight-edit-budget > 0 if that framing should hold, or "
+            "ignore this if naturalness-only guidance is intentional.",
+            flush=True,
+        )
+    if not cfg.skip_refold and opendde_refold_ignores_template_config(cfg):
+        # Warned here (before any model loading) rather than only right
+        # before refolding runs, so it's visible before paying for the
+        # entire design/search loop, not immediately before the refold step
+        # at the very end of a run that could take a long time.
+        print(
+            "[refold] WARNING: --refold-binder-template is set "
+            f"(mode={cfg.refold_binder_template_mode!r}) but "
+            "--refold-backend opendde does not support templates -- this "
+            "run's refolding will be template-free regardless. Set "
+            "--refold-binder-template-mode none to make that explicit, or "
+            "use --refold-backend boltz2 if templated refolding matters.",
+            flush=True,
+        )
+    if not cfg.skip_refold:
+        # Both refold_pareto_with_boltz2 and refold_pareto_with_opendde score
+        # samples via eqx.filter_jit(jax.vmap(score_one)) -- fusing a whole
+        # trunk-to-confidence-heads forward (with its unrolled per-step
+        # diffusion sampling loop) into one compiled program. That produces a
+        # compiled kernel binary over 1GB; loading it competes with JAX's
+        # preallocated device-memory arena for a *separate* memory pool, and
+        # XLA's autotuner additionally grabs large transient scratch while
+        # benchmarking candidate kernels during compilation. Both cause
+        # spurious CUDA_ERROR_OUT_OF_MEMORY on a single 24GB GPU even for
+        # tiny inputs -- confirmed via jax's compiled memory_analysis(),
+        # whose reported peak *data* usage was ~1.3GB, nowhere near the
+        # failure. Disabling autotuning avoids both; XLA falls back to
+        # default (not empirically-searched) kernel choices, a minor
+        # runtime-speed tradeoff for a program that otherwise won't load at
+        # all on this hardware.
+        #
+        # Set here, before load_core_models (a few lines below) -- the
+        # earliest JAX device touch in this process -- since XLA reads
+        # XLA_FLAGS once, lazily, at backend initialization. Every
+        # --devices multi-GPU child re-executes run() from scratch as its
+        # own process (see run_many_from_cli/build_single_design_command),
+        # so this self-applies per child with no separate multi-GPU-specific
+        # handling needed.
+        existing_xla_flags = os.environ.get("XLA_FLAGS", "")
+        if "--xla_gpu_autotune_level" not in existing_xla_flags:
+            os.environ["XLA_FLAGS"] = (
+                existing_xla_flags + " --xla_gpu_autotune_level=0"
+            ).strip()
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     with open(cfg.output_dir / "config.json", "w") as f:
         json.dump({k: (str(v) if isinstance(v, Path) else v)
@@ -1531,6 +1808,7 @@ def run(cfg: VHHDesignConfig):
 
     all_iterations = []
     global_pareto: dict[int, tuple[float, np.ndarray]] = {}
+    guidance_diagnostics_records = []
 
     for outer in range(cfg.n_outer_iterations):
         t0 = time.time()
@@ -1584,8 +1862,13 @@ def run(cfg: VHHDesignConfig):
         else:
             guidance_fn_bind = guidance_fn_nat = guidance_fn_edit = None
 
+        # Diagnostics are only meaningful when guidance is actually active --
+        # with guidance_fn_bind=None the controller is a no-op and
+        # cos(guided,unguided) would trivially be ~1 everywhere.
+        want_diagnostics = cfg.log_guidance_diagnostics and guidance_fn_bind is not None
+
         stage_log(f"outer {outer}: starting guided partial diffusion")
-        x_final = guided_partial_diffusion(
+        diffusion_result = guided_partial_diffusion(
             sampler=sampler,
             structure_module=models.boltzgen.structure_module,
             initial_coords=current_initial_coords,
@@ -1599,8 +1882,35 @@ def run(cfg: VHHDesignConfig):
             guidance_fn_nat=guidance_fn_nat,
             guidance_fn_edit=guidance_fn_edit,
             guidance_lambda_fn=lambda_fn if guidance_fn_bind is not None else None,
+            guidance_nos_inner_steps=cfg.nos_inner_steps if guidance_fn_bind is not None else 0,
+            guidance_nos_inner_step_fn=lambda t: cfg.nos_inner_step_size,
+            guidance_nos_lambda_kl_fn=lambda t: cfg.nos_lambda_kl,
+            guidance_nos_noise_fn=lambda t: cfg.nos_langevin_noise,
+            guidance_lookahead=cfg.lookahead if guidance_fn_bind is not None else False,
             key=jax.random.key(cfg.seed + 1000 * outer),
+            return_diagnostics=want_diagnostics,
         )
+        if want_diagnostics:
+            x_final, step_diagnostics = diffusion_result
+            label = f"outer_{outer}"
+            summary = summarize_guidance_diagnostics(
+                per_step_metrics(step_diagnostics, atom_partial_mask=atom_partial_mask),
+                disagreement_cos_threshold=cfg.guidance_diagnostics_cos_threshold,
+                n_sigma_bins=cfg.guidance_diagnostics_sigma_bins,
+            )
+            print(format_summary_text(label, summary), flush=True)
+            guidance_diagnostics_records.append(
+                {"label": label, "summary": summary, "outcome": None}
+            )
+            # Write incrementally after every outer iteration, not just at the
+            # end of run() -- cluster jobs can be preempted or crash mid-run,
+            # and partial diagnostics are still useful.
+            write_guidance_diagnostics_report(
+                guidance_diagnostics_records,
+                cfg.output_dir / "guidance_diagnostics.json",
+            )
+        else:
+            x_final = diffusion_result
         stage_log(f"outer {outer}: finished guided partial diffusion")
 
         # ----- Stage 1.5: decode to discrete sequence -----
@@ -1780,10 +2090,13 @@ def run(cfg: VHHDesignConfig):
 
     # ---- 6. Refold (task #15) ----
     if not cfg.skip_refold:
-        print("[refold] refolding Pareto candidates with Boltz2...", flush=True)
-        stage_log("starting Boltz2 refold")
-        refold_pareto_with_boltz2(global_pareto, cfg, binder_token_indices)
-        stage_log("finished Boltz2 refold")
+        print(f"[refold] refolding Pareto candidates with {cfg.refold_backend}...", flush=True)
+        stage_log(f"starting {cfg.refold_backend} refold")
+        if cfg.refold_backend == "opendde":
+            refold_pareto_with_opendde(global_pareto, cfg, binder_token_indices)
+        else:
+            refold_pareto_with_boltz2(global_pareto, cfg, binder_token_indices)
+        stage_log(f"finished {cfg.refold_backend} refold")
 
     print(f"[done] outputs in {cfg.output_dir}", flush=True)
     stage_log("run complete")
@@ -2074,6 +2387,248 @@ def refold_pareto_with_boltz2(
     pl.DataFrame(all_sample_rows).write_csv(cfg.output_dir / "refold_all_samples.csv")
 
 
+def refold_pareto_with_opendde(
+    pareto: dict[int, tuple[float, np.ndarray]],
+    cfg: VHHDesignConfig,
+    binder_token_indices: Int[Array, "M"],
+):
+    """Refold each Pareto candidate with OpenDDE (Abag) + rank primarily by
+    ipSAE. Alternative to `refold_pareto_with_boltz2` (see `cfg.refold_backend`).
+
+    At refold time the binder sequence is a fixed, concrete string (not a
+    soft PSSM under optimization), so this uses `target_only_features` --
+    the same simple path Boltz2's refold uses -- rather than the
+    poly-Trp-placeholder + `set_binder_sequence` machinery
+    `build_opendde_guidance_loss` needs for in-loop gradient guidance.
+
+    OpenDDE's featurizer does not support templates (`TargetChain(...,
+    template_chain=...)` raises `NotImplementedError`), so unlike the Boltz2
+    refold path there is no binder/target templating here -- every chain is
+    template-free.
+    """
+    stage_log("refold: importing OpenDDE helpers")
+    from mosaic.models.opendde import OpenDDEModelAbag
+    from mosaic.losses.opendde import opendde_forward_from_trunk
+    from mosaic.losses.structure_prediction import (
+        IPTMLoss, BinderTargetIPSAE, TargetBinderIPSAE, IPSAE_min,
+    )
+    from mosaic.structure_prediction import TargetChain
+
+    stage_log("refold: loading OpenDDE (Abag) model")
+    opendde = OpenDDEModelAbag()
+    stage_log("refold: loaded OpenDDE (Abag) model")
+    stage_log(f"refold: reading complex {cfg.complex_cif_path}")
+    target_struct = gemmi.read_structure(str(cfg.complex_cif_path))
+    target_struct.setup_entities()
+    target_seqs = []
+    for cid in cfg.target_chain_ids:
+        chain = target_struct[0][cid]
+        target_seqs.append(gemmi.one_letter_code([r.name for r in chain]))
+    stage_log(f"refold: built {len(target_seqs)} target chain sequence(s)")
+
+    iptm_loss = IPTMLoss()
+    bt_ipsae_loss = BinderTargetIPSAE(pae_cutoff=cfg.ipsae_pae_cutoff)
+    tb_ipsae_loss = TargetBinderIPSAE(pae_cutoff=cfg.ipsae_pae_cutoff)
+    ipsae_min_loss = IPSAE_min(pae_cutoff=cfg.ipsae_pae_cutoff)
+
+    rows = []
+    all_sample_rows = []
+    binder_token_indices_np = np.asarray(binder_token_indices)
+    refold_dir = cfg.output_dir / "refolded_cifs"
+    refolded_binder_chain_id = "A"
+    refolded_target_chain_ids = [
+        chr(ord("B") + i) for i in range(len(cfg.target_chain_ids))
+    ]
+    if cfg.refold_num_samples < 1:
+        raise ValueError("--refold-num-samples must be >= 1")
+    if cfg.refold_batch_size < 1:
+        raise ValueError("--refold-batch-size must be >= 1")
+    refold_batch_size = min(cfg.refold_batch_size, cfg.refold_num_samples)
+    print(
+        f"[refold] using sample batch size {refold_batch_size} "
+        f"for {cfg.refold_num_samples} sample(s) per candidate",
+        flush=True,
+    )
+
+    def score_refold_batch(feat, s_inputs, s, z, binder_sequence_placeholder, sample_keys):
+        def score_one(sample_key):
+            out = opendde_forward_from_trunk(
+                opendde.model, feat, s_inputs, s, z, sample_key,
+                n_step=cfg.refold_sampling_steps,
+                dense_atom_to_atom37=opendde.dense_atom_to_atom37,
+                pae_bin_params=opendde.pae_bin_params,
+                plddt_bin_params=opendde.plddt_bin_params,
+            )
+            _, iptm_aux = iptm_loss(
+                sequence=binder_sequence_placeholder,
+                output=out,
+                key=fold_in(sample_key, "iptm"),
+            )
+            _, bt_aux = bt_ipsae_loss(
+                sequence=binder_sequence_placeholder,
+                output=out,
+                key=fold_in(sample_key, "bt_ipsae"),
+            )
+            _, tb_aux = tb_ipsae_loss(
+                sequence=binder_sequence_placeholder,
+                output=out,
+                key=fold_in(sample_key, "tb_ipsae"),
+            )
+            _, ipsae_min_aux = ipsae_min_loss(
+                sequence=binder_sequence_placeholder,
+                output=out,
+                key=fold_in(sample_key, "ipsae_min"),
+            )
+            binder_len = binder_sequence_placeholder.shape[0]
+            bt_pae = out.pae[:binder_len, binder_len:]
+            tb_pae = out.pae[binder_len:, :binder_len]
+            ipae_min = jnp.minimum(jnp.min(bt_pae), jnp.min(tb_pae))
+            aux = {
+                "iptm": iptm_aux["iptm"],
+                "bt_ipsae": bt_aux["bt_ipsae"],
+                "tb_ipsae": tb_aux["tb_ipsae"],
+                "ipsae_min": ipsae_min_aux["ipsae_min"],
+                "ipae_min": ipae_min,
+                "bt_pae_mean": jnp.mean(bt_pae),
+                "tb_pae_mean": jnp.mean(tb_pae),
+            }
+            # Return the full StructureModelOutput (an eqx.Module / pytree) so
+            # to_structure() has every field it needs after vmap+indexing --
+            # simpler and less error-prone than hand-picking a subset of
+            # fields and reconstructing a partial StructureModelOutput later.
+            return out, aux
+
+        return jax.vmap(score_one)(sample_keys)
+
+    score_refold_batch = eqx.filter_jit(score_refold_batch)
+
+    for edit_count, (loss_v, seq_ids) in sorted(pareto.items()):
+        stage_log(f"refold: preparing edit_count={edit_count}")
+        seq_str = "".join(TOKENS[i] for i in seq_ids[binder_token_indices_np])
+        refold_chains = [TargetChain(seq_str, use_msa=False)] + [
+            TargetChain(seq, use_msa=False) for seq in target_seqs
+        ]
+        feat, _ = opendde.target_only_features(refold_chains)
+        key = jax.random.key(cfg.seed + 99999 + edit_count)
+        stage_log(f"refold: running trunk edit_count={edit_count}")
+        s_inputs, s, z = opendde.model.get_pairformer_output(feat, cfg.recycling_steps)
+        stage_log(f"refold: finished trunk edit_count={edit_count}")
+
+        binder_sequence_placeholder = jnp.zeros((len(seq_str), 20))
+
+        best_row = None
+        best_structure = None
+
+        for chunk_start in range(0, cfg.refold_num_samples, refold_batch_size):
+            chunk_size = min(refold_batch_size, cfg.refold_num_samples - chunk_start)
+            stage_log(
+                f"refold: sampling edit_count={edit_count} "
+                f"samples {chunk_start}-{chunk_start + chunk_size - 1}"
+            )
+            sample_keys = jax.random.split(
+                fold_in(key, f"sample_batch_{chunk_start}"),
+                chunk_size,
+            )
+            stacked_out, batch_scores = score_refold_batch(
+                feat, s_inputs, s, z, binder_sequence_placeholder, sample_keys,
+            )
+            stage_log(
+                f"refold: scored edit_count={edit_count} "
+                f"samples {chunk_start}-{chunk_start + chunk_size - 1}"
+            )
+
+            for chunk_offset in range(chunk_size):
+                sample_idx = chunk_start + chunk_offset
+
+                sample_output = jax.tree.map(lambda x: x[chunk_offset], stacked_out)
+                structure = sample_output.to_structure()
+                interface_metrics = interface_geometry_metrics(
+                    structure,
+                    binder_chain_id=refolded_binder_chain_id,
+                    target_chain_ids=refolded_target_chain_ids,
+                )
+                rmsd_metrics = target_aligned_rmsd_metrics(
+                    target_struct,
+                    structure,
+                    original_binder_chain_id=cfg.binder_chain_id,
+                    original_target_chain_ids=cfg.target_chain_ids,
+                    refolded_binder_chain_id=refolded_binder_chain_id,
+                    refolded_target_chain_ids=refolded_target_chain_ids,
+                    cdr_residue_indices=cfg.cdr_residue_indices,
+                )
+
+                ipsae_min = float(batch_scores["ipsae_min"][chunk_offset])
+                row = {
+                    "edit_count": edit_count,
+                    "sample_idx": sample_idx,
+                    "polish_loss": loss_v,
+                    "refold_loss": -ipsae_min,
+                    "refold_batch_size": refold_batch_size,
+                    "ipsae_pae_cutoff": cfg.ipsae_pae_cutoff,
+                    "iptm": float(batch_scores["iptm"][chunk_offset]),
+                    "bt_ipsae": float(batch_scores["bt_ipsae"][chunk_offset]),
+                    "tb_ipsae": float(batch_scores["tb_ipsae"][chunk_offset]),
+                    "ipsae_min": ipsae_min,
+                    "ipae_min": float(batch_scores["ipae_min"][chunk_offset]),
+                    "bt_pae_mean": float(batch_scores["bt_pae_mean"][chunk_offset]),
+                    "tb_pae_mean": float(batch_scores["tb_pae_mean"][chunk_offset]),
+                    "sequence": seq_str,
+                }
+                row.update(interface_metrics)
+                row.update(rmsd_metrics)
+                row["rmsd_filter_threshold"] = cfg.refold_rmsd_threshold
+                row["rmsd_pass"] = (
+                    _passes_max_threshold(
+                        row["filter_rmsd"],
+                        cfg.refold_rmsd_threshold,
+                    )
+                    and _passes_max_threshold(
+                        row["filter_rmsd_design"],
+                        cfg.refold_rmsd_threshold,
+                    )
+                )
+                all_sample_rows.append(dict(row))
+
+                if (
+                    best_row is None
+                    or _refold_rank_key(row) < _refold_rank_key(best_row)
+                ):
+                    best_row = row
+                    best_structure = structure
+
+        assert best_row is not None and best_structure is not None
+        cif_path = refold_dir / f"edit_{edit_count}_sample_{best_row['sample_idx']}.cif"
+        write_structure_cif(best_structure, cif_path)
+        best_row["refold_cif"] = str(cif_path)
+        rows.append(best_row)
+
+    passing_rows = sorted(
+        [row for row in rows if row["rmsd_pass"]],
+        key=_refold_rank_key,
+    )
+    failed_rows = sorted(
+        [row for row in rows if not row["rmsd_pass"]],
+        key=_refold_rank_key,
+    )
+    ranked_rows = [
+        {
+            "rank": rank,
+            **row,
+        }
+        for rank, row in enumerate(passing_rows, start=1)
+    ] + [
+        {
+            "rank": None,
+            **row,
+        }
+        for row in failed_rows
+    ]
+
+    pl.DataFrame(ranked_rows).write_csv(cfg.output_dir / "refold_ranked.csv")
+    pl.DataFrame(rows).write_csv(cfg.output_dir / "refold_best_by_edit_count.csv")
+    pl.DataFrame(all_sample_rows).write_csv(cfg.output_dir / "refold_all_samples.csv")
+
+
 # =============================================================================
 # CLI entry point
 # =============================================================================
@@ -2127,6 +2682,16 @@ if __name__ == "__main__":
     p.add_argument("--lambda-max", type=float)
     p.add_argument("--lambda-schedule",
                    choices=["sigma_squared", "sigma", "constant"])
+    p.add_argument("--nos-inner-steps", type=int,
+                   help="Real iterative NOS-style prior-compatibility inner loop "
+                        "(section 12a); 0 (default) = off, one-shot merge unchanged")
+    p.add_argument("--nos-inner-step-size", type=float)
+    p.add_argument("--nos-lambda-kl", type=float)
+    p.add_argument("--nos-langevin-noise", type=float)
+    p.add_argument("--lookahead", type=int, choices=[0, 1],
+                   help="Real look-ahead mechanism (section 12b): differentiate through "
+                        "the full denoiser instead of the frozen x0_hat. Mutually "
+                        "exclusive with --nos-inner-steps > 0")
     p.add_argument("--n-outer-iterations", type=int)
     p.add_argument("--search-mode", choices=["greedy", "mcmc", "both"])
     p.add_argument("--polish-steps", type=int)
@@ -2159,19 +2724,22 @@ if __name__ == "__main__":
     p.add_argument("--refold-sampling-steps", type=int)
     p.add_argument("--refold-num-samples", type=int)
     p.add_argument("--refold-batch-size", type=int,
-                   help="Boltz2 refold samples to evaluate per batched model call")
+                   help="Refold samples to evaluate per batched model call "
+                        "(used by both --refold-backend boltz2 and opendde)")
     p.add_argument("--refold-binder-template", type=int, choices=[0, 1],
-                   help="Use parent binder chain as a Boltz2 refold template")
+                   help="Use parent binder chain as a refold template -- "
+                        "--refold-backend boltz2 only; opendde's featurizer "
+                        "does not support templates and ignores this")
     p.add_argument("--refold-binder-template-mode",
                    choices=["full", "framework", "none"],
-                   help="Binder template mode for refold: full, framework-only, or none")
+                   help="Binder template mode for refold: full, framework-only, "
+                        "or none -- --refold-backend boltz2 only; opendde "
+                        "ignores this (see --refold-binder-template)")
     p.add_argument("--ipsae-pae-cutoff", type=float)
     p.add_argument("--refold-rmsd-threshold", type=float,
                    help="BoltzGen-like CA RMSD filter using filter_rmsd and filter_rmsd_design; <=0 disables")
-    p.add_argument("--esm2-model", default=None,
-                   help="ESM2 checkpoint name in esm.pretrained, e.g. esm2_t33_650M_UR50D")
-    p.add_argument("--weight-esm2", "--weight-esmc", dest="weight_esm2",
-                   type=float, help="ESM2 PLL weight; --weight-esmc is a deprecated alias")
+    p.add_argument("--refold-backend", choices=["boltz2", "opendde"],
+                   help="Structure model for post-refold ranking (--skip-refold 0)")
     p.add_argument("--weight-ablang2", "--weight-ablang", dest="weight_ablang2",
                    type=float, help="AbLang2 PLL weight; --weight-ablang is a deprecated alias")
     p.add_argument("--weight-edit-budget", type=float)
@@ -2191,6 +2759,20 @@ if __name__ == "__main__":
                    help="Boltz2 structure sampling steps inside per-step guidance")
     p.add_argument("--boltz2-guidance-target-template", type=int, choices=[0, 1],
                    help="Use target chain template for Boltz2 guidance features")
+    p.add_argument("--weight-opendde-iptm", type=float,
+                   help="OpenDDE guidance weight for the distogram-based ipTM proxy "
+                        "(DistogramIPTMProxy); mutually exclusive with --weight-boltz2-*")
+    p.add_argument("--weight-opendde-contact", type=float,
+                   help="OpenDDE guidance weight for CDR-target distogram contact "
+                        "(BinderTargetContact); mutually exclusive with --weight-boltz2-*")
+    p.add_argument("--opendde-guidance-recycling-steps", type=int,
+                   help="OpenDDE recycling steps inside per-step guidance")
+    p.add_argument("--opendde-contact-distance", type=float,
+                   help="BinderTargetContact.contact_distance for OpenDDE "
+                        "guidance (--weight-opendde-contact); default 8.0 is a "
+                        "physical-contact-like threshold, tighter than "
+                        "BinderTargetContact's own 20.0 default (broad "
+                        "proximity, not a contact criterion)")
     p.add_argument("--clip-gradient-norm", type=float)
     p.add_argument("--skip-guidance", type=int, choices=[0, 1],
                    help="Override the mode preset; 1 disables diffusion guidance")
@@ -2198,6 +2780,15 @@ if __name__ == "__main__":
                    help="Override the mode preset; 1 disables sequence polish/search")
     p.add_argument("--skip-refold", type=int, choices=[0, 1],
                    help="Override the mode preset; 1 disables Boltz2 refold/ranking")
+    p.add_argument("--log-guidance-diagnostics", type=int, choices=[0, 1],
+                   help="Log Phase 2 guidance diagnostics (cosine similarity, "
+                        "norm ratio, inter-objective conflict) per outer "
+                        "iteration to <output-dir>/guidance_diagnostics.json")
+    p.add_argument("--guidance-diagnostics-cos-threshold", type=float,
+                   help="cos(guided,unguided) below this counts as strong "
+                        "directional disagreement in the diagnostics report")
+    p.add_argument("--guidance-diagnostics-sigma-bins", type=int,
+                   help="Number of noise-level bins for diagnostics stratification")
     args = validate_and_normalize_cli_args(p, p.parse_args())
 
     if args.num_designs > 1 or args.devices is not None:
@@ -2232,6 +2823,11 @@ if __name__ == "__main__":
         "noise_scale": args.noise_scale,
         "lambda_max": args.lambda_max,
         "lambda_schedule": args.lambda_schedule,
+        "nos_inner_steps": args.nos_inner_steps,
+        "nos_inner_step_size": args.nos_inner_step_size,
+        "nos_lambda_kl": args.nos_lambda_kl,
+        "nos_langevin_noise": args.nos_langevin_noise,
+        "lookahead": bool(args.lookahead) if args.lookahead is not None else None,
         "n_outer_iterations": args.n_outer_iterations,
         "search_mode": args.search_mode,
         "polish_steps": args.polish_steps,
@@ -2258,8 +2854,7 @@ if __name__ == "__main__":
         "refold_binder_template_mode": args.refold_binder_template_mode,
         "ipsae_pae_cutoff": args.ipsae_pae_cutoff,
         "refold_rmsd_threshold": args.refold_rmsd_threshold,
-        "esm2_model_name": args.esm2_model,
-        "weight_esm2": args.weight_esm2,
+        "refold_backend": args.refold_backend,
         "weight_ablang2": args.weight_ablang2,
         "weight_edit_budget": args.weight_edit_budget,
         "weight_boltz2_ptm_energy": args.weight_boltz2_ptm_energy,
@@ -2272,7 +2867,17 @@ if __name__ == "__main__":
             bool(args.boltz2_guidance_target_template)
             if args.boltz2_guidance_target_template is not None else None
         ),
+        "weight_opendde_iptm": args.weight_opendde_iptm,
+        "weight_opendde_contact": args.weight_opendde_contact,
+        "opendde_guidance_recycling_steps": args.opendde_guidance_recycling_steps,
+        "opendde_contact_distance": args.opendde_contact_distance,
         "clip_gradient_norm": args.clip_gradient_norm,
+        "log_guidance_diagnostics": (
+            bool(args.log_guidance_diagnostics)
+            if args.log_guidance_diagnostics is not None else None
+        ),
+        "guidance_diagnostics_cos_threshold": args.guidance_diagnostics_cos_threshold,
+        "guidance_diagnostics_sigma_bins": args.guidance_diagnostics_sigma_bins,
     }
     for name, value in overrides.items():
         if value is not None:
@@ -2283,23 +2888,25 @@ if __name__ == "__main__":
         cfg.skip_guidance = True
         cfg.skip_polish = True
         cfg.skip_refold = True
-        cfg.weight_esm2 = 0.0
         cfg.weight_ablang2 = 0.0
         cfg.weight_boltz2_ptm_energy = 0.0
         cfg.weight_boltz2_interface_pae = 0.0
         cfg.weight_boltz2_iptm = 0.0
         cfg.weight_boltz2_ipsae = 0.0
+        cfg.weight_opendde_iptm = 0.0
+        cfg.weight_opendde_contact = 0.0
     elif args.mode == "v1":
         # EditBudget-only guidance; zero-out other guidance terms.
         cfg.skip_guidance = False
         cfg.skip_polish = True
         cfg.skip_refold = True
-        cfg.weight_esm2 = 0.0
         cfg.weight_ablang2 = 0.0
         cfg.weight_boltz2_ptm_energy = 0.0
         cfg.weight_boltz2_interface_pae = 0.0
         cfg.weight_boltz2_iptm = 0.0
         cfg.weight_boltz2_ipsae = 0.0
+        cfg.weight_opendde_iptm = 0.0
+        cfg.weight_opendde_contact = 0.0
     elif args.mode == "v2":
         cfg.skip_guidance = False
         cfg.skip_polish = True

@@ -17,7 +17,12 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.workflows.boltzgen_vhh_guided import VHHDesignConfig, run, uses_boltz2_guidance
+from mosaic.workflows.boltzgen_vhh_guided import (
+    VHHDesignConfig,
+    guidance_anchor_is_empty_edit_budget,
+    run,
+    uses_boltz2_guidance,
+)
 
 
 def _minimal_cfg(**overrides) -> VHHDesignConfig:
@@ -54,3 +59,38 @@ def test_run_rejects_positive_ipsae_weight_alongside_other_boltz2_weights():
     cfg = _minimal_cfg(weight_boltz2_ipsae=1.0, weight_boltz2_iptm=0.5)
     with pytest.raises(ValueError, match="weight-boltz2-ipsae"):
         run(cfg)
+
+
+def test_guidance_anchor_not_empty_by_default():
+    # Default weight_edit_budget is 5.00 (nonzero), so the promoted anchor
+    # (no Boltz2/OpenDDE bind signal by default) is not a no-op.
+    cfg = _minimal_cfg()
+    assert guidance_anchor_is_empty_edit_budget(cfg) is False
+
+
+def test_guidance_anchor_empty_when_edit_budget_zero_and_no_bind_signal():
+    # Regression guard: with no Boltz2/OpenDDE bind signal, edit_loss is
+    # promoted into the bind anchor slot (build_guidance_loss's fallback
+    # branch). If weight_edit_budget is also 0, that anchor has an
+    # all-zero gradient, and _compat_project(g_nat, g_bind=0) returns g_nat
+    # completely unprojected (see guidance_anchor_is_empty_edit_budget's
+    # docstring) -- guidance silently collapses to naturalness-only despite
+    # the anchor/regularizer framing. This must be detectable, not silent.
+    cfg = _minimal_cfg(weight_edit_budget=0.0, weight_ablang2=0.5)
+    assert guidance_anchor_is_empty_edit_budget(cfg) is True
+
+
+def test_guidance_anchor_not_empty_when_bind_signal_configured():
+    # weight_edit_budget=0 alone doesn't matter if a real bind signal
+    # (Boltz2/OpenDDE) is configured -- edit_loss is never promoted to
+    # anchor in that case, it stays a regularizer projected against the
+    # real bind_loss.
+    cfg = _minimal_cfg(weight_edit_budget=0.0, weight_boltz2_iptm=0.5)
+    assert guidance_anchor_is_empty_edit_budget(cfg) is False
+
+
+def test_guidance_anchor_not_empty_when_guidance_skipped():
+    # skip_guidance=True (v0) means guidance never runs at all -- the
+    # promoted-anchor question doesn't apply.
+    cfg = _minimal_cfg(weight_edit_budget=0.0, skip_guidance=True)
+    assert guidance_anchor_is_empty_edit_budget(cfg) is False

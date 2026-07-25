@@ -28,6 +28,7 @@ from jopendde.model import OpenDDE as JaxOpenDDE
 
 from mosaic.common import LinearCombination, LossTerm
 from mosaic.losses.opendde import (
+    DistogramOnlyOpenDDELoss,
     MultiSampleOpenDDELoss,
     OpenDDEFeatures,
     OpenDDEResidueTemplates,
@@ -226,7 +227,17 @@ def _featurize(chains: list[TargetChain]):
     with torch.no_grad():
         raw = _relp(raw)
     raw = update_input_feature_dict(raw)
-    return Features.from_dict(_to_numpy(raw)), atom_array
+    feat = Features.from_dict(_to_numpy(raw))
+    # `_to_numpy` deliberately keeps the OpenDDE data pipeline torch-free, but
+    # the resulting `Features` is consumed by JAX and Mosaic mutates several
+    # leaves with `.at[...]` during soft-sequence injection/geometry refresh.
+    # Convert array leaves at this single host-to-JAX boundary while preserving
+    # Python scalar metadata such as DenseTrunkPad.q_pad/k_pad_left.
+    feat = jax.tree.map(
+        lambda x: jnp.asarray(x) if isinstance(x, (np.ndarray, np.generic)) else x,
+        feat,
+    )
+    return feat, atom_array
 
 
 class OpenDDEModel(StructurePredictionModel):
@@ -343,6 +354,31 @@ class OpenDDEModel(StructurePredictionModel):
             plddt_bin_params=self.plddt_bin_params,
             reduction=reduction,
             stop_grad_conf_coords=stop_grad_conf_coords,
+        )
+
+    def build_distogram_only_loss(
+        self,
+        *,
+        loss: LossTerm | LinearCombination,
+        features,
+        recycling_steps: int = _DEFAULT_NUM_CYCLES,
+    ) -> LossTerm:
+        """Build a guidance loss that skips diffusion coordinate sampling and
+        the confidence head -- only valid for losses reading
+        `output.distogram_logits`/`output.distogram_bins` and nothing else
+        (e.g. `DistogramIPTMProxy`, `BinderTargetContact`). See
+        `DistogramOnlyOpenDDELoss` in `mosaic.losses.opendde` for why this
+        matters: `build_loss`/`build_multisample_loss` always run the full
+        diffusion sample + confidence head regardless of what the wrapped
+        loss actually reads, which is wasted work -- and expensive work,
+        since this gets called once per BoltzGen diffusion step under
+        `jax.grad` inside `guided_partial_diffusion`.
+        """
+        return DistogramOnlyOpenDDELoss(
+            model=self.model,
+            features=self._as_opendde_features(features),
+            loss=loss,
+            num_cycles=recycling_steps,
         )
 
     # ------------------------------------------------------------------ forward
@@ -471,8 +507,21 @@ def _get_templates() -> OpenDDEResidueTemplates:
 def _build_model(model_name: str, checkpoint_file: str | None = None) -> OpenDDEModel:
     predictor = _get_predictor(model_name, checkpoint_file)
     sp = predictor.summary_params
+    # jopendde's from_torch conversion (convert.py) leaves every parameter as a
+    # plain numpy array, not a jax array. That's harmless for ops like
+    # jnp.einsum (which coerce numpy inputs), but jopendde's Embedding layer does
+    # raw Python indexing (`self.weight[tokens]`) -- numpy.ndarray.__getitem__
+    # can't accept a JAX tracer, so any embedding lookup crashes the instant the
+    # model is traced under jax.jit/jax.vmap (e.g. refold_pareto_with_opendde's
+    # batched scoring), even though eager (non-jit) forward passes work fine.
+    # Convert all array leaves once at this host-to-JAX boundary, mirroring the
+    # same fix already applied to featurized inputs in `_featurize` above.
+    model = jax.tree.map(
+        lambda x: jnp.asarray(x) if isinstance(x, (np.ndarray, np.generic)) else x,
+        predictor.model,
+    )
     return OpenDDEModel(
-        model=predictor.model,
+        model=model,
         dense_atom_to_atom37=jnp.array(_build_dense_atom_to_atom37()),
         templates=_get_templates(),
         model_name=model_name,
