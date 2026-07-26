@@ -12,3 +12,4 @@ wheels/
 .envrc
 uv.lock
 analysis/
+/results/

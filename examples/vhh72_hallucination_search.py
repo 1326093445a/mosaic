@@ -92,6 +92,7 @@ OPENDDE_RECYCLING_STEPS = 4
 APGM_STEPS = 200
 APGM_STEPSIZE = 0.05
 APGM_SCALE = 1.2  # >1.0 encourages sparsity, per simplex_APGM's own docstring
+APGM_INIT_WT_PROB = 1.0  # exact one-hot WT unless explicitly softened
 APGM_MOMENTUM = 0.5
 GREEDY_STEPS = 200
 GREEDY_BATCH_SIZE = 16
@@ -103,9 +104,86 @@ def seq_to_one_hot(seq: str) -> np.ndarray:
     return np.eye(len(TOKENS), dtype=np.float32)[idx]
 
 
+def seq_to_soft_wt_init(seq: str, wt_prob: float) -> np.ndarray:
+    """WT-centered simplex initialization for APGM.
+
+    wt_prob=1.0 is exact one-hot WT, preserving the original production
+    behavior. Values below 1.0 put the remaining mass uniformly on the other
+    19 amino acids, matching the APGM diagnostic in
+    docs/guidance_alphaseq_testing_notes.md section 13.7.
+    """
+    if not (0.0 < wt_prob <= 1.0):
+        raise ValueError(f"--apgm-init-wt-prob must be in (0, 1], got {wt_prob}")
+    idx = np.array([TOKENS.index(c) for c in seq], dtype=np.int32)
+    if wt_prob == 1.0:
+        return np.eye(len(TOKENS), dtype=np.float32)[idx]
+    other_prob = (1.0 - wt_prob) / (len(TOKENS) - 1)
+    x = np.full((len(seq), len(TOKENS)), other_prob, dtype=np.float32)
+    x[np.arange(len(seq)), idx] = wt_prob
+    return x
+
+
 def one_hot_to_seq(x: np.ndarray) -> str:
     idx = np.asarray(x).argmax(-1)
     return "".join(TOKENS[i] for i in idx)
+
+
+def apgm_seed_from_soft(full_continuous: np.ndarray, wt_tokens: np.ndarray, mode: str,
+                         key, topk_threshold: float,
+                         designable_mask: np.ndarray | None = None) -> np.ndarray:
+    """Convert simplex_APGM's soft output into the hard discrete sequence
+    handed to the discrete search, three ways -- see
+    docs/guidance_alphaseq_testing_notes.md section 13.7-13.8: APGM's soft
+    distribution carries real, nonzero mass on multiple amino acids per
+    position (confirmed directly from real logs), but its hard argmax
+    stays WT everywhere in practice because no single mutant individually
+    outweighs WT. `sample`/`topk` use that soft information without
+    requiring any mutant to clear that bar.
+
+    - argmax: current production behavior. Requires a mutant to
+      individually dominate every other amino acid at that position,
+      including WT.
+    - sample: draw each position independently from its own categorical
+      distribution over full_continuous -- a real seed-dependent draw from
+      the actual soft mass APGM produced.
+    - topk: deterministic alternative to sample, no RNG needed. At each
+      position, use the best non-WT amino acid if its probability clears
+      topk_threshold, otherwise keep WT.
+
+    The returned hard seed is always forced back to WT outside the design
+    mask. This matters most for `sample`: fixed positions are effectively
+    one-hot WT, but after clipping probabilities before `log`, non-WT
+    residues have tiny nonzero probability. Structural/edit-budget
+    invariants should be exact, not "practically impossible."
+    """
+    wt_tokens = np.asarray(wt_tokens, dtype=np.int32)
+    if designable_mask is None:
+        designable_mask = np.ones_like(wt_tokens, dtype=bool)
+    else:
+        designable_mask = np.asarray(designable_mask, dtype=bool)
+    assert designable_mask.shape == wt_tokens.shape
+
+    if mode == "argmax":
+        seq = np.asarray(full_continuous.argmax(-1), dtype=np.int32)
+    elif mode == "sample":
+        logits = jax.numpy.log(jax.numpy.clip(full_continuous, 1e-12, 1.0))
+        seq = np.asarray(jax.random.categorical(key, logits, axis=-1), dtype=np.int32)
+    elif mode == "topk":
+        seq = np.array(wt_tokens)
+        for i in range(full_continuous.shape[0]):
+            if not designable_mask[i]:
+                continue
+            probs = np.array(full_continuous[i])
+            probs[wt_tokens[i]] = -1.0
+            best_non_wt = int(np.argmax(probs))
+            if probs[best_non_wt] >= topk_threshold:
+                seq[i] = best_non_wt
+    else:
+        raise ValueError(f"unknown --apgm-seed-mode {mode!r}")
+
+    seq = np.array(seq, dtype=np.int32, copy=True)
+    seq[~designable_mask] = wt_tokens[~designable_mask]
+    return seq
 
 
 def load_structure():
@@ -207,6 +285,23 @@ def main():
                          "current default elsewhere in this project), 0 = real backprop "
                          "through AbLang2's encoder (Germinal-style, more expensive)")
     p.add_argument("--edit-budget", type=int, default=5)
+    p.add_argument("--apgm-seed-mode", choices=["argmax", "sample", "topk"], default="argmax",
+                    help="How to turn simplex_APGM's soft output into the discrete search's "
+                         "starting sequence. argmax = production default (see "
+                         "docs/guidance_alphaseq_testing_notes.md section 13.7: collapses to "
+                         "WT in practice). sample = draw per-position from APGM's own soft "
+                         "distribution. topk = deterministic, use the best non-WT amino acid "
+                         "per position if it clears --apgm-topk-threshold.")
+    p.add_argument("--apgm-topk-threshold", type=float, default=0.15,
+                    help="Only used with --apgm-seed-mode topk.")
+    p.add_argument("--apgm-init-wt-prob", type=float, default=APGM_INIT_WT_PROB,
+                    help="WT amino-acid probability for APGM initialization. "
+                         "1.0 preserves the original exact one-hot WT start. "
+                         "0.80 matches the softened diagnostic run.")
+    p.add_argument("--apgm-scale", type=float, default=APGM_SCALE,
+                    help="simplex_APGM scale parameter. 1.2 preserves the original "
+                         "sparsity-encouraging production default; 1.0 matches the "
+                         "softened diagnostic run.")
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
@@ -254,18 +349,27 @@ def main():
         stop_grad_ablang2=bool(args.stop_grad), pose_drift_tolerance=pose_drift_tolerance,
     )
 
+    parent = np.array([TOKENS.index(c) for c in binder_seq], dtype=np.int32)
+
     print(f"\n[1/2] continuous relaxation (simplex_APGM, {APGM_STEPS} steps)...", flush=True)
-    x0 = seq_to_one_hot("".join(binder_seq[i] for i in designable_idx))
+    print(f"APGM init WT prob: {args.apgm_init_wt_prob}  scale: {args.apgm_scale}", flush=True)
+    x0 = seq_to_soft_wt_init("".join(binder_seq[i] for i in designable_idx),
+                             args.apgm_init_wt_prob)
+    key, apgm_key, seed_key = jax.random.split(key, 3)
     x_final, x_best = simplex_APGM(
         loss_function=variable_only_loss, x=x0, n_steps=APGM_STEPS, stepsize=APGM_STEPSIZE,
-        momentum=APGM_MOMENTUM, scale=APGM_SCALE, key=key,
+        momentum=APGM_MOMENTUM, scale=args.apgm_scale, key=apgm_key,
     )
     full_continuous = np.asarray(variable_only_loss.sequence(x_best))
-    continuous_seq = full_continuous.argmax(-1)
+    continuous_seq = apgm_seed_from_soft(full_continuous, parent, args.apgm_seed_mode,
+                                          seed_key, args.apgm_topk_threshold,
+                                          designable_mask=designable_mask)
     print(f"continuous result (argmax): {one_hot_to_seq(full_continuous)}", flush=True)
+    print(f"discrete search seed (--apgm-seed-mode {args.apgm_seed_mode}): "
+          f"{''.join(TOKENS[i] for i in continuous_seq)}", flush=True)
+    print(f"seed differs from WT at {int((continuous_seq != parent).sum())} positions", flush=True)
 
     print(f"\n[2/2] discrete budgeted search (--policy {args.policy})...", flush=True)
-    parent = np.array([TOKENS.index(c) for c in binder_seq], dtype=np.int32)
     if args.policy == "greedy":
         best_seq, best_val, pareto = edit_budgeted_greedy_descent(
             full_loss, continuous_seq, parent=parent, budget=args.edit_budget,

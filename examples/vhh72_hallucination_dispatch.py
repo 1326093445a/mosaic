@@ -1,7 +1,7 @@
 """Multi-GPU dispatcher for the VHH72 hallucination search
-(examples/vhh72_hallucination_search.py): 2 search policies x 2 AbLang2
-gradient-flow settings x N seeds = independent jobs, spread across N GPUs
-via CUDA_VISIBLE_DEVICES per subprocess.
+(examples/vhh72_hallucination_search.py): search policies x AbLang2
+gradient-flow settings x seeds = independent jobs, spread across GPUs via
+CUDA_VISIBLE_DEVICES per subprocess.
 
 Job-level parallelism (independent subprocesses, not JAX pmap/sharding) --
 mirrors the existing pattern in
@@ -11,20 +11,24 @@ src/mosaic/workflows/boltzgen_vhh_guided.py's run_many_from_cli, which is
 GPUs once earlier jobs finish -- e.g. 20 jobs on 4 GPUs means each GPU runs
 5 jobs sequentially, 5 batches of 4 running in parallel.
 
-IMPORTANT: multi-seed runs (--seeds with more than one value) are only a
-meaningful test of whether a finding (e.g. mcmc,stop_grad=0's Pareto win)
-replicates once simplex_APGM's continuous phase is no longer a no-op --
-see docs/guidance_alphaseq_testing_notes.md section 13.5 (the nnz=1.00
-fixed-point finding). While that's still broken, the continuous phase
-collapses to the identical WT vertex regardless of seed (the collapse is
-structural, not seed-dependent), so different seeds would only vary the
-discrete search's own randomness on top of an identical, frozen starting
-point -- not what a seed sweep is meant to test.
+Interpretation depends on --apgm-seed-mode:
+  - argmax keeps the original behavior. APGM's hard argmax has been observed
+    to return WT, so a multi-seed argmax run is a discrete-search stability
+    test, not evidence that APGM seeding contributes.
+  - sample/topk deliberately convert APGM's soft distribution into a non-WT
+    hard seed, so those modes are the actual APGM-seeding architecture tests.
 
 Usage:
     .venv/bin/python examples/vhh72_hallucination_dispatch.py \\
         --devices 0,1,2,3 --edit-budget 5 --seeds 0,1,2,3,4 \\
         --output-dir results/hallucination_sweep
+
+    # APGM-seeding architecture test, mcmc/stop_grad=0 only:
+    .venv/bin/python examples/vhh72_hallucination_dispatch.py \\
+        --devices 0,1,2,3 --edit-budget 5 --seeds 0,1,2 \\
+        --policies mcmc --stop-grads 0 --apgm-seed-mode sample \\
+        --apgm-init-wt-prob 0.80 --apgm-scale 1.0 \\
+        --output-dir results/hallucination_sweep_apgm_sample_mcmc_sg0
 """
 import argparse
 import os
@@ -44,6 +48,20 @@ POLICIES = ["greedy", "mcmc"]
 STOP_GRAD_SETTINGS = [1, 0]  # 1 = cheap default, 0 = real backprop through AbLang2 (ablation)
 
 
+def _parse_csv_strs(value: str) -> list[str]:
+    out = [x.strip() for x in value.split(",") if x.strip()]
+    if not out:
+        raise argparse.ArgumentTypeError("must provide at least one comma-separated value")
+    return out
+
+
+def _parse_csv_ints(value: str) -> list[int]:
+    try:
+        return [int(x) for x in _parse_csv_strs(value)]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--devices", type=str, default=None,
@@ -54,23 +72,52 @@ def main():
     p.add_argument("--seeds", type=str, default="0",
                     help="Comma-separated seeds, e.g. 0,1,2,3,4. Default: single seed 0 "
                          "(matches the original 4-job sweep).")
+    p.add_argument("--policies", type=str, default=",".join(POLICIES),
+                    help="Comma-separated policies to run. Default: greedy,mcmc.")
+    p.add_argument("--stop-grads", type=str, default=",".join(map(str, STOP_GRAD_SETTINGS)),
+                    help="Comma-separated AbLang2 stop_grad settings. Default: 1,0.")
+    p.add_argument("--apgm-seed-mode", choices=["argmax", "sample", "topk"], default="argmax",
+                    help="Passed through to vhh72_hallucination_search.py. Default keeps "
+                         "the original argmax behavior.")
+    p.add_argument("--apgm-topk-threshold", type=float, default=0.15,
+                    help="Passed through to vhh72_hallucination_search.py when "
+                         "--apgm-seed-mode topk is used.")
+    p.add_argument("--apgm-init-wt-prob", type=float, default=1.0,
+                    help="Passed through to vhh72_hallucination_search.py. "
+                         "1.0 preserves original exact one-hot WT start; 0.80 "
+                         "matches the softened APGM diagnostic.")
+    p.add_argument("--apgm-scale", type=float, default=1.2,
+                    help="Passed through to vhh72_hallucination_search.py. "
+                         "1.2 preserves original sparsity-encouraging default; "
+                         "1.0 matches the softened APGM diagnostic.")
     p.add_argument("--output-dir", type=Path, required=True)
     args = p.parse_args()
 
     device_ids = [d.strip() for d in args.devices.split(",")] if args.devices else []
     max_parallel = len(device_ids) if device_ids else 1
-    seeds = [int(s.strip()) for s in args.seeds.split(",")]
+    seeds = _parse_csv_ints(args.seeds)
+    policies = _parse_csv_strs(args.policies)
+    stop_grad_settings = _parse_csv_ints(args.stop_grads)
+    unknown_policies = sorted(set(policies) - set(POLICIES))
+    unknown_stop_grads = sorted(set(stop_grad_settings) - set(STOP_GRAD_SETTINGS))
+    if unknown_policies:
+        raise SystemExit(f"unknown policies: {unknown_policies}; allowed: {POLICIES}")
+    if unknown_stop_grads:
+        raise SystemExit(f"unknown stop_grad settings: {unknown_stop_grads}; allowed: {STOP_GRAD_SETTINGS}")
 
     jobs = [
         {"policy": policy, "stop_grad": stop_grad, "seed": seed}
-        for policy in POLICIES
-        for stop_grad in STOP_GRAD_SETTINGS
+        for policy in policies
+        for stop_grad in stop_grad_settings
         for seed in seeds
     ]
-    print(f"[dispatch] {len(jobs)} jobs ({len(POLICIES)} policies x "
-          f"{len(STOP_GRAD_SETTINGS)} stop_grad settings x {len(seeds)} seeds), "
+    print(f"[dispatch] {len(jobs)} jobs ({len(policies)} policies x "
+          f"{len(stop_grad_settings)} stop_grad settings x {len(seeds)} seeds), "
           f"max_parallel={max_parallel}, "
-          f"devices={','.join(device_ids) if device_ids else 'inherited'}", flush=True)
+          f"devices={','.join(device_ids) if device_ids else 'inherited'}, "
+          f"apgm_seed_mode={args.apgm_seed_mode}, "
+          f"apgm_init_wt_prob={args.apgm_init_wt_prob}, "
+          f"apgm_scale={args.apgm_scale}", flush=True)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     results = []
@@ -90,6 +137,10 @@ def main():
                 "--stop-grad", str(job["stop_grad"]),
                 "--edit-budget", str(args.edit_budget),
                 "--seed", str(job["seed"]),
+                "--apgm-seed-mode", args.apgm_seed_mode,
+                "--apgm-topk-threshold", str(args.apgm_topk_threshold),
+                "--apgm-init-wt-prob", str(args.apgm_init_wt_prob),
+                "--apgm-scale", str(args.apgm_scale),
                 "--output", str(csv_path),
             ]
             env = os.environ.copy()

@@ -1616,14 +1616,324 @@ seeds instead of a single line. Verified against synthetic CSVs (not yet
 against real search output) — file discovery, combined CSV, variance
 summary, and win-rate tally all behaved correctly.
 
-**Explicitly NOT yet safe to run for real, and why:** simplex_APGM's
-continuous phase collapses to the exact same WT vertex regardless of seed
-(§13.5 — the collapse is a structural fixed point of the projection math
-at the current `x0`/`scale`, not seed-dependent noise). Running a seed
-sweep before that's fixed would only vary the discrete search's own
-randomness on top of an identical, frozen starting point for every seed —
-not a real test of whether gradient-guided diversity produces a
-repeatable result. Sequencing: §13.5's diagnostic must be run and confirmed
-on the cluster first; if it confirms the softened-init/scale=1.0 fix, that
-fix needs to be folded into `vhh72_hallucination_search.py`'s defaults (or
-exposed as CLI overrides) before this multi-seed batch is run for real.
+### 13.7 Real APGM diagnostic result (2026-07-26, cluster run): the fixed point is broken, but it doesn't change what the discrete search receives
+
+Ran `examples/vhh72_apgm_diagnostic.py` for real on the cluster
+(`--init-wt-prob 0.80 --scale 1.0 --n-steps 200 --seed 0`), full 200-step
+log inspected directly, not just the tail. Two things are true at once,
+and the second one matters more than the first for what to do next:
+
+**The mechanical fix worked — nnz genuinely moved.** `init nnz = 20.00`
+(trivial, softened init). Step 0's *post-step* nnz was `1.00` — the very
+first gradient step, under a large initial `edit_violation=1.80` penalty
+(the softened 20-way spread reads as many partial edits under the soft
+edit-distance term), collapsed hard back toward a vertex. But it recovered
+immediately and kept climbing: `1.09 -> 1.56 -> 2.38 -> 3.12 -> 3.79 ->
+4.15 -> ...` peaking around **4.9** near iteration 17-20, then declining
+slowly for the rest of the run, settling around 3.4-3.8 by step 199. This
+is a real, large-amplitude trajectory across the whole run — nothing like
+the original run's flat `nnz=1.00` for all 200 iterations. The §13.5
+diagnosis (exact-vertex fixed point, broken by removing the exact one-hot
+`x0` and the `scale=1.2` sparsity moat) is confirmed correct.
+
+**But `final argmax` is byte-identical to WT — 0 differences, the entire
+run.** Total loss dropped sharply in the first ~5 steps (12.12 -> 3.13 ->
+~2.9, mostly `edit_violation` relaxing to 0.00) then plateaued in a narrow
+2.86-2.95 band for the remaining ~195 steps — converged, not
+still-improving-when-cut-off. `ablang2_ppl` is the one term that never
+plateaus (15.19 -> 8.25, still falling at step 199); this looks like what
+pulls nnz back down in the second half (naturalness pressure keeps
+rewarding sharper/more confident distributions, partially fighting the
+initial dispersion). At no point during the run — including at the
+lowest-loss point `x_best` is tracked from — did any single non-WT amino
+acid's probability exceed WT's at any of the 34 positions.
+
+**Why this is the more important finding:**
+`continuous_seq = full_continuous.argmax(-1)` is exactly what
+`vhh72_hallucination_search.py` hands to
+`edit_budgeted_greedy_descent`/`edit_budgeted_gradient_mcmc` as the
+discrete search's starting point. Since argmax is WT regardless of
+whether this fix is applied, **the discrete search receives an identical
+starting point either way** — this fix does not currently change any
+downstream behavior of the real pipeline. The soft nnz movement is real
+and the fixed point is genuinely gone, but it hasn't yet been turned into
+something the discrete phase can use.
+
+### 13.8 Decision: run the multi-seed sweep now, but re-scope its claim
+
+Given §13.7, running a multi-seed sweep today is *not* a test of whether
+APGM-informed hallucination is repeatable — it is a test of whether the
+**discrete greedy/MCMC search, seeded from WT**, gives a stable result
+across seeds under the OpenDDE+AbLang2+edit-budget composite loss. That's
+still a real, useful experiment — and consistent with §13.1's original
+finding that the discrete phase is where the actual gains came from
+(mcmc,stop_grad=0 reached 2.655, beating APGM's own 2.87-2.95 plateau) —
+but it must be labeled correctly, not oversold as validating the
+continuous phase's contribution.
+
+Decision: run the multi-seed sweep now (**3 seeds, `--seeds 0,1,2`**, not
+the 5 floated earlier — start smaller given this is now explicitly a
+narrower claim), explicitly framed as a **discrete-search stability
+sweep**, not an APGM-seeded hallucination result. Do not spend compute
+pushing APGM harder right now (higher stepsize, entropy bonus, delayed
+AbLang2 pressure, etc.) — that risks tuning the optimizer until argmax
+happens to flip somewhere, without establishing that the flip is
+meaningful. The cleaner next step, when picked back up, is **not**
+aggressive APGM hyperparameter search — it's changing how
+`continuous_seq` is derived from `x_best`: a `--apgm-seed-mode
+argmax|sample|topk` flag on `vhh72_hallucination_search.py`, so the
+discrete search can be seeded by sampling (or a shortlist) from APGM's
+soft distribution instead of requiring any position's mutant probability
+to individually exceed WT's. This uses the information APGM already
+produces (real, nonzero mass on multiple amino acids per position) without
+needing the fixed point's practical consequence (argmax divergence) to
+ever occur. Not built yet — scoped only, deprioritized behind the 3-seed
+discrete-stability sweep.
+
+Run command (cluster):
+```
+examples/run_vhh72_hallucination_sweep.sh 0,1,2,3 5 0,1,2 results/hallucination_sweep_stability_<timestamp>
+```
+12 jobs (2 policies x 2 stop_grad settings x 3 seeds), batched across 4
+GPUs (one round of 4 concurrent, then 2 more sequential rounds since only
+12 jobs need running, i.e. 3 rounds of 4). Read
+`seed_variance_summary.csv`'s win-rate tally at the end for the direct
+answer to "does mcmc,stop_grad=0 win in most/all of the 3 seeds."
+
+### 13.9 Real 3-seed discrete-search stability sweep results (2026-07-26, cluster run) + AlphaSeq re-scoring, and the actual decision
+
+Ran the §13.8 command for real: `results/hallucination_sweep_discrete_3seed/`,
+12 jobs (2 policies x 2 stop_grad x 3 seeds `0,1,2`), all completed with no
+real errors (the only "error"-string log hits were the benign, expected
+"TPU backend unavailable" JAX startup message present in every job).
+
+**Loss-based stability check: no consistent winner, as suspected.**
+Per-seed winner at edit_count=5 (max budget): seed 0 -> greedy,stop_grad=1
+(2.717); seed 1 -> mcmc,stop_grad=0 (2.539); seed 2 -> greedy,stop_grad=0
+(2.571) -- three seeds, three different winners. `seed_variance_summary.csv`
+shows why: greedy is stable across seeds (std ~0.005-0.07 at edit_count=5),
+mcmc is noisy (std ~0.16-0.17 at edit_count 4-5) -- noisy enough that its
+seed-to-seed spread is comparable to the actual gap between configs. **The
+original single-seed sweep's "mcmc,stop_grad=0 best overall at 2.655"
+finding does not replicate** -- it was that one seed's outcome, not a
+stable pattern. This is exactly the result the stability sweep existed to
+check for, and it came back negative for that specific claim. One real
+data-completeness wrinkle: mcmc's Pareto front isn't always complete per
+seed (seed 0 missing edit_count 1 and 3 at both stop_grad settings, seed 1
+missing edit_count 3) -- greedy always has full 0-5 coverage; mcmc's
+random-walk search doesn't always land an improvement at every exact edit
+distance.
+
+**AlphaSeq re-scoring (a different, independent question): mcmc wins
+clearly.** Re-ran `vhh72_score_hallucination_results.py` against this
+sweep's `combined.csv` (66 candidate designs, vs. 5 in the original
+single-seed run) -- real per-mutation sign-agreement coverage improved a
+lot (65 testable mutation-instances vs. 11 before), and it reveals a
+policy split invisible at the smaller sample size:
+
+| config | n testable | unweighted | n-weighted |
+|---|---|---|---|
+| greedy, stop_grad=0 | 12 | 0.184 | 0.181 |
+| greedy, stop_grad=1 | 24 | 0.252 | 0.179 |
+| mcmc, stop_grad=0 | 17 | 0.566 | 0.613 |
+| mcmc, stop_grad=1 | 12 | 0.552 | 0.405 |
+| overall | 65 | 0.377 | 0.299 |
+
+Overall, 62% of testable mutations still fall below chance against real
+single-substitution contrast pairs (consistent with the original,
+smaller-sample finding that these designs aren't well-validated by real
+data) -- but greedy's mutations are well below chance (~0.18-0.25) while
+mcmc's are close to or above chance (~0.55-0.61), roughly a 3x gap. Within
+mcmc, `stop_grad=0`'s n-weighted score (0.613) is meaningfully higher than
+`stop_grad=1`'s (0.405) even though their unweighted scores are close
+(0.566 vs 0.552) -- its higher-confidence mutations (more real contrast
+pairs behind them) show stronger real-data agreement. Near-match caveat:
+several `edit_count=1` designs, across multiple configs and seeds, landed
+within CDR-distance 1 of a real AlphaSeq-tested variant
+(`VHH72_esm_cold_394_d2`, real KD data: `Delta: -1.33`), but this is **not
+a direct KD measurement of the generated CDR mutant**. Rechecked directly:
+there are **zero exact CDR matches** in this sweep, and the repeated
+closest variant `VHH72_esm_cold_394_d2` has WT CDRs with framework
+mutations (`T61N,A75T`). So the near-match result is useful context only;
+the actual real-data signal here is the per-mutation AlphaSeq
+sign-agreement. Coverage caveat unchanged from before: still modest
+(65/166 mutation-instances, 39%), a structural limit of the real AlphaSeq
+campaign's coverage, not a sampling choice.
+
+**Decision: adopt `mcmc, stop_grad=0` as the default policy going
+forward**, on the basis of the AlphaSeq real-data agreement finding, *not*
+the composite loss (§13.8 already showed loss doesn't distinguish the
+configs reliably across seeds). This is deliberately a different basis
+for the decision than originally planned -- agreement with real wet-lab
+contrast pairs is a stronger form of evidence than a lower predicted loss
+number, and the two questions turned out to have different answers.
+
+**Follow-up: is the 55-61% sign-agreement rate actually significant, or
+just noise at this sample size?** The raw per-mutation-instance averages
+above double-count real evidence -- the same (position, mutant amino acid)
+substitution recurs across a Pareto front's edit counts (cumulative: once
+picked, it usually stays) and across seeds, so naively averaging
+per-design-instance rates treats one real (position, amino acid) claim as
+several independent ones. Fixed this: `vhh72_score_hallucination_results.py`
+now deduplicates to each config's *unique* chosen mutations first
+(`collect_config_mutations`), pools the real votes behind them exactly
+once each, and runs a one-sided binomial test (H1: p > 0.5) per config
+(`binomial_significance_report`) plus a full ranked list of every unique
+tested substitution by real agreement rate (`rank_unique_mutations`). New
+outputs: `significance_report.csv`, `mutation_ranking.csv`. The
+per-mutation `alphaseq_scoring.csv` also now preserves `seed`, so later
+audits can distinguish identical policy/stop-grad/edit-count rows from
+different stochastic runs instead of losing that axis.
+
+Real result, run against the 3-seed sweep's `combined.csv`:
+
+| config | unique mutations | pooled votes | favorable | p-value |
+|---|---|---|---|---|
+| greedy, stop_grad=0 | 7 | 142 | 31.0% | 1.000 |
+| greedy, stop_grad=1 | 6 | 144 | 39.6% | 0.995 |
+| mcmc, stop_grad=0 | 11 | 190 | 61.1% | **0.001** |
+| mcmc, stop_grad=1 | 7 | 138 | 40.6% | 0.989 |
+| overall (all configs, deduplicated) | 22 | 386 | 48.4% | 0.746 |
+
+Under this pooled-vote binomial check, `mcmc, stop_grad=0` is the only
+config with a clearly positive signal (p=0.001 on 190 pooled real votes)
+-- the other three are indistinguishable from chance by the same check,
+and greedy's raw rates (31%, 40%) are numerically *below* half, more
+consistent with picking real negatives than positives. Caveat: this is
+not a fully independent-sample wet-lab p-value, because AlphaSeq contrast
+pairs can share variants/backgrounds; treat it as a quantitative sanity
+check on directional bias, not as a final statistical proof. The
+near-chance "overall" figure is not evidence the pipeline is neutral --
+it's an average of one positive config and three chance-or-worse ones,
+which is itself evidence that policy choice, not the pipeline in general,
+is what's driving real-data agreement. This firms up the §13.9 decision
+considerably: `mcmc, stop_grad=0` isn't just numerically ahead, it's the
+one config with the clearest real-data support.
+
+Top agreement-rate positives (full list in `mutation_ranking.csv`): V104Y
+(n=5 real pairs, 100% favorable, chosen by both mcmc configs), T27I (n=5,
+100%, mcmc/stop_grad=1), G101D (n=3, 100%, mcmc/stop_grad=0). The strongest
+high-evidence positive is L100W (n=86, 80.2%, mcmc/stop_grad=0). Top real
+negatives: T102M (n=7, 0% -- even mcmc/stop_grad=0's portfolio has real
+misses, it's a net-positive bias, not a perfect one), E30H (n=6, 0%,
+greedy/stop_grad=0), D108G (n=5, 0%, mcmc/stop_grad=1).
+
+**OpenDDE role after this result:** do not use OpenDDE confidence metrics
+as an affinity ranking signal. The point of keeping OpenDDE in the loop is
+structural plausibility during search: maintain contact, avoid obvious
+pose drift, and prevent structurally nonsensical CDR edits. Full OpenDDE
+diffusion/confidence outputs (`ipTM`, pLDDT, PAE/ipSAE-like quantities) can
+still be useful as **filters or diagnostics** for "does this candidate
+remain structurally plausible?", but they should not be treated as final
+bind-affinity rankers, because the real-data check above shows AlphaSeq
+agreement and predicted-loss/confidence are different axes. Also, the
+current hard `IPSAE_min` implementation is not a good gradient objective:
+it uses a hard PAE cutoff plus max/min reductions, so it is at best a
+non-smooth structural gate. If an interface-confidence gradient is needed
+later, build a smoother PAE/IPSAE surrogate rather than optimizing hard
+ipSAE directly. Verified directly against source
+(`src/mosaic/losses/structure_prediction.py`): `interaction_prediction_score`
+applies a hard boolean `pae < pae_cutoff` mask (zero gradient for excluded
+pairs), and `BinderTargetIPSAE`/`TargetBinderIPSAE` reduce via `jnp.max`,
+with `IPSAE_min` taking `jnp.minimum` of the two -- three compounding hard
+reductions, confirmed, not just asserted.
+
+### 13.10 Two tracks going forward: candidate curation vs. architecture testing
+
+Deliberately split into two tracks, so engineering a real shortlist and
+testing whether the search architecture works don't get tangled into one
+experiment:
+
+**Candidate track (done): `examples/vhh72_select_candidates.py`.** Curates
+a shortlist directly from `mcmc, stop_grad=0`'s Pareto fronts using
+`mutation_ranking.csv` as a real/green-red filter -- classifies each
+mutation in a candidate as `supported` (agreement >= 0.6), `avoid`
+(agreement <= 0.2, real evidenced negative), `neutral`, or `untested` (no
+real coverage, ~61% of the space -- neither penalized nor rewarded, since
+this is exactly where AlphaSeq scoring can't help and the model's own
+signal is all there is). `supported` also requires at least 3 real
+contrast pairs by default, so one-pair 100% hits are treated as thin
+positive/neutral evidence rather than strong green evidence. Excludes any
+candidate carrying an `avoid`
+mutation by default. Real result against the 3-seed sweep: 3 candidates
+survive (all edit_count=4), top pick is seed=1. In 0-indexed AlphaSeq
+coordinates it is `A96V, V104K, E106G, W107G` (1-indexed conventional
+sequence notation: `A97V, V105K, E107G, W108G`), loss=2.580, with
+`V104K` strongly supported (n=51, 0.61), `A96V` a thin one-pair positive
+(n=1, 1.00; classified neutral by default), and 0 avoid mutations.
+Concrete illustration of why this matters: the single lowest-loss
+candidate in the *entire* sweep (seed=1, edit_count=5, loss=2.539)
+carries `T102M` in 0-indexed coordinates (`T103M` 1-indexed; n=7, 0%
+agreement, a real evidenced negative) -- dropping to that same seed's
+edit_count=4 removes exactly that one bad mutation and keeps the
+supported/thin-positive part of the design at essentially the same loss.
+Lowest predicted loss and best real evidence picked different candidates;
+this is the concrete case where they diverged. Full annotated output:
+`candidate_shortlist.csv`.
+
+Deliberately NOT using AlphaSeq data to bias generation itself (a
+different, rejected idea: biasing `edit_budgeted_gradient_mcmc`'s proposal
+distribution directly with `favorability_index`) -- that would leak the
+evaluation signal into generation. It would mechanically raise the
+AlphaSeq agreement score without saying anything about whether the search
+finds good mutations in the ~61% of the space with no real coverage,
+which is the actual point of running hallucination at all. Useful for
+engineering final candidates (this script, post-hoc, read-only), not for
+judging the search mechanism -- kept as a labeled, explicit
+semi-supervised idea, not built, if ever wanted later.
+
+**Methodology track (built, not yet run): `--apgm-seed-mode
+argmax|sample|topk` on `vhh72_hallucination_search.py`.** Tests whether
+APGM's soft distribution -- confirmed real in §13.7 (nnz genuinely moves,
+1.00 to ~4.9 to ~3.4-3.8), but never converts into an argmax that differs
+from WT -- has any latent value once the argmax requirement is removed.
+Three modes, `apgm_seed_from_soft`:
+- `argmax` (default, unchanged production behavior): requires a mutant to
+  individually dominate every amino acid at that position, including WT.
+- `sample`: draws each position independently from APGM's own soft
+  categorical distribution (`jax.random.categorical`) -- a real,
+  seed-dependent draw from the actual mass APGM produced, no threshold
+  requirement.
+- `topk`: deterministic, no RNG -- at each position, uses the best non-WT
+  amino acid if its probability clears `--apgm-topk-threshold` (default
+  0.15), otherwise keeps WT.
+
+Unit-tested locally against a toy 3-position/5-token distribution (no
+GPU/OpenDDE needed): `argmax` reproduced WT exactly; `topk` picked exactly
+the two positions whose runner-up cleared the 0.15 threshold and correctly
+left the position without a real competitor at WT; `sample`'s empirical
+frequencies over 20,000 draws matched the true per-position distribution
+closely (e.g. position with true `[0.6, 0.35, 0.03, 0.01, 0.01]` sampled
+empirically as `[0.60, 0.35, 0.029, 0.011, 0.009]`). Not yet run against
+the real pipeline (needs the cluster, same reason as everything else in
+this doc requiring the full complex). This answers a genuinely open
+question from §13.7: does giving the discrete search a real, informed
+(non-WT) starting point from APGM's soft signal change anything, or does
+the discrete phase dominate regardless of where it starts?
+
+Suggested test (cluster): rerun the same 3-seed stability sweep with
+`--apgm-seed-mode sample` (and separately `topk`) instead of the default
+`argmax`, using the softened APGM settings from §13.7
+(`--apgm-init-wt-prob 0.80 --apgm-scale 1.0`). Those two APGM settings are
+not optional for this architecture test: leaving the production defaults
+(`1.0`, `1.2`) would recreate the original exact-WT/scale moat and mostly
+test the old collapsed setup. Run `mcmc, stop_grad=0` only (already the
+validated policy), compare against the existing `argmax`-seeded results in
+`results/hallucination_sweep_discrete_3seed/` on both total_loss and
+AlphaSeq sign-agreement (`vhh72_score_hallucination_results.py`'s
+binomial significance report is the right final comparison, not raw
+agreement rate, given §13.9's finding that raw rates alone are noisy at
+this sample size). The wrapper/dispatcher now expose those axes directly;
+sample-mode command:
+
+```
+examples/run_vhh72_hallucination_sweep.sh 4,5,6,7 5 0,1,2 \
+  results/hallucination_sweep_apgm_sample_mcmc_sg0 sample 0.15 mcmc 0 0.80 1.0
+```
+
+Top-k command:
+
+```
+examples/run_vhh72_hallucination_sweep.sh 4,5,6,7 5 0,1,2 \
+  results/hallucination_sweep_apgm_topk_mcmc_sg0 topk 0.15 mcmc 0 0.80 1.0
+```

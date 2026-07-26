@@ -6,10 +6,12 @@ committed mutations from a real discrete search, not a p_seq marginal
 shift. See docs/guidance_alphaseq_testing_notes.md section 13.
 
 Two checks, not one:
-  1. Exact/near-match: does a candidate design match (or come within a
-     couple CDR edits of) a real AlphaSeq-tested sequence? If so, that's a
-     direct real KD reading, not an inference -- checked first because it's
-     the strongest possible evidence when it hits.
+  1. Exact/near-match: does a candidate design exactly match, or come within a
+     couple CDR edits of, a real AlphaSeq-tested sequence? An exact match is a
+     direct real KD reading. A near match is only neighbor/context evidence and
+     must not be interpreted as a direct measurement of the generated CDR mutant.
+     This is checked first because exact hits would be the strongest possible
+     evidence when they occur.
   2. Per-mutation sign agreement: for every position where a candidate
      differs from WT, look up all real, clean (single-substitution)
      contrast pairs at that position involving the candidate's chosen
@@ -32,6 +34,7 @@ import csv
 from pathlib import Path
 
 import numpy as np
+from scipy import stats
 
 from alphaseq_vhh72_cdr_contrast_pairs import (
     ALPHASEQ_CSV,
@@ -87,6 +90,103 @@ def cdr_hamming(a, b):
     return sum(1 for i in range(len(a)) if i in CDR_ALL and a[i] != b[i])
 
 
+def collect_config_mutations(designs, wt_seq, favorability_index):
+    """Unique (position, mutant amino acid) with real coverage chosen by each
+    (policy, stop_grad) config, deduplicated across seeds/edit_counts within
+    that config. Necessary before any significance test: the same mutation
+    reappearing across a Pareto front's edit counts (it's cumulative -- once
+    picked, it usually stays) or across seeds is the same real-world claim
+    about that substitution, not independent evidence, and must be counted
+    once, not once per design it happens to appear in."""
+    by_config = {}
+    for d in designs:
+        if int(d["edit_count"]) == 0:
+            continue
+        key = (d["policy"], d["stop_grad"])
+        for pos in range(len(wt_seq)):
+            if pos not in CDR_ALL or d["sequence"][pos] == wt_seq[pos]:
+                continue
+            mut_aa = d["sequence"][pos]
+            if (pos, mut_aa) in favorability_index:
+                by_config.setdefault(key, set()).add((pos, mut_aa))
+    return by_config
+
+
+def binomial_significance_report(by_config, favorability_index):
+    """One-sided binomial test (H1: p > 0.5) on the POOLED real votes behind
+    each config's unique chosen mutations: is what a config actually picked
+    biased toward real favorable outcomes, or consistent with chance given
+    how little coverage we have? Each real (position, amino acid) claim is
+    counted once (via collect_config_mutations's dedup), not once per
+    design/seed/edit_count it appears in -- pooling the same real evidence
+    multiple times would make the test overconfident."""
+    print("\n=== 3. Statistical significance: is a config's mutation choice "
+          "biased toward real favorable outcomes, or is this noise? ===", flush=True)
+    print("(one-sided binomial test, H1: p > 0.5, on pooled real contrast-pair "
+          "votes behind each config's UNIQUE chosen mutations)", flush=True)
+
+    rows = []
+    all_unique = set()
+    for key, muts in sorted(by_config.items()):
+        votes = [v for pos_aa in muts for v in favorability_index[pos_aa]]
+        n = len(votes)
+        successes = sum(votes)
+        if n > 0:
+            p_value = stats.binomtest(successes, n, p=0.5, alternative="greater").pvalue
+            print(f"  {key[0]}, stop_grad={key[1]}: {len(muts)} unique mutations, "
+                  f"{n} pooled real votes, {successes}/{n} favorable ({successes/n:.1%}), "
+                  f"p={p_value:.3f}", flush=True)
+        else:
+            p_value = float("nan")
+            print(f"  {key[0]}, stop_grad={key[1]}: no real coverage", flush=True)
+        rows.append({"policy": key[0], "stop_grad": key[1], "n_unique_mutations": len(muts),
+                      "n_pooled_votes": n, "n_favorable": successes, "p_value": p_value})
+        all_unique |= muts
+
+    votes = [v for pos_aa in all_unique for v in favorability_index[pos_aa]]
+    n = len(votes)
+    successes = sum(votes)
+    if n > 0:
+        p_value = stats.binomtest(successes, n, p=0.5, alternative="greater").pvalue
+        print(f"\n  OVERALL (all configs, deduplicated across the whole sweep): "
+              f"{len(all_unique)} unique mutations, {n} pooled real votes, "
+              f"{successes}/{n} favorable ({successes/n:.1%}), p={p_value:.3f}", flush=True)
+        rows.append({"policy": "ALL", "stop_grad": "", "n_unique_mutations": len(all_unique),
+                      "n_pooled_votes": n, "n_favorable": successes, "p_value": p_value})
+    return rows
+
+
+def rank_unique_mutations(designs, wt_seq, favorability_index):
+    """Every unique (position, mutant amino acid) with real coverage that
+    appears anywhere in the sweep, ranked by real agreement_rate (n_real_pairs
+    as tiebreak) -- the concrete, inspectable list of which specific
+    substitutions are well-evidenced as real positives or real negatives,
+    independent of which config/seed/edit_count happened to choose them."""
+    chosen_by = {}
+    for d in designs:
+        if int(d["edit_count"]) == 0:
+            continue
+        for pos in range(len(wt_seq)):
+            if pos not in CDR_ALL or d["sequence"][pos] == wt_seq[pos]:
+                continue
+            mut_aa = d["sequence"][pos]
+            if (pos, mut_aa) not in favorability_index:
+                continue
+            tag = f"{d['policy']}/sg{d['stop_grad']}"
+            chosen_by.setdefault((pos, mut_aa), set()).add(tag)
+
+    rows = []
+    for (pos, mut_aa), configs in chosen_by.items():
+        votes = favorability_index[(pos, mut_aa)]
+        rows.append({
+            "position_0idx": pos, "wt_aa": wt_seq[pos], "mut_aa": mut_aa,
+            "n_real_pairs": len(votes), "agreement_rate": float(np.mean(votes)),
+            "chosen_by_configs": ";".join(sorted(configs)),
+        })
+    rows.sort(key=lambda r: (-r["agreement_rate"], -r["n_real_pairs"]))
+    return rows
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--combined-csv", type=Path, required=True)
@@ -132,12 +232,15 @@ def main():
             dist = cdr_hamming(cand_seq, real_seq)
             if dist < best_dist:
                 best_ag, best_dist = ag, dist
+        seed = d.get("seed", "")
+        seed_part = f"/seed={seed}" if seed != "" else ""
         if best_dist <= 2:
-            print(f"  {d['policy']}/stop_grad={d['stop_grad']}/edit_count={d['edit_count']}: "
+            print(f"  {d['policy']}/stop_grad={d['stop_grad']}{seed_part}/edit_count={d['edit_count']}: "
                   f"CDR-distance {best_dist} from real variant {best_ag} "
                   f"(KD data: {kd_by_group.get(best_ag)})", flush=True)
         match_rows.append({"policy": d["policy"], "stop_grad": d["stop_grad"],
-                            "edit_count": d["edit_count"], "closest_real_variant": best_ag,
+                            "seed": seed, "edit_count": d["edit_count"],
+                            "closest_real_variant": best_ag,
                             "cdr_distance_to_closest_real_variant": best_dist})
     if not any(r["cdr_distance_to_closest_real_variant"] <= 2 for r in match_rows):
         print("  no candidate design within CDR-distance 2 of any real AlphaSeq-tested "
@@ -156,7 +259,9 @@ def main():
         n_total = len(mutation_scores)
         mean_agreement = float(np.mean([m["agreement_rate"] for m in testable])) if testable else None
 
-        tag = f"{d['policy']}/stop_grad={d['stop_grad']}/edit_count={n_edits}"
+        seed = d.get("seed", "")
+        seed_part = f"/seed={seed}" if seed != "" else ""
+        tag = f"{d['policy']}/stop_grad={d['stop_grad']}{seed_part}/edit_count={n_edits}"
         agree_str = f"{mean_agreement:.2f}" if mean_agreement is not None else "n/a"
         print(f"  {tag}: {n_testable}/{n_total} mutations have real contrast-pair "
               f"coverage, mean sign-agreement={agree_str}", flush=True)
@@ -165,7 +270,8 @@ def main():
             print(f"      pos {m['pos']} ({m['wt_aa']}->{m['mut_aa']}): "
                   f"n_pairs={m['n_pairs']} agreement={rate_str}", flush=True)
             output_rows.append({
-                "policy": d["policy"], "stop_grad": d["stop_grad"], "edit_count": n_edits,
+                "policy": d["policy"], "stop_grad": d["stop_grad"],
+                "seed": seed, "edit_count": n_edits,
                 "total_loss": d["total_loss"], "position_0idx": m["pos"],
                 "wt_aa": m["wt_aa"], "mut_aa": m["mut_aa"], "n_real_contrast_pairs": m["n_pairs"],
                 "sign_agreement_rate": m["agreement_rate"] if m["agreement_rate"] is not None else "",
@@ -173,12 +279,45 @@ def main():
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "w", newline="") as f:
-        fieldnames = ["policy", "stop_grad", "edit_count", "total_loss", "position_0idx",
+        fieldnames = ["policy", "stop_grad", "seed", "edit_count", "total_loss", "position_0idx",
                       "wt_aa", "mut_aa", "n_real_contrast_pairs", "sign_agreement_rate"]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(output_rows)
     print(f"\nwrote per-mutation scoring: {args.output}", flush=True)
+
+    by_config = collect_config_mutations(designs, wt_seq, favorability_index)
+    significance_rows = binomial_significance_report(by_config, favorability_index)
+    significance_path = args.output.parent / "significance_report.csv"
+    with open(significance_path, "w", newline="") as f:
+        fieldnames = ["policy", "stop_grad", "n_unique_mutations", "n_pooled_votes",
+                      "n_favorable", "p_value"]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(significance_rows)
+    print(f"wrote significance report: {significance_path}", flush=True)
+
+    ranking_rows = rank_unique_mutations(designs, wt_seq, favorability_index)
+    ranking_path = args.output.parent / "mutation_ranking.csv"
+    with open(ranking_path, "w", newline="") as f:
+        fieldnames = ["position_0idx", "wt_aa", "mut_aa", "n_real_pairs",
+                      "agreement_rate", "chosen_by_configs"]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(ranking_rows)
+    print(f"wrote full mutation ranking ({len(ranking_rows)} unique substitutions): {ranking_path}", flush=True)
+
+    print("\n=== 4. Top and bottom real-evidenced substitutions (all configs) ===", flush=True)
+    print("  highest agreement-rate positives (inspect n_pairs before treating as strong):", flush=True)
+    for r in ranking_rows[:5]:
+        print(f"    pos {r['position_0idx']} ({r['wt_aa']}->{r['mut_aa']}): "
+              f"n_pairs={r['n_real_pairs']} agreement={r['agreement_rate']:.2f} "
+              f"chosen_by={r['chosen_by_configs']}", flush=True)
+    print("  lowest agreement-rate negatives (inspect n_pairs before treating as strong):", flush=True)
+    for r in ranking_rows[-5:][::-1]:
+        print(f"    pos {r['position_0idx']} ({r['wt_aa']}->{r['mut_aa']}): "
+              f"n_pairs={r['n_real_pairs']} agreement={r['agreement_rate']:.2f} "
+              f"chosen_by={r['chosen_by_configs']}", flush=True)
 
 
 if __name__ == "__main__":
