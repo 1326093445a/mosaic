@@ -1280,9 +1280,350 @@ it — the real fix would be a model actually co-trained for joint
 structure/sequence generation under an edit-budget curriculum, which
 doesn't exist yet for this problem.
 
-**Next step:** run and assess the hallucination-based approach concretely,
-not scope it from scratch. The real open questions now are which discrete
-search policy works better here (`greedy` vs `mcmc`), whether AbLang2 should
-backprop through its own encoder (`stop_grad=0`) or act only as fixed
-per-token reweighting (`stop_grad=1`), and how sensitive the result is to
-the current first-pass loss weighting and pose-drift tolerance choices.
+### 13.1 Real sweep results (2026-07-25, cluster run)
+
+**Run:** `examples/run_vhh72_hallucination_sweep.sh` on 4 H200s, 4 real jobs
+(`greedy`/`mcmc` × `stop_grad`∈{0,1}, `edit_budget=5`). **This specific,
+tracked run** (`results/hallucination_sweep_20260725_234632/`) completed
+cleanly — no errors, NaNs, or OOMs in any of its 4 logs. That does not mean
+the pipeline never failed during development — it did (§13.3's local
+JIT/memory bugs, the `simplex_APGM` return-unpacking bug caught in earlier
+smoke tests, real local OOMs at full-complex scale) — this sentence is
+specifically about the final tracked cluster result, not the development
+history. WT baseline pose drift
+measured at **12.73Å** on the cluster (full, uncropped complex) — consistent
+with the ~13Å measured locally on the smaller crop during development, real
+cross-environment agreement, not a fluke of one machine.
+
+**Pareto fronts** (`combined.csv`, `pareto_comparison.png`): all four
+configs start within ~3.0–3.06 total loss at `edit_count=0`, as expected
+(same WT-anchored starting point). `greedy` (both `stop_grad` settings) is
+smooth and monotonic, converging to ~2.72–2.73 at 5 edits, correctly
+terminating early once the feasible neighborhood is exhausted rather than
+running the full step budget. `mcmc` is noisier, as expected from a
+stochastic search — `mcmc, stop_grad=1` plateaus around 2.84–2.87;
+`mcmc, stop_grad=0` is *worse* than every other config through 4 edits
+(~3.09–3.13, worse than the WT baseline itself), then drops sharply to
+**2.655 at 5 edits — the single best loss value across all four configs.**
+That's a real, non-monotonic jump; consistent with genuine stochastic
+exploration finding a good combination late, but that specific
+interpretation hasn't been separately verified.
+
+### 13.2 Scoring the real designs against real AlphaSeq contrast pairs
+
+`examples/vhh72_score_hallucination_results.py` applies the same real
+ground truth Path 1 used (`alphaseq_vhh72_cdr_contrast_pairs.py`'s clean,
+single-substitution contrast pairs) to the actual, committed mutations in
+these 22 real candidate designs — not a `p_seq` marginal shift this time,
+real discrete choices.
+
+**Near-match check first, since it's the strongest possible evidence when
+it hits:** several low-edit-count designs land within CDR-distance 1–2 of a
+real AlphaSeq-tested variant (`VHH72_esm_cold_394_d2`,
+`VHH72_label_encoded_cold_2081_d4`) — expected at low edit counts given how
+few designable positions there are, not a strong finding on its own. More
+importantly: the real KD data for that closest match is against the
+**Delta RBD target, not WT RBD** — the antigen these designs were actually
+optimized against — so even this near-match does not give a direct WT-RBD
+KD reading. No candidate design landed within CDR-distance ≤2 of anything
+tested against WT.
+
+**Per-mutation sign agreement, the real finding:** across all 22 designs,
+56 (design × position) mutation instances exist, but the vast majority
+repeat the *same* (position, mutant-AA) lookup across different designs —
+since that lookup is a deterministic function of the real AlphaSeq data
+alone, repeats aren't new information. The honest count is **11 distinct
+testable (position, amino acid) combinations** — most chosen mutations
+(including `S105A`, which both `greedy` configs converge on almost
+immediately) have **zero** real single-substitution contrast-pair coverage
+and are simply unscoreable against real data; this coverage gap is itself
+worth taking seriously, not glossed over.
+
+Of the 11 that are testable:
+
+```
+pos  26 R->V: agreement=0.71  n_real_pairs=7
+pos  26 R->S: agreement=0.40  n_real_pairs=40
+pos  26 R->P: agreement=0.59  n_real_pairs=34
+pos  30 E->H: agreement=0.00  n_real_pairs=6
+pos  30 E->D: agreement=0.20  n_real_pairs=10
+pos  30 E->N: agreement=0.50  n_real_pairs=20
+pos  55 G->E: agreement=0.40  n_real_pairs=10
+pos  55 G->M: agreement=0.70  n_real_pairs=67
+pos 102 T->A: agreement=0.03  n_real_pairs=37
+pos 108 D->W: agreement=0.00  n_real_pairs=8
+pos 108 D->G: agreement=0.00  n_real_pairs=5
+```
+
+**Mean agreement: 0.321 (chance = 0.5). 7/11 combinations fall below
+chance**, several sharply (0.00, 0.00, 0.00, 0.03). That is the same
+direction — and numerically lower — than the original raw-gradient
+guided-diffusion finding in §9e (0.4776 before the cluster-bootstrap
+correction found that result wasn't statistically distinguishable from
+chance at n=27). Here n=11 is smaller still, so the same caution applies:
+this is **suggestive, not statistically established** at this sample size —
+but it is a real, consistent, concerning direction, not noise scattered
+evenly around 0.5, and it deserves to be stated plainly rather than
+softened. One real, honest scope limit on the claim itself: "agreement"
+here means "does the chosen amino acid beat whatever it was actually
+compared against in the real campaign data," not "beats WT specifically" —
+WT-vs-candidate pairs are rare in this dataset (see §5's campaign-bias
+note), so this is the best available real check, not a perfect one.
+
+**What this does and doesn't say, applying §8's standard here too:** it
+does not show the hallucination pipeline is broken — the composite loss is
+verified working correctly end to end (§13.1), and OpenDDE-confidence /
+naturalness / pose-anchor / edit-budget all behaved exactly as designed
+during the real run. What it shows is that, on the *narrow slice* of chosen
+mutations checkable against real single-substitution data, the designs
+found so far do not show the improvement the objective was optimizing for
+translating into agreement with real KD measurements — and if anything,
+trend the other way. Given the small n, the next real step is the same one
+this document has repeatedly landed on: more real data points (more seeds,
+more edit-budget settings, both search policies compared properly, not
+eyeballed from one run each) before treating this as more than a real but
+preliminary signal.
+
+**Weighted by real data support, not just eyeballed:** treating all 11
+combinations as equally reliable understates the picture — the lowest
+scores (0.00 at 3 combinations) are also the *thinnest* (n=5–8 real pairs,
+the least reliable data in the table), while the two best-supported
+combinations are genuinely positive: `pos 55 G->M` (agreement=0.70, n=67 —
+by far the most real evidence behind anything in the table) and
+`pos 26 R->P` (0.59, n=34). Weighting the mean by `n_pairs` instead of
+counting every combination equally moves the aggregate from 0.321 to
+**0.430** — still below chance, but meaningfully less damning once the
+noisiest, thinnest entries stop being counted the same as the best-
+supported ones. Worth naming precisely, not just "some noise": `pos 55
+G->M` appears in exactly one design (`mcmc, stop_grad=1, edit_count=5`) —
+and that specific design's own composite loss (2.870) is one of the
+*worse* results in the sweep, not the optimizer's top pick. The design the
+objective itself ranked best (`mcmc, stop_grad=0`, loss 2.655) does not
+contain this mutation. So the best real-data-supported single mutation and
+the optimizer's own favorite design are two different things — a sharper,
+more specific version of the §4 concern than the aggregate number alone
+shows: the objective (OpenDDE confidence + AbLang2 naturalness + pose
+anchor) and real binding data are not ranking the same designs the same
+way.
+
+### 13.3 Real structure check on the optimizer's top pick
+
+The pose-anchor loss used during search (`BinderPoseDistogramDrift`) is
+deliberately coordinate-free — cheap enough to call thousands of times, but
+nothing to actually look at. `BinderPoseRMSD` (coordinate-based, real
+Kabsch alignment) was built for exactly this follow-up: pay for one real
+structure prediction per candidate worth checking, not thousands.
+
+`examples/vhh72_predict_hallucination_structures.py` targets OpenDDE's real
+(coordinate-sampling) forward pass via mosaic/JAX — built, and a real bug
+was caught and fixed while running it (`opendde_forward_from_trunk` must be
+JIT-wrapped at real complex sizes, exactly the memory-fusion issue already
+documented in §9b; this script initially called it eagerly despite citing
+that exact precedent). After the fix it got past the earlier catastrophic
+234GiB blowup and into the real diffusion sampling loop, but still needs
+more memory than this dev GPU's 24GB provides at the full 334-residue
+complex — expected, consistent with §9b's ~45-50GB estimate, and should run
+fine on the target H200s; not independently verified there yet.
+
+**Given that, the real check for right now used the raw-torch OpenDDE CLI
+instead** (separate `OpenDDE` conda env, real kernel fusion, already
+established in §9c as working at full complex size where the JAX port
+struggles) — genuinely faster to get an answer than debugging the JAX path
+further. Built the mutated-sequence CIF for the optimizer's top design
+(`mcmc, stop_grad=0, edit_count=5`) by editing chain A's residue identities
+directly (gemmi), and hit — again — the exact `entity.full_sequence` /
+naive-JSON-reader issue from §9a: `opendde json` read the mmCIF's
+declared full sequence (still WT) rather than the mutated `_atom_site`
+residues. Same fix as before: hand-patch the generated JSON's sequence
+field directly rather than fight the CIF's entity-level field.
+
+**Real result** (`results/hallucination_sweep_20260725_234632/structures/`,
+CIFs + confidence JSON for both, raw-torch OpenDDE, 10 recycles / 200
+diffusion steps, ~37s each):
+
+| | WT baseline | design (5 mutations) |
+|---|---|---|
+| real target-aligned binder pose RMSD (Kabsch, Calpha) | 6.48A | 5.86A |
+| ipTM | 0.934 | 0.867 |
+| pLDDT | 93.5 | 92.8 |
+| clash | none | none |
+
+**Direct answer to "is the design no longer at the desired location": no.**
+The design's real pose RMSD is not worse than WT's own baseline under the
+same real, high-confidence model — if anything marginally better, well
+within what looks like the model's own prediction noise rather than a real
+shift. This is a materially different, and more trustworthy, check than
+the cheap distogram-drift number the search loop used, and it confirms
+that number's claim rather than contradicting it. The real, separate cost
+that *did* show up: interface confidence dropped modestly but genuinely
+(ipTM 0.934 -> 0.867, pLDDT 93.5 -> 92.8) — both still comfortably
+high-confidence in absolute terms, but a real degradation, not noise
+around zero.
+
+**Next step:** the immediate open items are the same as before this run —
+`greedy` vs `mcmc`, `stop_grad` 0 vs 1 — now with one real data point each
+instead of zero, pointing toward `mcmc, stop_grad=0` as the best *loss*
+result and best real structural check, while the single best real-data-
+supported mutation (`G55M`) sits in a different, lower-ranked design
+(`mcmc, stop_grad=1`) — worth deliberately checking whether a design
+that explicitly includes `G55M` scores better once actually optimized for,
+not just noting it appeared by chance in a worse-loss run. Worth running
+with more seeds before drawing a real conclusion about which config to
+prefer, checking whether relaxing the edit budget beyond 5 or reweighting
+AbLang2/bind/pose-anchor changes which real mutations get chosen, and
+running the real structure check (§13.3) on more than one design before
+treating "pose holds, confidence dips" as general rather than a single
+data point.
+
+### 13.4 Correction: OpenDDE's diffusion sampling is differentiable — the cheap distogram-only path was a choice, not an architectural constraint
+
+**A claim made earlier in this section (13's design rationale, and the
+in-loop diffusion guidance work `build_opendde_guidance_loss` was built
+around long before that) needs a real correction, not a footnote.** The
+claim, taken from `mosaic/losses/opendde.py`'s own module docstring: "the
+differentiable design signal rides the distogram... pae/pLDDT are consumed
+as scored values, not as a gradient channel." This was repeated in this
+document without independently checking it against OpenDDE's actual
+implementation. Checked directly now, and it does not hold as a general
+architectural claim:
+
+- `jopendde.diffusion.sample_diffusion` (`diffusion.py:309-399`, the actual
+  iterative coordinate-sampling loop) contains **no `stop_gradient` calls
+  anywhere** in the noise injection, the denoising network call, or the
+  Euler-style update step.
+- The sampling loop's body is wrapped in **`@jax.checkpoint`**
+  (`diffusion.py:365`) — gradient checkpointing, which exists specifically
+  to make backpropagation through a long computation memory-tractable.
+  There is no reason to checkpoint a function that is never meant to be
+  differentiated through; this is a real, direct signal the authors
+  engineered real coordinate sampling to support backprop, not just
+  forward inference.
+- `opendde_forward_from_trunk` (`mosaic/losses/opendde.py:434-515`) passes
+  the confidence head `conf_coords = jax.lax.stop_gradient(coords_ns) if
+  stop_grad_conf_coords else coords_ns` (line 474) — and
+  **`stop_grad_conf_coords` defaults to `False`.** By default, the
+  confidence head (PAE/pLDDT) already receives the real, non-detached
+  sampled coordinates.
+
+**What this means precisely:** "PAE/pLDDT are not a gradient channel" was
+describing a *choice mosaic's own convenience wrapper makes*
+(`build_distogram_only_loss`/`DistogramOnlyOpenDDELoss`, built specifically
+to skip real diffusion coordinate sampling because §9b/13.3 already showed
+it costs real, substantial time and memory) — not a hard constraint of
+OpenDDE itself. The underlying model supports real, differentiable
+backpropagation through the entire coordinate-sampling process, checkpointed
+specifically to make that affordable.
+
+**Why this matters for the hallucination pipeline (§13.1-13.3) going
+forward:** it means a real "look-ahead"-style mechanism is available for
+OpenDDE, structurally the same idea as the look-ahead mechanism already
+built for BoltzGen (§12b) — differentiate a loss through the *entire*
+diffusion sampling process (real coordinates, real confidence, potentially
+`BinderPoseRMSD` itself as a live gradient term instead of only a post-hoc
+check) rather than stopping at the cheap trunk-only distogram
+(`BinderPoseDistogramDrift`, §13.3's motivation for building it as a cheap
+proxy in the first place). This would give a materially more accurate
+in-loop gradient than the current proxy — recall §13.1's finding that the
+cheap distogram-only path has a real, substantial inherent baseline noise
+(~13Å) even on the true WT structure; a real coordinate-based signal would
+not carry that specific distortion.
+
+**The real cost, not free:** an actual backward pass through `n_step`
+diffusion steps, checkpointed but still expensive — almost certainly not
+affordable to call thousands of times inside `edit_budgeted_greedy_descent`
+the way the cheap distogram path currently is. The natural place to use it
+is `simplex_APGM`'s continuous relaxation stage (bounded, controlled
+iteration count, §13's whole reason for preferring hallucination over
+guided diffusion in the first place), not the high-volume discrete search.
+
+**Status: not yet built.** This is a real, verified, buildable next step —
+not yet scoped in code, not yet tested, no numbers to report. The next
+piece of work, if pursued, is a differentiable full-diffusion OpenDDE loss
+usable in `simplex_APGM`'s continuous phase, structurally mirroring
+`build_lookahead_grad_fn` (`src/mosaic/models/guidance_lookahead.py`) but
+for OpenDDE's `sample_coordinates`/`sample_diffusion` instead of BoltzGen's
+denoiser.
+
+### 13.5 APGM collapse diagnostic: script built, blocked locally by the known §9b memory ceiling
+
+Before touching the deeper OpenDDE path above, §13's `nnz` finding (every
+real sweep run stuck at `nnz=1.00`, argmax byte-identical to WT, for all
+200 iterations — the continuous relaxation phase was a complete no-op)
+needs to be root-caused first, so a deeper-loss change isn't confounded
+with a still-broken optimizer.
+
+Two suspected causes: (1) `vhh72_hallucination_search.py`'s `x0` is an
+exact one-hot vertex of the simplex (`seq_to_one_hot(wt_seq)`) — APGM
+starts already collapsed, nowhere to explore from at step 0; (2)
+`APGM_SCALE=1.2` (>1.0, deliberately sparsity-encouraging per
+`simplex_APGM`'s own docstring) reinforces staying there.
+
+New `examples/vhh72_apgm_diagnostic.py` isolates these: runs
+`simplex_APGM` alone (no discrete search after it), with a softened
+initialization (`--init-wt-prob`, default 0.80 on the WT amino acid, the
+remaining 0.20 split evenly over the other 19) instead of an exact
+one-hot vertex, and a configurable `--scale` (default 1.0, not the
+production 1.2) — everything else (the cheap distogram-only composite
+loss, `build_composite_losses`, unchanged) held identical to the real
+sweep, so a fix here isn't confounded with a signal-quality change.
+`simplex_APGM` already logs `nnz`/loss every iteration to stdout
+(`_print_iter`, `src/mosaic/optimizers.py`) — no extra logging needed.
+
+**Tried once locally first, confirmed it can't run here — not a new
+finding, the same §9b memory ceiling:** ran the equivalent of this
+diagnostic inline (25 steps, WT=0.80 init, scale=1.0) on the local 24GB
+RTX 4090, deliberately with `XLA_PYTHON_CLIENT_PREALLOCATE=false` and a
+capped `XLA_PYTHON_CLIENT_MEM_FRACTION=0.35` to avoid taking memory from
+another job already running on the same GPU (confirmed via
+`nvidia-smi --query-compute-apps` untouched at 10238MiB before and after,
+so this OOM did not disrupt it). `simplex_APGM`'s first gradient step
+OOM'd trying to autotune a `[4,48,384,334,334]` transpose fusion, wanting
+30.66GiB for that operation alone — the full 334-residue complex's
+gradient pass genuinely does not fit on a 24GB card, independent of what
+else is using it. This is the same class of failure as §9b, not new
+information about whether the softened-init fix works.
+
+**Status: script built and verified (syntax + `--help`), not yet run
+successfully anywhere.** Needs the cluster (same H200s the real sweep
+used). Usage:
+```
+.venv/bin/python examples/vhh72_apgm_diagnostic.py \
+    --init-wt-prob 0.80 --scale 1.0 --n-steps 200 --seed 0 \
+    2>&1 | tee results/apgm_diagnostic_seed0.log
+```
+Success criteria (unchanged from the reviewed plan): initial `nnz > 1`,
+`nnz` actually changes over iterations rather than snapping back to
+`1.00`, continuous argmax differs from WT at least somewhere, APGM's own
+loss improves before any discrete search runs.
+
+### 13.6 Multi-seed sweep infrastructure: built, gated on 13.5 passing first
+
+To check whether `mcmc,stop_grad=0`'s Pareto win (§13.1) is a repeatable
+tendency or a one-off, `vhh72_hallucination_dispatch.py` and
+`vhh72_hallucination_aggregate.py` (and the `run_vhh72_hallucination_sweep.sh`
+wrapper) now take a `--seeds` axis (comma-separated, e.g. `0,1,2,3,4`) on
+top of the existing 2 policies x 2 stop_grad settings, so N seeds means
+4*N independent jobs, still batched across the given GPUs in groups of
+`len(devices)`. Per-job CSVs are now tagged
+`{policy}_stopgrad{0,1}_seed{N}.csv` (search script's CSV also gained a
+`seed` column). Aggregation now writes three outputs instead of two:
+combined CSV (all rows, all seeds), `seed_variance_summary.csv`
+(mean/std/min/max total_loss per (policy, stop_grad, edit_count) across
+seeds), and a stdout + implicit win-rate tally (per seed, which config had
+the lowest total_loss at the max edit_count — the direct answer to "did
+the win replicate"). The figure now plots mean +/- std error bars across
+seeds instead of a single line. Verified against synthetic CSVs (not yet
+against real search output) — file discovery, combined CSV, variance
+summary, and win-rate tally all behaved correctly.
+
+**Explicitly NOT yet safe to run for real, and why:** simplex_APGM's
+continuous phase collapses to the exact same WT vertex regardless of seed
+(§13.5 — the collapse is a structural fixed point of the projection math
+at the current `x0`/`scale`, not seed-dependent noise). Running a seed
+sweep before that's fixed would only vary the discrete search's own
+randomness on top of an identical, frozen starting point for every seed —
+not a real test of whether gradient-guided diversity produces a
+repeatable result. Sequencing: §13.5's diagnostic must be run and confirmed
+on the cluster first; if it confirms the softened-init/scale=1.0 fix, that
+fix needs to be folded into `vhh72_hallucination_search.py`'s defaults (or
+exposed as CLI overrides) before this multi-seed batch is run for real.

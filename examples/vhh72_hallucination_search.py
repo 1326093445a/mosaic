@@ -283,12 +283,12 @@ def main():
     print(f"\nwriting Pareto front ({len(pareto)} edit counts) to {args.output}", flush=True)
     with open(args.output, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["policy", "stop_grad", "edit_count", "total_loss", "sequence", "num_mutations_from_wt"])
+        writer.writerow(["policy", "stop_grad", "seed", "edit_count", "total_loss", "sequence", "num_mutations_from_wt"])
         for edit_count in sorted(pareto.keys()):
             val, seq_arr = pareto[edit_count]
             seq_str = "".join(TOKENS[i] for i in seq_arr)
             n_mut = int((seq_arr != parent).sum())
-            writer.writerow([args.policy, args.stop_grad, edit_count, float(val), seq_str, n_mut])
+            writer.writerow([args.policy, args.stop_grad, args.seed, edit_count, float(val), seq_str, n_mut])
 
     print("done.", flush=True)
 

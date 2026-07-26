@@ -1,19 +1,30 @@
 """Multi-GPU dispatcher for the VHH72 hallucination search
 (examples/vhh72_hallucination_search.py): 2 search policies x 2 AbLang2
-gradient-flow settings = 4 independent jobs, spread across N GPUs via
-CUDA_VISIBLE_DEVICES per subprocess.
+gradient-flow settings x N seeds = independent jobs, spread across N GPUs
+via CUDA_VISIBLE_DEVICES per subprocess.
 
 Job-level parallelism (independent subprocesses, not JAX pmap/sharding) --
 mirrors the existing pattern in
 src/mosaic/workflows/boltzgen_vhh_guided.py's run_many_from_cli, which is
 "intentionally different from DDP inside one JAX process, because the
-[jobs] are independent." With 4 jobs and fewer GPUs, later batches reuse
-GPUs once earlier jobs finish -- e.g. 4 GPUs means 2 GPUs run 2 jobs
-sequentially, the other 2 run 1 each.
+[jobs] are independent." With more jobs than GPUs, later batches reuse
+GPUs once earlier jobs finish -- e.g. 20 jobs on 4 GPUs means each GPU runs
+5 jobs sequentially, 5 batches of 4 running in parallel.
+
+IMPORTANT: multi-seed runs (--seeds with more than one value) are only a
+meaningful test of whether a finding (e.g. mcmc,stop_grad=0's Pareto win)
+replicates once simplex_APGM's continuous phase is no longer a no-op --
+see docs/guidance_alphaseq_testing_notes.md section 13.5 (the nnz=1.00
+fixed-point finding). While that's still broken, the continuous phase
+collapses to the identical WT vertex regardless of seed (the collapse is
+structural, not seed-dependent), so different seeds would only vary the
+discrete search's own randomness on top of an identical, frozen starting
+point -- not what a seed sweep is meant to test.
 
 Usage:
     .venv/bin/python examples/vhh72_hallucination_dispatch.py \\
-        --devices 0,1,2,3 --edit-budget 5 --output-dir results/hallucination_sweep
+        --devices 0,1,2,3 --edit-budget 5 --seeds 0,1,2,3,4 \\
+        --output-dir results/hallucination_sweep
 """
 import argparse
 import os
@@ -40,18 +51,25 @@ def main():
                          "If omitted, all jobs share the inherited CUDA_VISIBLE_DEVICES "
                          "and run one at a time.")
     p.add_argument("--edit-budget", type=int, default=5)
+    p.add_argument("--seeds", type=str, default="0",
+                    help="Comma-separated seeds, e.g. 0,1,2,3,4. Default: single seed 0 "
+                         "(matches the original 4-job sweep).")
     p.add_argument("--output-dir", type=Path, required=True)
     args = p.parse_args()
 
     device_ids = [d.strip() for d in args.devices.split(",")] if args.devices else []
     max_parallel = len(device_ids) if device_ids else 1
+    seeds = [int(s.strip()) for s in args.seeds.split(",")]
 
     jobs = [
-        {"policy": policy, "stop_grad": stop_grad}
+        {"policy": policy, "stop_grad": stop_grad, "seed": seed}
         for policy in POLICIES
         for stop_grad in STOP_GRAD_SETTINGS
+        for seed in seeds
     ]
-    print(f"[dispatch] {len(jobs)} jobs, max_parallel={max_parallel}, "
+    print(f"[dispatch] {len(jobs)} jobs ({len(POLICIES)} policies x "
+          f"{len(STOP_GRAD_SETTINGS)} stop_grad settings x {len(seeds)} seeds), "
+          f"max_parallel={max_parallel}, "
           f"devices={','.join(device_ids) if device_ids else 'inherited'}", flush=True)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -62,7 +80,7 @@ def main():
         launched = []
         for i, job in enumerate(batch):
             device = device_ids[i % len(device_ids)] if device_ids else None
-            tag = f"{job['policy']}_stopgrad{job['stop_grad']}"
+            tag = f"{job['policy']}_stopgrad{job['stop_grad']}_seed{job['seed']}"
             csv_path = args.output_dir / f"{tag}.csv"
             log_path = args.output_dir / f"{tag}.log"
 
@@ -71,6 +89,7 @@ def main():
                 "--policy", job["policy"],
                 "--stop-grad", str(job["stop_grad"]),
                 "--edit-budget", str(args.edit_budget),
+                "--seed", str(job["seed"]),
                 "--output", str(csv_path),
             ]
             env = os.environ.copy()

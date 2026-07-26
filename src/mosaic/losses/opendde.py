@@ -1,9 +1,12 @@
 """Mosaic loss integration for OpenDDE (the `jopendde` JAX/Equinox port).
 
 OpenDDE is an AF3-style all-atom co-folding model, so this mirrors `losses/of3.py`
-(the OpenFold3 backend). The differentiable design signal rides the distogram
-(`distogram_logits`; cf. `DistogramIPTMProxy`, `BinderTargetContact`); pae/pLDDT
-are consumed as scored values, not as a gradient channel.
+(the OpenFold3 backend). The cheap in-loop design path used by
+`DistogramOnlyOpenDDELoss` rides the distogram (`distogram_logits`; cf.
+`DistogramIPTMProxy`, `BinderTargetContact`) and deliberately skips coordinate
+diffusion plus the confidence head. The full `MultiSampleOpenDDELoss` path does
+run coordinate diffusion and can propagate gradients through PAE/pLDDT-style
+losses unless `stop_grad_conf_coords=True` is requested.
 
 The binder is allocated at a fixed poly-Trp (max-atom) budget so a candidate
 panel shares one JIT compile (`OpenDDEModel.binder_features` -> an
