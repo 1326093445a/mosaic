@@ -1,10 +1,9 @@
 """Hallucination-based VHH72 CDR redesign: direct gradient optimization
-through OpenDDE (binding, cheap distogram-only path) + AbLang2 (naturalness,
-masked PLL) + EditBudget (hard mutation-count budget) + BinderPoseDistogramDrift
-(pose anchor, distogram-space, cheap) -- no BoltzGen diffusion involved at
-all. See docs/guidance_alphaseq_testing_notes.md section 13 for why guided
-diffusion via BoltzGen was set aside for this problem, and section 12.0/9a
-for why this uses the full, uncropped complex (decided, not a default).
+through OpenDDE + AbLang2 (naturalness, masked PLL) + EditBudget (hard
+mutation-count budget) -- no BoltzGen diffusion involved at all. See
+docs/guidance_alphaseq_testing_notes.md section 13 for why guided diffusion
+via BoltzGen was set aside for this problem, and section 12.0/9a for why this
+uses the full, uncropped complex (decided, not a default).
 
 Two-stage optimization, both real, both loss-agnostic mosaic infrastructure
 (src/mosaic/optimizers.py), not built for this task specifically:
@@ -17,11 +16,11 @@ Two-stage optimization, both real, both loss-agnostic mosaic infrastructure
 
 Composite loss, every term ClippedGradient-wrapped (matches the existing
 BoltzGen-guidance pattern's per-objective clip, cfg.clip_gradient_norm):
-  - OpenDDE bind (BinderTargetContact) + BinderPoseDistogramDrift (pose
-    anchor), combined INSIDE one DistogramOnlyOpenDDELoss call (one OpenDDE
-    forward pass produces the distogram both terms read, not two), the
-    whole combination clipped as one unit -- mirrors
-    build_opendde_guidance_loss's existing pattern exactly.
+  - OpenDDE bind (BinderTargetContact) + pose anchor. --opendde-path
+    distogram keeps the cheap trunk+distogram-head path and uses
+    BinderPoseDistogramDrift. --opendde-path full runs OpenDDE's full
+    diffusion/coordinate/confidence-head path inside the hallucination loop
+    and uses real coordinate BinderPoseRMSD as the pose anchor.
   - AbLang2 naturalness (Ablang2PseudoLikelihood, masked PLL) evaluated on
     the full reconstructed binder sequence but averaged only over the
     designable CDR positions. --stop-grad controls whether its gradient
@@ -42,6 +41,7 @@ import argparse
 import csv
 from pathlib import Path
 
+import equinox as eqx
 import gemmi
 import jax
 import numpy as np
@@ -49,6 +49,7 @@ import numpy as np
 from mosaic.common import TOKENS
 from mosaic.losses.ablang2 import Ablang2PseudoLikelihood, load_ablang2
 from mosaic.losses.structure_prediction import (
+    BinderPoseRMSD,
     BinderPoseDistogramDrift,
     BinderTargetContact,
 )
@@ -87,8 +88,10 @@ CONTACT_DISTANCE = 8.0
 # anything -- tune against real results, same caveat as every other
 # first-pass default in this project.
 POSE_DRIFT_MARGIN = 3.0
+POSE_RMSD_MARGIN = 3.0
 CLIP_GRADIENT_NORM = 1.0
 OPENDDE_RECYCLING_STEPS = 4
+OPENDDE_FULL_NUM_SAMPLES = 1
 APGM_STEPS = 200
 APGM_STEPSIZE = 0.05
 APGM_SCALE = 1.2  # >1.0 encourages sparsity, per simplex_APGM's own docstring
@@ -195,9 +198,8 @@ def load_structure():
     return model, binder_seq, target_seq
 
 
-def reference_binder_target_ca_distances(model) -> np.ndarray:
-    """Real WT-bound Calpha-Calpha binder x target distance matrix -- the
-    reference BinderPoseDistogramDrift measures drift against."""
+def reference_binder_target_ca(model) -> tuple[np.ndarray, np.ndarray]:
+    """Real WT-bound binder/target Calpha coordinates."""
     def ca_coords(chain):
         coords = []
         for res in chain:
@@ -209,11 +211,19 @@ def reference_binder_target_ca_distances(model) -> np.ndarray:
 
     binder_ca = ca_coords(model["A"])
     target_ca = ca_coords(model["A2"])
+    return binder_ca, target_ca
+
+
+def reference_binder_target_ca_distances(model) -> np.ndarray:
+    """Real WT-bound Calpha-Calpha binder x target distance matrix -- the
+    reference BinderPoseDistogramDrift measures drift against."""
+    binder_ca, target_ca = reference_binder_target_ca(model)
     diffs = binder_ca[:, None, :] - target_ca[None, :, :]
     return np.linalg.norm(diffs, axis=-1)
 
 
-def measure_wt_pose_drift(*, opendde, features, reference_distances, binder_seq, key) -> float:
+def measure_wt_distogram_pose_drift(*, opendde, features, reference_distances,
+                                    binder_seq, key) -> float:
     """Real baseline: OpenDDE's own distogram-only prediction of the TRUE WT
     sequence, scored against the TRUE WT-bound reference distances.
     tolerance=0.0 here (an unhinged raw read, not the search-time loss) --
@@ -235,24 +245,106 @@ def measure_wt_pose_drift(*, opendde, features, reference_distances, binder_seq,
     return float(aux["binder_target_distogram_drift"])
 
 
-def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenizer,
-                           reference_distances, binder_seq, designable_idx,
-                           edit_budget: int, stop_grad_ablang2: bool, pose_drift_tolerance: float):
-    bind_and_pose = (
-        WEIGHT_OPENDDE_CONTACT * BinderTargetContact(
-            paratope_idx=designable_idx, contact_distance=CONTACT_DISTANCE,
-        )
-        + ClippedGradient(
-            BinderPoseDistogramDrift(reference_distances, tolerance=pose_drift_tolerance),
+def measure_wt_pose_rmsd(*, opendde, features, reference_binder_ca,
+                         reference_target_ca, binder_seq, key,
+                         opendde_sampling_steps: int | None,
+                         opendde_num_samples: int) -> float:
+    """Real baseline for --opendde-path full: run OpenDDE's full coordinate
+    path on WT and measure target-aligned binder RMSD against the WT-bound
+    input structure. tolerance=0.0 is an unhinged measurement."""
+    rmsd = BinderPoseRMSD(
+        reference_binder_ca=reference_binder_ca,
+        reference_target_ca=reference_target_ca,
+        rmsd_tolerance=0.0,
+    )
+    if opendde_num_samples == 1:
+        probe = ClippedGradient(
+            opendde.build_loss(
+                loss=rmsd,
+                features=features,
+                recycling_steps=OPENDDE_RECYCLING_STEPS,
+                sampling_steps=opendde_sampling_steps,
+            ),
             CLIP_GRADIENT_NORM,
         )
+    else:
+        probe = ClippedGradient(
+            opendde.build_multisample_loss(
+                loss=rmsd,
+                features=features,
+                recycling_steps=OPENDDE_RECYCLING_STEPS,
+                sampling_steps=opendde_sampling_steps,
+                num_samples=opendde_num_samples,
+            ),
+            CLIP_GRADIENT_NORM,
+        )
+    x_wt = seq_to_one_hot(binder_seq)
+
+    @eqx.filter_jit
+    def _eval(loss, x, key):
+        return loss(x, key=key)
+
+    _, aux = _eval(probe, x_wt, key)
+    values = [np.asarray(v) for v in jax.tree_util.tree_leaves(aux["binder_pose_rmsd"])]
+    return float(np.mean(values))
+
+
+def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenizer,
+                           reference_distances, reference_binder_ca,
+                           reference_target_ca, binder_seq, designable_idx,
+                           edit_budget: int, stop_grad_ablang2: bool,
+                           opendde_path: str, pose_tolerance: float,
+                           opendde_sampling_steps: int | None,
+                           opendde_num_samples: int):
+    contact_loss = WEIGHT_OPENDDE_CONTACT * BinderTargetContact(
+        paratope_idx=designable_idx, contact_distance=CONTACT_DISTANCE,
     )
-    opendde_loss = ClippedGradient(
-        opendde.build_distogram_only_loss(
-            loss=bind_and_pose, features=features, recycling_steps=OPENDDE_RECYCLING_STEPS,
-        ),
-        CLIP_GRADIENT_NORM,
-    )
+    if opendde_path == "distogram":
+        pose_loss = ClippedGradient(
+            BinderPoseDistogramDrift(reference_distances, tolerance=pose_tolerance),
+            CLIP_GRADIENT_NORM,
+        )
+        opendde_loss = ClippedGradient(
+            opendde.build_distogram_only_loss(
+                loss=contact_loss + pose_loss,
+                features=features,
+                recycling_steps=OPENDDE_RECYCLING_STEPS,
+            ),
+            CLIP_GRADIENT_NORM,
+        )
+    elif opendde_path == "full":
+        pose_loss = ClippedGradient(
+            BinderPoseRMSD(
+                reference_binder_ca=reference_binder_ca,
+                reference_target_ca=reference_target_ca,
+                rmsd_tolerance=pose_tolerance,
+            ),
+            CLIP_GRADIENT_NORM,
+        )
+        full_opendde_loss = contact_loss + pose_loss
+        if opendde_num_samples == 1:
+            opendde_loss = ClippedGradient(
+                opendde.build_loss(
+                    loss=full_opendde_loss,
+                    features=features,
+                    recycling_steps=OPENDDE_RECYCLING_STEPS,
+                    sampling_steps=opendde_sampling_steps,
+                ),
+                CLIP_GRADIENT_NORM,
+            )
+        else:
+            opendde_loss = ClippedGradient(
+                opendde.build_multisample_loss(
+                    loss=full_opendde_loss,
+                    features=features,
+                    recycling_steps=OPENDDE_RECYCLING_STEPS,
+                    sampling_steps=opendde_sampling_steps,
+                    num_samples=opendde_num_samples,
+                ),
+                CLIP_GRADIENT_NORM,
+            )
+    else:
+        raise ValueError(f"unknown opendde_path={opendde_path!r}")
 
     ablang2_loss = ClippedGradient(
         Ablang2PseudoLikelihood(
@@ -302,19 +394,48 @@ def main():
                     help="simplex_APGM scale parameter. 1.2 preserves the original "
                          "sparsity-encouraging production default; 1.0 matches the "
                          "softened diagnostic run.")
+    p.add_argument("--apgm-steps", type=int, default=APGM_STEPS,
+                    help="Number of simplex_APGM continuous-relaxation steps. "
+                         "Use 0 to skip APGM and start discrete search from WT; "
+                         "useful for expensive --opendde-path full smoke tests.")
+    p.add_argument("--greedy-steps", type=int, default=GREEDY_STEPS,
+                    help="Maximum greedy discrete-search steps.")
+    p.add_argument("--mcmc-steps", type=int, default=MCMC_STEPS,
+                    help="Maximum MCMC discrete-search steps.")
+    p.add_argument("--opendde-path", choices=["distogram", "full"], default="distogram",
+                    help="OpenDDE path used inside the hallucination/generation loss. "
+                         "distogram = current cheap trunk+distogram-head path with "
+                         "BinderPoseDistogramDrift. full = OpenDDE full diffusion/"
+                         "coordinate/confidence-head path with coordinate BinderPoseRMSD.")
+    p.add_argument("--opendde-sampling-steps", type=int, default=None,
+                    help="OpenDDE diffusion sampling steps for --opendde-path full. "
+                         "Default: OpenDDE model default.")
+    p.add_argument("--opendde-num-samples", type=int, default=OPENDDE_FULL_NUM_SAMPLES,
+                    help="Number of full OpenDDE coordinate samples per loss call in "
+                         "--opendde-path full. Default: 1. Memory/time scale with this.")
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    if args.apgm_steps < 0:
+        raise SystemExit("--apgm-steps must be >= 0")
+    if args.greedy_steps < 0:
+        raise SystemExit("--greedy-steps must be >= 0")
+    if args.mcmc_steps < 0:
+        raise SystemExit("--mcmc-steps must be >= 0")
+    if args.opendde_num_samples < 1:
+        raise SystemExit("--opendde-num-samples must be >= 1")
 
     print(f"=== VHH72 hallucination search: policy={args.policy} "
-          f"stop_grad={args.stop_grad} edit_budget={args.edit_budget} ===", flush=True)
+          f"stop_grad={args.stop_grad} edit_budget={args.edit_budget} "
+          f"opendde_path={args.opendde_path} ===", flush=True)
 
     model, binder_seq, target_seq = load_structure()
     print(f"binder ({len(binder_seq)} aa): {binder_seq}", flush=True)
     print(f"target ({len(target_seq)} aa): {target_seq}", flush=True)
 
     reference_distances = reference_binder_target_ca_distances(model)
+    reference_binder_ca, reference_target_ca = reference_binder_target_ca(model)
 
     designable_mask = np.zeros(len(binder_seq), dtype=bool)
     for i in CDR_RESIDUE_INDICES_1IDX:
@@ -331,33 +452,59 @@ def main():
 
     key = jax.random.key(args.seed)
 
-    print("\ncalibrating pose-drift tolerance against the real WT baseline...", flush=True)
+    print(f"\ncalibrating pose tolerance against the real WT baseline "
+          f"(--opendde-path {args.opendde_path})...", flush=True)
     key, wt_key = jax.random.split(key)
-    wt_drift = measure_wt_pose_drift(
-        opendde=opendde, features=features, reference_distances=reference_distances,
-        binder_seq=binder_seq, key=wt_key,
-    )
-    pose_drift_tolerance = wt_drift + POSE_DRIFT_MARGIN
-    print(f"WT baseline distogram drift: {wt_drift:.2f}A -> tolerance = "
-          f"{wt_drift:.2f} + {POSE_DRIFT_MARGIN} margin = {pose_drift_tolerance:.2f}A", flush=True)
+    if args.opendde_path == "distogram":
+        wt_pose = measure_wt_distogram_pose_drift(
+            opendde=opendde, features=features, reference_distances=reference_distances,
+            binder_seq=binder_seq, key=wt_key,
+        )
+        pose_tolerance = wt_pose + POSE_DRIFT_MARGIN
+        print(f"WT baseline distogram drift: {wt_pose:.2f}A -> tolerance = "
+              f"{wt_pose:.2f} + {POSE_DRIFT_MARGIN} margin = {pose_tolerance:.2f}A", flush=True)
+    else:
+        wt_pose = measure_wt_pose_rmsd(
+            opendde=opendde, features=features,
+            reference_binder_ca=reference_binder_ca,
+            reference_target_ca=reference_target_ca,
+            binder_seq=binder_seq, key=wt_key,
+            opendde_sampling_steps=args.opendde_sampling_steps,
+            opendde_num_samples=args.opendde_num_samples,
+        )
+        pose_tolerance = wt_pose + POSE_RMSD_MARGIN
+        sampling_steps = (
+            "model default" if args.opendde_sampling_steps is None
+            else str(args.opendde_sampling_steps)
+        )
+        print(f"WT baseline coordinate RMSD: {wt_pose:.2f}A -> tolerance = "
+              f"{wt_pose:.2f} + {POSE_RMSD_MARGIN} margin = {pose_tolerance:.2f}A "
+              f"(sampling_steps={sampling_steps}, num_samples={args.opendde_num_samples})",
+              flush=True)
 
     full_loss, variable_only_loss = build_composite_losses(
         opendde=opendde, features=features,
         ablang2_model=ablang2_model, ablang2_tokenizer=ablang2_tokenizer,
-        reference_distances=reference_distances, binder_seq=binder_seq,
+        reference_distances=reference_distances,
+        reference_binder_ca=reference_binder_ca,
+        reference_target_ca=reference_target_ca,
+        binder_seq=binder_seq,
         designable_idx=designable_idx, edit_budget=args.edit_budget,
-        stop_grad_ablang2=bool(args.stop_grad), pose_drift_tolerance=pose_drift_tolerance,
+        stop_grad_ablang2=bool(args.stop_grad), opendde_path=args.opendde_path,
+        pose_tolerance=pose_tolerance,
+        opendde_sampling_steps=args.opendde_sampling_steps,
+        opendde_num_samples=args.opendde_num_samples,
     )
 
     parent = np.array([TOKENS.index(c) for c in binder_seq], dtype=np.int32)
 
-    print(f"\n[1/2] continuous relaxation (simplex_APGM, {APGM_STEPS} steps)...", flush=True)
+    print(f"\n[1/2] continuous relaxation (simplex_APGM, {args.apgm_steps} steps)...", flush=True)
     print(f"APGM init WT prob: {args.apgm_init_wt_prob}  scale: {args.apgm_scale}", flush=True)
     x0 = seq_to_soft_wt_init("".join(binder_seq[i] for i in designable_idx),
                              args.apgm_init_wt_prob)
     key, apgm_key, seed_key = jax.random.split(key, 3)
     x_final, x_best = simplex_APGM(
-        loss_function=variable_only_loss, x=x0, n_steps=APGM_STEPS, stepsize=APGM_STEPSIZE,
+        loss_function=variable_only_loss, x=x0, n_steps=args.apgm_steps, stepsize=APGM_STEPSIZE,
         momentum=APGM_MOMENTUM, scale=args.apgm_scale, key=apgm_key,
     )
     full_continuous = np.asarray(variable_only_loss.sequence(x_best))
@@ -374,12 +521,12 @@ def main():
         best_seq, best_val, pareto = edit_budgeted_greedy_descent(
             full_loss, continuous_seq, parent=parent, budget=args.edit_budget,
             designable_mask=designable_mask, batch_size=GREEDY_BATCH_SIZE,
-            steps=GREEDY_STEPS, key=key,
+            steps=args.greedy_steps, key=key,
         )
     else:
         best_seq, best_val, pareto = edit_budgeted_gradient_mcmc(
             full_loss, continuous_seq, parent=parent, budget=args.edit_budget,
-            designable_mask=designable_mask, steps=MCMC_STEPS, key=key,
+            designable_mask=designable_mask, steps=args.mcmc_steps, key=key,
         )
 
     print(f"\nbest sequence (val={best_val:.4f}): {one_hot_to_seq(np.eye(len(TOKENS))[best_seq])}", flush=True)
@@ -387,12 +534,18 @@ def main():
     print(f"\nwriting Pareto front ({len(pareto)} edit counts) to {args.output}", flush=True)
     with open(args.output, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["policy", "stop_grad", "seed", "edit_count", "total_loss", "sequence", "num_mutations_from_wt"])
+        writer.writerow([
+            "policy", "stop_grad", "seed", "opendde_path", "edit_count",
+            "total_loss", "sequence", "num_mutations_from_wt",
+        ])
         for edit_count in sorted(pareto.keys()):
             val, seq_arr = pareto[edit_count]
             seq_str = "".join(TOKENS[i] for i in seq_arr)
             n_mut = int((seq_arr != parent).sum())
-            writer.writerow([args.policy, args.stop_grad, args.seed, edit_count, float(val), seq_str, n_mut])
+            writer.writerow([
+                args.policy, args.stop_grad, args.seed, args.opendde_path,
+                edit_count, float(val), seq_str, n_mut,
+            ])
 
     print("done.", flush=True)
 

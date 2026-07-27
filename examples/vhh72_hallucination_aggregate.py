@@ -83,13 +83,13 @@ def load_all(results_dir: Path, seeds: list[int],
 
 def write_combined_csv(rows, output_csv: Path):
     output_csv.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["policy", "stop_grad", "seed", "edit_count", "total_loss",
+    fieldnames = ["policy", "stop_grad", "seed", "opendde_path", "edit_count", "total_loss",
                   "num_mutations_from_wt", "sequence"]
     with open(output_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in sorted(rows, key=lambda r: (r["policy"], r["stop_grad"], r["seed"], r["edit_count"])):
-            writer.writerow({k: row[k] for k in fieldnames})
+            writer.writerow({k: row.get(k, "distogram" if k == "opendde_path" else "") for k in fieldnames})
     print(f"wrote combined CSV: {output_csv}", flush=True)
 
 

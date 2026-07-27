@@ -90,6 +90,23 @@ def main():
                     help="Passed through to vhh72_hallucination_search.py. "
                          "1.2 preserves original sparsity-encouraging default; "
                          "1.0 matches the softened APGM diagnostic.")
+    p.add_argument("--apgm-steps", type=int, default=200,
+                    help="Passed through to vhh72_hallucination_search.py. "
+                         "Use 0 to skip APGM for expensive full-OpenDDE smoke runs.")
+    p.add_argument("--greedy-steps", type=int, default=200,
+                    help="Passed through to vhh72_hallucination_search.py.")
+    p.add_argument("--mcmc-steps", type=int, default=100,
+                    help="Passed through to vhh72_hallucination_search.py.")
+    p.add_argument("--opendde-path", choices=["distogram", "full"], default="distogram",
+                    help="OpenDDE path used inside hallucination generation. "
+                         "distogram = current cheap path; full = full diffusion/"
+                         "coordinate/confidence-head path.")
+    p.add_argument("--opendde-sampling-steps", type=int, default=None,
+                    help="Passed through to vhh72_hallucination_search.py for "
+                         "--opendde-path full. Default: OpenDDE model default.")
+    p.add_argument("--opendde-num-samples", type=int, default=1,
+                    help="Passed through to vhh72_hallucination_search.py for "
+                         "--opendde-path full.")
     p.add_argument("--output-dir", type=Path, required=True)
     args = p.parse_args()
 
@@ -117,7 +134,9 @@ def main():
           f"devices={','.join(device_ids) if device_ids else 'inherited'}, "
           f"apgm_seed_mode={args.apgm_seed_mode}, "
           f"apgm_init_wt_prob={args.apgm_init_wt_prob}, "
-          f"apgm_scale={args.apgm_scale}", flush=True)
+          f"apgm_scale={args.apgm_scale}, "
+          f"apgm_steps={args.apgm_steps}, "
+          f"opendde_path={args.opendde_path}", flush=True)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     results = []
@@ -141,8 +160,15 @@ def main():
                 "--apgm-topk-threshold", str(args.apgm_topk_threshold),
                 "--apgm-init-wt-prob", str(args.apgm_init_wt_prob),
                 "--apgm-scale", str(args.apgm_scale),
+                "--apgm-steps", str(args.apgm_steps),
+                "--greedy-steps", str(args.greedy_steps),
+                "--mcmc-steps", str(args.mcmc_steps),
+                "--opendde-path", args.opendde_path,
+                "--opendde-num-samples", str(args.opendde_num_samples),
                 "--output", str(csv_path),
             ]
+            if args.opendde_sampling_steps is not None:
+                cmd.extend(["--opendde-sampling-steps", str(args.opendde_sampling_steps)])
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
             if device is not None:

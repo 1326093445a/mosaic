@@ -1536,13 +1536,25 @@ is `simplex_APGM`'s continuous relaxation stage (bounded, controlled
 iteration count, §13's whole reason for preferring hallucination over
 guided diffusion in the first place), not the high-volume discrete search.
 
-**Status: not yet built.** This is a real, verified, buildable next step —
-not yet scoped in code, not yet tested, no numbers to report. The next
-piece of work, if pursued, is a differentiable full-diffusion OpenDDE loss
-usable in `simplex_APGM`'s continuous phase, structurally mirroring
-`build_lookahead_grad_fn` (`src/mosaic/models/guidance_lookahead.py`) but
-for OpenDDE's `sample_coordinates`/`sample_diffusion` instead of BoltzGen's
-denoiser.
+**Status update (2026-07-27): built as an opt-in hallucination path.**
+`examples/vhh72_hallucination_search.py` now has
+`--opendde-path distogram|full`. `distogram` is the historical cheap
+trunk+distogram-head path with `BinderPoseDistogramDrift`; `full` runs
+OpenDDE's full diffusion/coordinate/confidence-head path inside the
+hallucination objective and replaces the pose proxy with real coordinate
+`BinderPoseRMSD`. This is an in-loop generation setting, not the post-hoc
+CSV structure-check script from §13.10. The wrapper and dispatcher pass the
+setting through, with `--apgm-steps`, `--mcmc-steps`, and
+`--opendde-sampling-steps` exposed so the expensive full path can be smoked
+before committing to a full-length run.
+
+This does **not** put IPSAE into the gradient objective. IPSAE_min remains a
+bad differentiable target here because it combines a hard PAE cutoff, max
+reductions, and a final min reduction. The full-path generation test is
+therefore a structural-path test: does replacing the noisy distogram-pose
+proxy with real sampled-coordinate pose RMSD change the mutations MCMC
+finds, while keeping OpenDDE as a plausibility gate rather than an affinity
+ranker?
 
 ### 13.5 APGM collapse diagnostic: script built, blocked locally by the known §9b memory ceiling
 
@@ -2054,3 +2066,44 @@ sample-best-of-N variants unless the scientific question changes. The
 default remains the §13.9 result: `mcmc, stop_grad=0`, original
 argmax/WT-started discrete search, with AlphaSeq-aware post-hoc candidate
 curation and OpenDDE used only as a structural plausibility gate/filter.
+
+### 13.13 Full-OpenDDE in-loop hallucination architecture test (built 2026-07-27, not yet run)
+
+This is the actual "deeper than distogram during hallucination" experiment,
+not the post-hoc full-structure predictor. The code path is now:
+
+- `--opendde-path distogram` (default): current cheap path,
+  `OpenDDEModelAbag.build_distogram_only_loss(...)`, optimizing
+  `BinderTargetContact + BinderPoseDistogramDrift`.
+- `--opendde-path full`: full OpenDDE path,
+  `OpenDDEModelAbag.build_loss(...)`, which runs diffusion coordinate
+  sampling plus the confidence head inside every hallucination loss call,
+  optimizing `BinderTargetContact + BinderPoseRMSD`.
+
+The intended first test should be small, because the full path is much more
+expensive than the distogram path. Since APGM seeding is now negative
+(§13.11-13.12), the first full-path test should not pay 200 APGM steps. Run
+MCMC/stop_grad=0 only, three seeds, APGM skipped, reduced MCMC length first:
+
+```
+examples/run_vhh72_hallucination_sweep.sh 4,5,6,7 5 0,1,2 \
+  results/hallucination_sweep_fullopendde_mcmc_sg0_smoke \
+  argmax 0.15 mcmc 0 1.0 1.2 full 0 10 8 1
+```
+
+Argument meaning after `full`: `0` APGM steps, `10` discrete MCMC steps, `8`
+OpenDDE diffusion sampling steps, `1` coordinate sample per loss call. If
+this passes memory/time and produces real nontrivial CSVs, scale to a fuller
+architecture comparison by increasing the MCMC step count:
+
+```
+examples/run_vhh72_hallucination_sweep.sh 4,5,6,7 5 0,1,2 \
+  results/hallucination_sweep_fullopendde_mcmc_sg0_3seed \
+  argmax 0.15 mcmc 0 1.0 1.2 full 0 100 8 1
+```
+
+Keep interpretation narrow: this tests whether the deeper OpenDDE
+structural path changes generation relative to the distogram proxy. It
+should still be judged against AlphaSeq directional agreement after the run;
+OpenDDE confidence/pose metrics remain structural plausibility checks, not
+binding-affinity ranking labels.
