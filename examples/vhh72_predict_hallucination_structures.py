@@ -138,13 +138,17 @@ def main():
                          "e.g. mcmc:0:1:4")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--include-wt", action=argparse.BooleanOptionalAction, default=True,
+                    help="Include the combined.csv edit_count=0 WT row for reference. "
+                         "Default: true. Parallel wrappers can disable this for all "
+                         "but one job to avoid repeated WT refolds.")
     args = p.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = list(csv.DictReader(open(args.combined_csv)))
     selected = parse_select(args.select, rows)
     wt_row = [r for r in rows if int(r["edit_count"]) == 0]
-    if wt_row and not any(int(r["edit_count"]) == 0 for r in selected):
+    if args.include_wt and wt_row and not any(int(r["edit_count"]) == 0 for r in selected):
         selected = [wt_row[0]] + selected  # always include WT for comparison
     print(f"predicting real structures for {len(selected)} candidates "
           f"(including WT reference): {[(r['policy'], r['stop_grad'], r['edit_count']) for r in selected]}", flush=True)

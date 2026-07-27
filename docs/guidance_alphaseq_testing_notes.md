@@ -1881,6 +1881,14 @@ this candidate, use the seed-aware selector form; the old
   --output-dir results/hallucination_sweep_discrete_3seed/structures_seed1_edit4
 ```
 
+For the full curated shortlist, use the parallel wrapper instead; it reads
+`candidate_shortlist.csv`, launches one full-OpenDDE job per candidate
+across the requested GPUs, and includes WT only once:
+
+```
+examples/run_vhh72_candidate_structure_check_all.sh 4,5,6,7
+```
+
 Deliberately NOT using AlphaSeq data to bias generation itself (a
 different, rejected idea: biasing `edit_budgeted_gradient_mcmc`'s proposal
 distribution directly with `favorability_index`) -- that would leak the
