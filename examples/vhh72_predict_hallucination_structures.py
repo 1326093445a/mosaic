@@ -30,6 +30,13 @@ Usage:
         --combined-csv results/hallucination_sweep_20260725_234632/combined.csv \\
         --select mcmc:0:5,mcmc:1:5,greedy:0:5,greedy:1:5 \\
         --output-dir results/hallucination_sweep_20260725_234632/structures
+
+    # Multi-seed sweeps: include seed as policy:stop_grad:seed:edit_count
+    # to avoid silently selecting the first matching seed.
+    .venv/bin/python examples/vhh72_predict_hallucination_structures.py \\
+        --combined-csv results/hallucination_sweep_discrete_3seed/combined.csv \\
+        --select mcmc:0:1:4 \\
+        --output-dir results/hallucination_sweep_discrete_3seed/structures
 """
 import argparse
 import csv
@@ -80,18 +87,44 @@ def reference_binder_target_ca(model):
 
 
 def parse_select(select_str, rows):
-    """--select 'policy:stop_grad:edit_count,...' -> matching CSV rows."""
+    """--select entries:
+
+    - legacy single-seed form: policy:stop_grad:edit_count
+    - multi-seed form:         policy:stop_grad:seed:edit_count
+
+    The 3-field form is kept for backward compatibility but is ambiguous for
+    multi-seed combined CSVs; if more than one row matches, fail loudly instead
+    of silently taking the first seed.
+    """
     wanted = []
     for spec in select_str.split(","):
-        policy, stop_grad, edit_count = spec.split(":")
-        wanted.append((policy, int(stop_grad), int(edit_count)))
+        parts = spec.split(":")
+        if len(parts) == 3:
+            policy, stop_grad, edit_count = parts
+            wanted.append((policy, int(stop_grad), None, int(edit_count), spec))
+        elif len(parts) == 4:
+            policy, stop_grad, seed, edit_count = parts
+            wanted.append((policy, int(stop_grad), int(seed), int(edit_count), spec))
+        else:
+            raise ValueError(
+                f"bad --select entry {spec!r}; expected policy:stop_grad:edit_count "
+                "or policy:stop_grad:seed:edit_count"
+            )
     selected = []
-    for policy, stop_grad, edit_count in wanted:
+    for policy, stop_grad, seed, edit_count, spec in wanted:
         match = [r for r in rows if r["policy"] == policy
                  and int(r["stop_grad"]) == stop_grad and int(r["edit_count"]) == edit_count]
+        if seed is not None:
+            match = [r for r in match if int(r.get("seed", 0)) == seed]
         if not match:
-            print(f"WARNING: no row found for {policy}:{stop_grad}:{edit_count}, skipping", flush=True)
+            print(f"WARNING: no row found for {spec}, skipping", flush=True)
             continue
+        if seed is None and len(match) > 1:
+            seeds = sorted({r.get("seed", "") for r in match})
+            raise SystemExit(
+                f"--select {spec!r} is ambiguous: matched {len(match)} rows "
+                f"with seeds {seeds}. Use policy:stop_grad:seed:edit_count."
+            )
         selected.append(match[0])
     return selected
 
@@ -100,7 +133,9 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--combined-csv", type=Path, required=True)
     p.add_argument("--select", type=str, required=True,
-                    help="comma-separated policy:stop_grad:edit_count, e.g. mcmc:0:5,greedy:1:5")
+                    help="comma-separated policy:stop_grad:edit_count for single-seed CSVs, "
+                         "or policy:stop_grad:seed:edit_count for multi-seed CSVs, "
+                         "e.g. mcmc:0:1:4")
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
@@ -140,7 +175,8 @@ def main():
     key = jax.random.key(args.seed)
     results = []
     for row in selected:
-        tag = f"{row['policy']}_stopgrad{row['stop_grad']}_edit{row['edit_count']}"
+        seed_part = f"_seed{row['seed']}" if "seed" in row and row["seed"] != "" else ""
+        tag = f"{row['policy']}_stopgrad{row['stop_grad']}{seed_part}_edit{row['edit_count']}"
         print(f"\n=== {tag} ===", flush=True)
         cand_one_hot = seq_to_one_hot(row["sequence"])
 

@@ -42,6 +42,11 @@ import csv
 from pathlib import Path
 
 
+VHH72_WT_BINDER_SEQ = (
+    "QVQLQESGGGLVQAGGSLRLSCAASGRTFSEYAMGWFRQAPGKEREFVATISWSGGSTYYTDSVKGRFTISRDNAKNTVYLQMNSLKPDDTAVYYCAAAGLGTVVSEWDYDYDYWGQGTQVTVSS"
+)
+
+
 def load_ranking(path: Path):
     index = {}
     for row in csv.DictReader(open(path)):
@@ -81,14 +86,29 @@ def main():
     p.add_argument("--keep-avoid", action="store_true",
                     help="Don't exclude candidates with an evidenced-negative "
                          "mutation -- annotate them instead of dropping them.")
+    p.add_argument("--wt-seq", type=str, default=None,
+                    help="Optional WT binder sequence. If omitted, use combined.csv's "
+                         "edit_count=0 row when present, else the built-in VHH72 WT "
+                         "sequence used by the hallucination search.")
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
 
     designs = list(csv.DictReader(open(args.combined_csv)))
     wt_rows = [d for d in designs if int(d["edit_count"]) == 0]
-    if not wt_rows:
-        raise SystemExit("no edit_count=0 row found in combined.csv -- cannot confirm WT sequence")
-    wt_seq = wt_rows[0]["sequence"]
+    if args.wt_seq is not None:
+        wt_seq = args.wt_seq.strip().upper()
+        print(f"WT sequence provided by --wt-seq (len={len(wt_seq)})", flush=True)
+    elif wt_rows:
+        wt_seq = wt_rows[0]["sequence"]
+        print(f"WT sequence confirmed from combined.csv edit_count=0 row "
+              f"(len={len(wt_seq)})", flush=True)
+    else:
+        wt_seq = VHH72_WT_BINDER_SEQ
+        print("no edit_count=0 row found in combined.csv; using built-in VHH72 WT "
+              f"binder sequence fallback (len={len(wt_seq)})", flush=True)
+    bad_lengths = sorted({len(d["sequence"]) for d in designs if len(d["sequence"]) != len(wt_seq)})
+    if bad_lengths:
+        raise SystemExit(f"candidate sequence length(s) {bad_lengths} do not match WT length {len(wt_seq)}")
 
     ranking = load_ranking(args.mutation_ranking_csv)
 

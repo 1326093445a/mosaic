@@ -1869,7 +1869,17 @@ edit_count=4 removes exactly that one bad mutation and keeps the
 supported/thin-positive part of the design at essentially the same loss.
 Lowest predicted loss and best real evidence picked different candidates;
 this is the concrete case where they diverged. Full annotated output:
-`candidate_shortlist.csv`.
+`candidate_shortlist.csv`. If running full OpenDDE structure prediction on
+this candidate, use the seed-aware selector form; the old
+`policy:stop_grad:edit_count` selector is ambiguous for multi-seed
+`combined.csv` files:
+
+```
+.venv/bin/python examples/vhh72_predict_hallucination_structures.py \
+  --combined-csv results/hallucination_sweep_discrete_3seed/combined.csv \
+  --select mcmc:0:1:4 \
+  --output-dir results/hallucination_sweep_discrete_3seed/structures_seed1_edit4
+```
 
 Deliberately NOT using AlphaSeq data to bias generation itself (a
 different, rejected idea: biasing `edit_budgeted_gradient_mcmc`'s proposal
@@ -1923,7 +1933,11 @@ validated policy), compare against the existing `argmax`-seeded results in
 AlphaSeq sign-agreement (`vhh72_score_hallucination_results.py`'s
 binomial significance report is the right final comparison, not raw
 agreement rate, given §13.9's finding that raw rates alone are noisy at
-this sample size). The wrapper/dispatcher now expose those axes directly;
+this sample size). Partial sample/topk MCMC runs can lack an `edit_count=0`
+row because the discrete search starts from a non-WT APGM-derived seed;
+the scorer and candidate selector now handle that case by falling back to
+the fixed VHH72 WT binder sequence unless `--wt-seq` is provided
+explicitly. The wrapper/dispatcher now expose those axes directly;
 sample-mode command:
 
 ```
@@ -1937,3 +1951,98 @@ Top-k command:
 examples/run_vhh72_hallucination_sweep.sh 4,5,6,7 5 0,1,2 \
   results/hallucination_sweep_apgm_topk_mcmc_sg0 topk 0.15 mcmc 0 0.80 1.0
 ```
+
+### 13.11 APGM-sample architecture test result (2026-07-26): sample seeding works mechanically, but is worse than WT/argmax seeding here
+
+Checked `results/hallucination_sweep_apgm_sample_mcmc_sg0/` directly: all
+3 intended jobs completed (`mcmc, stop_grad=0`, seeds `0,1,2`), with
+`--apgm-init-wt-prob 0.80 --apgm-scale 1.0 --apgm-seed-mode sample`.
+There were no real runtime failures. The run also exposed one real
+analysis-script bug: because sample-mode starts the discrete search from a
+non-WT APGM-derived seed, the resulting Pareto CSV can lack an
+`edit_count=0` WT row. `vhh72_score_hallucination_results.py` and
+`vhh72_select_candidates.py` now handle this by falling back to the fixed
+VHH72 WT binder sequence (or an explicit `--wt-seq`) instead of failing.
+
+Mechanically, this architecture test did what it was supposed to do:
+APGM's hard argmax was still byte-identical to WT, but the sampled seed
+was not WT. Sampled seed edit counts were 4, 3, and 5 for seeds 0, 1, and
+2 respectively. APGM `nnz` again moved for real in every job
+(start/max/end approximately `1.00/5.15/3.50`, `1.00/5.29/3.53`,
+`1.00/5.26/3.65`), so this was not the old collapsed-APGM failure mode.
+
+But the result is negative for **sample seeding** as a useful architecture
+change in this setting:
+
+| comparison (`mcmc, stop_grad=0`, 3 seeds) | argmax / WT-seeded baseline | APGM sample-seeded |
+|---|---:|---:|
+| edit_count=4 mean total_loss | 2.800 | 2.815 |
+| edit_count=5 mean total_loss | 2.768 | 2.869 |
+| AlphaSeq pooled favorable votes | 116/190 = 61.1% | 71/175 = 40.6% |
+| one-sided binomial p-value for favorable bias | 0.001 | 0.995 |
+
+So sample seeding does not improve loss, and it clearly loses the real-data
+directional signal that made `mcmc, stop_grad=0` attractive in §13.9. The
+old argmax/WT-seeded MCMC run found the stronger AlphaSeq-supported
+mutation set (`V104K`, `V104Y`, `L100W`-type signal). Sample seeding shifts
+the search toward a different region (`R26L/F`, `S29T`, `E30N`, etc.),
+where the aggregate AlphaSeq evidence is below chance. Candidate curation
+on this sample run yields 7 non-avoid candidates, but the top one
+(`G25R,R26F,G99A,Y109E`, 0-indexed) has only one supported mutation and two
+neutral tested mutations; it is not stronger than the existing §13.10
+shortlist.
+
+Decision from this run: **do not switch the default to APGM sample
+seeding**. The validated default remains `mcmc, stop_grad=0` with the
+original argmax/WT starting point. If continuing the architecture test, the
+only remaining cheap comparison is `topk`; otherwise, the higher-leverage
+track is candidate curation/structural filtering rather than more APGM
+sampling variants.
+
+### 13.12 APGM-topk architecture test result (2026-07-27): closes the APGM-seeding loop; lower predicted loss, worse real-data direction
+
+Checked `results/hallucination_sweep_apgm_topk_mcmc_sg0/` directly: all
+3 intended jobs completed (`mcmc, stop_grad=0`, seeds `0,1,2`), with
+`--apgm-init-wt-prob 0.80 --apgm-scale 1.0 --apgm-seed-mode topk
+--apgm-topk-threshold 0.15`. There were no real runtime failures. The
+run produced the expected per-job CSVs/logs plus `combined.csv`,
+`seed_variance_summary.csv`, and `pareto_comparison.png`; AlphaSeq scoring
+and candidate selection were regenerated afterward.
+
+Mechanically, topk also did what it was supposed to do, but only for one
+seed. APGM's hard argmax was still WT in all three jobs. Topk produced a
+non-WT starting seed only for seed 0 (5 edits:
+`R26F,W52R,A97K,D110Y,Y111F`, 0-indexed); seeds 1 and 2 stayed WT because
+no non-WT residue cleared the 0.15 threshold. APGM `nnz` again moved
+normally (`1.00/5.15/3.32`, `1.00/5.24/3.41`, `1.00/5.21/3.53`
+start/max/end), so this was not the old APGM-collapse failure.
+
+The outcome is a useful warning: **topk improves predicted loss in one
+seed but worsens real-data agreement.**
+
+| comparison (`mcmc, stop_grad=0`, 3 seeds) | argmax / WT-seeded baseline | APGM sample-seeded | APGM topk-seeded |
+|---|---:|---:|---:|
+| edit_count=4 mean total_loss | 2.800 | 2.815 | 2.826 |
+| edit_count=5 mean total_loss | 2.768 | 2.869 | **2.674** |
+| best edit_count=5 total_loss | 2.539 | 2.788 | **2.446** |
+| AlphaSeq pooled favorable votes | **116/190 = 61.1%** | 71/175 = 40.6% | 81/273 = 29.7% |
+| one-sided binomial p-value for favorable bias | **0.001** | 0.995 | 1.000 |
+
+So if we judged only the composite OpenDDE+AbLang2+edit-budget loss, topk
+would look attractive because seed 0 found a very low-loss edit_count=5
+design (`2.446`). But the AlphaSeq check says the mutation direction is
+bad: 81/273 pooled votes favorable (29.7%), strongly below the
+WT/argmax-seeded baseline and even worse than sample seeding. The lowest
+loss topk design's tested mutations are not convincing positives
+(`W52Y`: n=7, 0.29; `A97D`: n=7, 0.57; others untested), and the topk
+shortlist has **zero supported mutations** under the default
+`n>=3, agreement>=0.6` support rule.
+
+Decision: **close APGM seeding as negative for this experiment.** Both
+ways of forcing APGM's soft distribution into a hard non-WT starting
+sequence (`sample`, `topk`) either underperform or lose the real AlphaSeq
+directional signal. Do not continue with threshold sweeps or
+sample-best-of-N variants unless the scientific question changes. The
+default remains the §13.9 result: `mcmc, stop_grad=0`, original
+argmax/WT-started discrete search, with AlphaSeq-aware post-hoc candidate
+curation and OpenDDE used only as a structural plausibility gate/filter.

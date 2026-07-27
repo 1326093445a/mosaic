@@ -46,9 +46,13 @@ from alphaseq_vhh72_cdr_contrast_pairs import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-# WT sequence is derived from combined.csv's own edit_count=0 row at
-# runtime (main(), below) -- not hardcoded here, so there's no risk of a
-# transcription mismatch against whatever the actual sweep run used.
+VHH72_WT_BINDER_SEQ = (
+    "QVQLQESGGGLVQAGGSLRLSCAASGRTFSEYAMGWFRQAPGKEREFVATISWSGGSTYYTDSVKGRFTISRDNAKNTVYLQMNSLKPDDTAVYYCAAAGLGTVVSEWDYDYDYWGQGTQVTVSS"
+)
+# Prefer combined.csv's own edit_count=0 row when present. Partial
+# architecture-test sweeps that start the discrete search from APGM sample/topk
+# seeds may not contain an edit_count=0 row, so fall back to the fixed VHH72 WT
+# binder sequence used by vhh72_hallucination_search.py.
 
 
 def build_position_aa_favorability(dist1_pairs, seqs):
@@ -191,6 +195,10 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--combined-csv", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--wt-seq", type=str, default=None,
+                   help="Optional WT binder sequence. If omitted, use combined.csv's "
+                        "edit_count=0 row when present, else the built-in VHH72 WT "
+                        "sequence used by the hallucination search.")
     args = p.parse_args()
 
     print("loading AlphaSeq VHH72 designed variants + KD...", flush=True)
@@ -213,12 +221,20 @@ def main():
     print(f"\nloaded {len(designs)} candidate designs from {args.combined_csv}", flush=True)
 
     wt_rows = [d for d in designs if int(d["edit_count"]) == 0]
-    if wt_rows:
+    if args.wt_seq is not None:
+        wt_seq = args.wt_seq.strip().upper()
+        print(f"WT sequence provided by --wt-seq (len={len(wt_seq)})", flush=True)
+    elif wt_rows:
         wt_seq = wt_rows[0]["sequence"]
         print(f"WT sequence confirmed from combined.csv edit_count=0 row "
               f"(len={len(wt_seq)})", flush=True)
     else:
-        raise SystemExit("no edit_count=0 row found in combined.csv -- cannot confirm WT sequence")
+        wt_seq = VHH72_WT_BINDER_SEQ
+        print("no edit_count=0 row found in combined.csv; using built-in VHH72 WT "
+              f"binder sequence fallback (len={len(wt_seq)})", flush=True)
+    bad_lengths = sorted({len(d["sequence"]) for d in designs if len(d["sequence"]) != len(wt_seq)})
+    if bad_lengths:
+        raise SystemExit(f"candidate sequence length(s) {bad_lengths} do not match WT length {len(wt_seq)}")
 
     print("\n=== 1. Exact / near-match check against real AlphaSeq-tested sequences ===", flush=True)
     real_seqs_125 = {ag: s for ag, s in seqs.items() if len(s) == 125}
