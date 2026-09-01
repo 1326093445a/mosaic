@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from mosaic.workflows.boltzgen_vhh_guided import (
+from mosaic.legacy.boltzgen_vhh_guided import (
     VHHDesignConfig,
     build_single_design_command,
     validate_and_normalize_cli_args,
@@ -104,7 +104,7 @@ def test_child_command_uses_packaged_module_and_propagates_if_prior(tmp_path):
         sys.executable,
         "-u",
         "-m",
-        "mosaic.workflows.boltzgen_vhh_guided",
+        "mosaic.legacy.boltzgen_vhh_guided",
     ]
     assert command[command.index("--complex-cif") + 1] == str(input_cif)
     assert command[command.index("--weight-boltzgen-if-prior") + 1] == "0.1"
@@ -167,7 +167,7 @@ def test_combined_ranking_accepts_blank_numeric_fields(tmp_path):
 
 def test_module_cli_rejects_missing_input_before_model_loading():
     result = subprocess.run(
-        [sys.executable, "-m", "mosaic.workflows.boltzgen_vhh_guided"],
+        [sys.executable, "-m", "mosaic.legacy.boltzgen_vhh_guided"],
         capture_output=True,
         text=True,
         timeout=30,

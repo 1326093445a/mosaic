@@ -9,7 +9,7 @@ guided antibody optimization, with emphasis on:
 - where Feynman-Kac steering ideas help
 - what a practical hybrid algorithm should look like
 
-This is a companion to `docs/guidance_design_notes.md`. That note focuses on
+This is a companion to `docs/legacy/guidance_design_notes.md`. That note focuses on
 the coordinate-gradient controller. This note focuses on the search object and
 selection policy.
 
@@ -18,7 +18,7 @@ selection policy.
 ## 1. Notation and scope
 
 This note uses the same structure notation as
-`docs/guidance_design_notes.md`:
+`docs/legacy/guidance_design_notes.md`:
 
 - `x_t`: noisy structure state at step `t`
 - `x0_hat`: current denoised clean estimate inside one reverse step
@@ -230,7 +230,7 @@ One important caveat from the controller side still applies here:
   prior
 
 That unresolved issue is documented explicitly in
-`docs/guidance_design_notes.md` under **Prior compatibility with the BoltzGen
+`docs/legacy/guidance_design_notes.md` under **Prior compatibility with the BoltzGen
 model**.
 
 The practical interpretation is:

@@ -1,5 +1,5 @@
 """Unit tests for the Phase 2 guidance-diagnostics aggregation in
-src/mosaic/diagnostics.py (docs/guidance_implementation_todo.md Phase 2).
+src/mosaic/diagnostics.py (docs/legacy/guidance_implementation_todo.md Phase 2).
 
 All synthetic: hand-constructed diagnostics dicts shaped like what
 guided_partial_diffusion(..., return_diagnostics=True) actually returns
@@ -11,7 +11,7 @@ import json
 import numpy as np
 import pytest
 
-from mosaic.diagnostics import (
+from mosaic.legacy.diagnostics import (
     per_step_metrics,
     summarize,
     correlate_with_outcomes,

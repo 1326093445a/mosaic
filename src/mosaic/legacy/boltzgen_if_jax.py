@@ -21,7 +21,7 @@ from boltzgen.data import const
 from jaxtyping import Array, Float, Int
 
 from mosaic.common import TOKENS
-from mosaic.models.boltzgen_if import BoltzGenIFResult, load_boltzgen_if, prepare_boltzgen_if_features
+from mosaic.legacy.boltzgen_if import BoltzGenIFResult, load_boltzgen_if, prepare_boltzgen_if_features
 
 
 def _array(value: torch.Tensor) -> jax.Array:

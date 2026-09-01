@@ -7,7 +7,7 @@ g_nat from AbLang2, g_edit from EditBudget) into a coordinate update, at the
   - "raw": g_total = g_bind + g_nat + g_edit, no masking, no de-meaning, no
     RMS-normalization, no PCGrad conflict projection, no trust-region clip.
     This is the "single merged scalar loss... unclipped raw coordinate
-    gradient" behavior docs/guidance_design_notes.md sections 2-3 identifies
+    gradient" behavior docs/legacy/guidance_design_notes.md sections 2-3 identifies
     as too aggressive -- the pre-Phase-1 design.
   - "controller": the actual production merge from
     guided_partial_diffusion/step_body (src/mosaic/models/boltzgen.py),
@@ -68,12 +68,12 @@ from mosaic.models.boltzgen import (
     default_tau_schedule,
     load_features_and_structure_writer,
 )
-from mosaic.models.boltzgen_if_jax import (
+from mosaic.legacy.boltzgen_if_jax import (
     differentiable_jax_boltzgen_if,
     prepare_jax_boltzgen_if_context,
 )
 from mosaic.util import fold_in
-from mosaic.workflows.boltzgen_vhh_guided import (
+from mosaic.legacy.boltzgen_vhh_guided import (
     VHHDesignConfig,
     binder_indices_from_design_mask,
     build_complex_yaml,

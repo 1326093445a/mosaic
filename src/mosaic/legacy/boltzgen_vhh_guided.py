@@ -65,7 +65,7 @@ import yaml
 from jaxtyping import Array, Bool, Float, Int
 
 from mosaic.common import TOKENS, LossTerm
-from mosaic.diagnostics import (
+from mosaic.legacy.diagnostics import (
     format_summary_text,
     per_step_metrics,
     summarize as summarize_guidance_diagnostics,
@@ -85,7 +85,7 @@ from mosaic.models.boltzgen import (
     load_boltzgen,
     load_features_and_structure_writer,
 )
-from mosaic.models.boltzgen_if_jax import (
+from mosaic.legacy.boltzgen_if_jax import (
     decode_with_jax_boltzgen_if,
     differentiable_jax_boltzgen_if,
     load_jax_boltzgen_if,
@@ -194,7 +194,7 @@ class VHHDesignConfig:
     skip_polish: bool = False
     skip_refold: bool = True  # default off; task #15 wires this back in
 
-    # ---- Phase 2 guidance diagnostics (docs/guidance_implementation_todo.md) ----
+    # ---- Phase 2 guidance diagnostics (docs/legacy/guidance_implementation_todo.md) ----
     log_guidance_diagnostics: bool = False
     guidance_diagnostics_cos_threshold: float = 0.0
     guidance_diagnostics_sigma_bins: int = 4
@@ -909,7 +909,7 @@ def build_single_design_command(args, *, seed: int, output_dir: Path) -> list[st
         sys.executable,
         "-u",
         "-m",
-        "mosaic.workflows.boltzgen_vhh_guided",
+        "mosaic.legacy.boltzgen_vhh_guided",
         "--mode",
         args.mode,
     ]
@@ -1479,7 +1479,7 @@ class GuidanceLosses:
     """The three separate objectives Phase 1's guidance controller
     (`guided_partial_diffusion`'s `guidance_fn_bind`/`_nat`/`_edit`) expects,
     as opposed to the single pre-summed loss the old single-`guidance_fn`
-    interface took. See docs/guidance_design_notes.md section 5 / 10.
+    interface took. See docs/legacy/guidance_design_notes.md section 5 / 10.
 
     `bind` is the anchor objective guidance is built around; if it is
     `None`, `guided_partial_diffusion` treats guidance as fully disabled
@@ -1506,7 +1506,7 @@ def build_guidance_loss(cfg: VHHDesignConfig, models: LoadedModels,
     (mask/de-mean/RMS-normalize/PCGrad-merge/trust-radius-clip) then handles
     balancing the three *coordinate-space* gradients against each other,
     which sequence-space clipping alone cannot guarantee (see
-    docs/guidance_design_notes.md section 3 for why).
+    docs/legacy/guidance_design_notes.md section 3 for why).
     """
     edit_budget_term = EditBudget(
         s_ref=parent_one_hot,

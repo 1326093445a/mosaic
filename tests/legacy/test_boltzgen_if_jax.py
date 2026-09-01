@@ -7,7 +7,7 @@ import pytest
 import torch
 from boltzgen.model.modules.inverse_fold import MLPAttnGNN, MLPAttnGNNDecoder
 
-from mosaic.models.boltzgen_if_jax import (
+from mosaic.legacy.boltzgen_if_jax import (
     BoltzGenIFContext,
     DecoderLayer,
     EncoderLayer,

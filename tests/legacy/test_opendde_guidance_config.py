@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.workflows.boltzgen_vhh_guided import (
+from mosaic.legacy.boltzgen_vhh_guided import (
     VHHDesignConfig,
     opendde_refold_ignores_template_config,
     run,

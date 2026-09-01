@@ -1,4 +1,4 @@
-"""Phase 2 guidance diagnostics (docs/guidance_implementation_todo.md Phase 2).
+"""Phase 2 guidance diagnostics (docs/legacy/guidance_implementation_todo.md Phase 2).
 
 Consumes the per-step diagnostics dict returned by
 `guided_partial_diffusion(..., return_diagnostics=True)`

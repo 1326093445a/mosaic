@@ -3,12 +3,12 @@ src/mosaic/workflows/boltzgen_vhh_guided.py -- specifically that a positive
 --weight-boltz2-ipsae is rejected outright rather than silently ignored.
 
 ipSAE's PAE-cutoff masking makes it unsuitable as an in-loop gradient target
-(see docs/guidance_implementation_todo.md); uses_boltz2_guidance() therefore
+(see docs/legacy/guidance_implementation_todo.md); uses_boltz2_guidance() therefore
 never triggers Boltz2 guidance on weight_boltz2_ipsae alone, which means the
 ValueError inside build_boltz2_guidance_loss is unreachable when ipSAE is the
 only positive Boltz2 weight. run() must reject it directly instead.
 
-This module imports mosaic.workflows.boltzgen_vhh_guided, which pulls in
+This module imports mosaic.legacy.boltzgen_vhh_guided, which pulls in
 heavier dependencies than the plain boltzgen.py primitives -- no GPU or model
 checkpoint is required, but the import itself is slower than
 test_guidance_controller.py.
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from mosaic.workflows.boltzgen_vhh_guided import (
+from mosaic.legacy.boltzgen_vhh_guided import (
     VHHDesignConfig,
     guidance_anchor_is_empty_edit_budget,
     run,

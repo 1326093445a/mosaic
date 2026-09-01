@@ -1,7 +1,7 @@
 # Guidance Implementation TODO
 
-This is a companion to `docs/guidance_design_notes.md` (coordinate-gradient
-controller) and `docs/guidance_search_summary.md` (search object and
+This is a companion to `docs/legacy/guidance_design_notes.md` (coordinate-gradient
+controller) and `docs/legacy/guidance_search_summary.md` (search object and
 selection policy). Those two documents establish the design; this document
 tracks the concrete, sequenced implementation plan derived from them, plus
 the three papers most directly informing the open questions:

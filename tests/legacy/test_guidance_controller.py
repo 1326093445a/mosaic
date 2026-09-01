@@ -1,5 +1,5 @@
 """Unit tests for the Phase 1 guidance controller primitives in
-src/mosaic/models/boltzgen.py (docs/guidance_implementation_todo.md Phase 1).
+src/mosaic/models/boltzgen.py (docs/legacy/guidance_implementation_todo.md Phase 1).
 
 These test the standalone jax.numpy primitives directly with hand-constructed
 gradient tensors -- no BoltzGen model, checkpoint, or GPU required, so they
@@ -109,7 +109,7 @@ def test_default_schedules_have_documented_shape(sigmas):
 
 def test_euler_step_delta_applies_physical_scaling():
     # cosine similarity is invariant to this scaling, but the norm-ratio
-    # diagnostic (docs/guidance_implementation_todo.md Phase 2) needs the
+    # diagnostic (docs/legacy/guidance_implementation_todo.md Phase 2) needs the
     # actual physical displacement, not the raw direction.
     direction = jnp.ones((B, M, 3)) * 3.0
     step_scale, sigma_t, t_hat = 2.0, 0.5, 1.0
