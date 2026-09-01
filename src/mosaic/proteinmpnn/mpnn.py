@@ -1,5 +1,8 @@
 # Uses a simple pattern described here (https://github.com/nboyd/joltz/blob/main/src/joltz/__init__.py) to translate ProteinMPNN from torch to jax
 # Would probably be a lot more readable if we didn't follow the original ProteinMPNN implementation so closely
+#
+# Derived from ProteinMPNN (https://github.com/dauparas/ProteinMPNN),
+# Copyright (c) 2022 Justas Dauparas, MIT License. See ./NOTICE.
 
 import equinox as eqx
 import jax
@@ -300,9 +303,9 @@ class ProteinFeatures(AbstractFromTorch):
     def _call_single(
         self,
         X: Float[Array, "L 4 3"],
-        residue_idx: Int[Array, "L"],
-        chain_idx: Int[Array, "L"],
-        mask: Bool[Array, "L"],
+        residue_idx: Int[Array, " L"],
+        chain_idx: Int[Array, " L"],
+        mask: Bool[Array, " L"],
         *,
         key: jax.random.PRNGKey,
     ):
@@ -413,9 +416,9 @@ class ProteinMPNN(AbstractFromTorch):
         self,
         *,
         X: Float[Array, "N 4 3"],
-        mask: Bool[Array, "N"],
-        residue_idx: Int[Array, "N"],
-        chain_encoding_all: Int[Array, "N"],
+        mask: Bool[Array, " N"],
+        residue_idx: Int[Array, " N"],
+        chain_encoding_all: Int[Array, " N"],
         key
     ):
         # add batch dimension :/
@@ -439,8 +442,8 @@ class ProteinMPNN(AbstractFromTorch):
         h_V,
         h_E,
         E_idx,
-        decoding_order: Float[Array, "N"],
-        mask: Bool[Array, "N"],
+        decoding_order: Float[Array, " N"],
+        mask: Bool[Array, " N"],
     ):
         # add batch dim to S, decoding_order, mask
         S, decoding_order, mask  = jax.tree.map(lambda x: x[None], (S, decoding_order, mask))
@@ -486,10 +489,10 @@ class ProteinMPNN(AbstractFromTorch):
         self,
         X: Float[Array, "N 4 3"],
         S: Float[Array, "N 23"],
-        mask: Bool[Array, "N"],
-        residue_idx: Int[Array, "N"],
-        chain_encoding_all: Int[Array, "N"],
-        decoding_order: Float[Array, "N"],
+        mask: Bool[Array, " N"],
+        residue_idx: Int[Array, " N"],
+        chain_encoding_all: Int[Array, " N"],
+        decoding_order: Float[Array, " N"],
         *,
         key=None,
     ):
@@ -500,10 +503,10 @@ class ProteinMPNN(AbstractFromTorch):
 
             X: Float[Array, "N 4 3"] - Coordinates of the atoms in the protein in the order N, C-alpha, C, O
             S: Float[Array, "N 23"] - Sequence as one-hot matrix
-            mask: Bool[Array, "N"] - Mask of valid positions
-            residue_idx: Int[Array, "N"] - Residue index *WITH* gaps of at least 100 between chains
-            chain_encoding_all: Int[Array, "N"] - Chain index as int, e.g. [0 0 0 1 1 1 1 2 2 2]
-            decoding_order: Float[Array, "N"] - Autoregressive decoding order
+            mask: Bool[Array, " N"] - Mask of valid positions
+            residue_idx: Int[Array, " N"] - Residue index *WITH* gaps of at least 100 between chains
+            chain_encoding_all: Int[Array, " N"] - Chain index as int, e.g. [0 0 0 1 1 1 1 2 2 2]
+            decoding_order: Float[Array, " N"] - Autoregressive decoding order
 
         Returns:
 
