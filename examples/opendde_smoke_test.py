@@ -17,7 +17,7 @@ its re-evaluated loss without changing the discrete residue identities.
 
 What this does NOT verify: whether the resulting gradient is "good" for
 guidance in the deeper sense discussed in
-docs/guidance_design_notes.md/guidance_search_summary.md -- staying close to
+docs/legacy/guidance_design_notes.md/guidance_search_summary.md -- staying close to
 BoltzGen's learned manifold, being well-scaled relative to the other
 objectives, actually correlating with better binders. Those need real
 trajectories and the Phase 2 diagnostics machinery

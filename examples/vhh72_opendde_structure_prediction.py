@@ -64,7 +64,7 @@ from mosaic.losses.structure_prediction import (
     IPTMLoss, BinderTargetIPSAE, TargetBinderIPSAE, IPSAE_min,
 )
 from mosaic.structure_prediction import TargetChain
-from mosaic.workflows.boltzgen_vhh_guided import (
+from mosaic.legacy.boltzgen_vhh_guided import (
     interface_geometry_metrics,
     target_aligned_rmsd_metrics,
     write_structure_cif,

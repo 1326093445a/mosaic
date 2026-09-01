@@ -1,7 +1,7 @@
 # Gradient Guidance: Empirical Assessment Notes (AlphaSeq)
 
-Companion to `docs/guidance_design_notes.md` (coordinate-gradient controller
-design) and `docs/guidance_search_summary.md` (search-object/selection
+Companion to `docs/legacy/guidance_design_notes.md` (coordinate-gradient controller
+design) and `docs/legacy/guidance_search_summary.md` (search-object/selection
 policy). Those two documents establish the design and explicitly leave one
 question open: **how do we know the gradient guidance is actually
 working** — not fighting the model's own prior, and actually predictive of

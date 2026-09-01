@@ -639,11 +639,11 @@ def _center(coords, atom_mask):
 
 
 # ---------------------------------------------------------------------------
-# Guidance controller primitives (Phase 1 of docs/guidance_implementation_todo.md)
+# Guidance controller primitives (Phase 1 of docs/legacy/guidance_implementation_todo.md)
 #
 # These implement the per-objective mask -> de-mean -> normalize -> PCGrad-style
 # conflict projection -> trust-region clip pipeline from
-# docs/guidance_design_notes.md section 5 / 10. All operate on batched
+# docs/legacy/guidance_design_notes.md section 5 / 10. All operate on batched
 # [B, M, 3] coordinate-shaped gradients and [B, M] atom masks.
 # ---------------------------------------------------------------------------
 
@@ -656,7 +656,7 @@ def _mask_center_normalize(
     """Mask to designable atoms, remove rigid-translation drift, RMS-normalize.
 
     Three steps, each addressing a distinct failure mode identified in
-    docs/guidance_design_notes.md section 3:
+    docs/legacy/guidance_design_notes.md section 3:
       1. mask: zero the gradient on frozen atoms, so guidance never touches
          framework/target atoms even transiently.
       2. de-mean: subtract the per-batch mean gradient vector over designable
@@ -690,7 +690,7 @@ def _compat_project(
     If `g_aux` agrees with `g_anchor` (positive dot product), it passes
     through unchanged. If it conflicts (negative dot product), the
     conflicting component is removed. `g_anchor` itself is never modified —
-    this is the asymmetric variant from docs/guidance_design_notes.md
+    this is the asymmetric variant from docs/legacy/guidance_design_notes.md
     section 4.5: binding leads, auxiliary objectives only regularize.
     """
     dot = jnp.sum(g_aux * g_anchor, axis=(1, 2), keepdims=True)
@@ -707,7 +707,7 @@ def _clip_rms(
 ) -> Float[Array, "B M 3"]:
     """Trust-region clip: cap delta's RMS magnitude (over designable atoms) at tau.
 
-    This is the guardrail docs/guidance_design_notes.md section 4.6 calls "the
+    This is the guardrail docs/legacy/guidance_design_notes.md section 4.6 calls "the
     key missing guardrail" — bounds the worst-case per-step coordinate
     displacement independent of how well-behaved the upstream normalization
     and merge turned out to be.
@@ -725,7 +725,7 @@ def _euler_step_delta(direction, step_scale: float, sigma_t, t_hat):
     `step_scale * (sigma_t - t_hat)` factor the EDM Euler update applies, so
     the result is the actual physical per-step coordinate displacement (not
     just a scale-invariant direction). Used for both the unguided and guided
-    diagnostics in `guided_partial_diffusion` — see docs/guidance_implementation_todo.md
+    diagnostics in `guided_partial_diffusion` — see docs/legacy/guidance_implementation_todo.md
     Phase 1/Phase 2 on why the raw direction alone is insufficient for a
     norm-ratio diagnostic.
     """
@@ -735,7 +735,7 @@ def _euler_step_delta(direction, step_scale: float, sigma_t, t_hat):
 def default_lambda_schedule(t_hat, lam_max: float = 1.0):
     """Default overall guidance-strength schedule: linear decay to 0 as t_hat -> 0.
 
-    First-pass default (docs/guidance_implementation_todo.md Phase 1: "pin
+    First-pass default (docs/legacy/guidance_implementation_todo.md Phase 1: "pin
     down actual functional forms"). `lambda ~ t_hat` is one of the "standard
     EDM choices" already noted in this function's docstring history and
     matches the qualitative requirement in guidance_design_notes.md section 9
@@ -967,9 +967,9 @@ def guided_partial_diffusion(
     differentiable inverse-fold bridge (classifier-guided diffusion).
 
     This is the Phase 1 controller rewrite from
-    docs/guidance_implementation_todo.md: rather than one merged scalar loss
+    docs/legacy/guidance_implementation_todo.md: rather than one merged scalar loss
     differentiated once (the earlier, "too brutal" design analyzed in
-    docs/guidance_design_notes.md sections 2-3), three objectives are
+    docs/legacy/guidance_design_notes.md sections 2-3), three objectives are
     evaluated and differentiated *separately* — `L_bind` (primary, e.g.
     interface confidence), `L_nat` (naturalness prior), `L_edit`
     (locality/edit-restraint prior) — each masked to the designable region,
@@ -997,7 +997,7 @@ def guided_partial_diffusion(
          c. Call the BoltzGen denoiser under `jax.lax.stop_gradient` to get
             `x0_hat = D(noisy, t_hat)`. We deliberately do NOT backprop through D —
             the guidance gradient flows only through the small IF + aux-loss subgraph.
-            (This is the boundary docs/guidance_design_notes.md section 6 flags as
+            (This is the boundary docs/legacy/guidance_design_notes.md section 6 flags as
             the still-open prior-compatibility question: nothing here yet ties the
             guidance direction back to what D itself would predict.)
          d. Compute one gradient per objective: `g_k = ∇_{x0} L_k(x0_hat)` for
@@ -1102,7 +1102,7 @@ def guided_partial_diffusion(
         return_diagnostics: if True, `step_body`'s per-step scan output
             switches from `None` to a dict of per-step arrays (stacked over
             the trajectory by `jax.lax.scan`) intended for
-            docs/guidance_implementation_todo.md Phase 2 logging:
+            docs/legacy/guidance_implementation_todo.md Phase 2 logging:
               - "unguided_direction": the actual `(atom_coords_noisy - x0_hat)
                 / t_hat` reverse-update direction the sampler would have used
                 with no guidance at all (computed from the same
@@ -1290,7 +1290,7 @@ def guided_partial_diffusion(
         # at all, computed from the same atom_coords_noisy the real step uses
         # (post-churn, post optional rigid realignment above) — not a
         # hand-derived shorthand. This is the quantity
-        # docs/guidance_implementation_todo.md Phase 1 calls out to expose
+        # docs/legacy/guidance_implementation_todo.md Phase 1 calls out to expose
         # for Phase 2's prior-compatibility diagnostics.
         unguided_direction = (atom_coords_noisy - x0_hat) / t_hat
 
@@ -1398,7 +1398,7 @@ def guided_partial_diffusion(
             # unguided_direction/guided_direction are the raw (atom_coords_noisy
             # - x0)/t_hat derivatives -- valid for cosine comparisons (scale
             # invariant) but NOT for the physical displacement norm ratio that
-            # docs/guidance_implementation_todo.md's Phase 2 diagnostics call
+            # docs/legacy/guidance_implementation_todo.md's Phase 2 diagnostics call
             # for. *_step_delta below apply the same step_scale * (sigma_t -
             # t_hat) factor the real Euler update uses, so their norms are
             # directly comparable to the actual per-step coordinate motion.
@@ -1413,7 +1413,7 @@ def guided_partial_diffusion(
                 "g_nat": g_nat,
                 "g_edit": g_edit,
                 # noise-axis position of this step, for stratifying Phase 2
-                # diagnostics by sigma (docs/guidance_implementation_todo.md
+                # diagnostics by sigma (docs/legacy/guidance_implementation_todo.md
                 # Phase 2). t_hat is the churned noise level the guidance
                 # gradients above were actually evaluated at; sigma_t is the
                 # step's target noise level.
