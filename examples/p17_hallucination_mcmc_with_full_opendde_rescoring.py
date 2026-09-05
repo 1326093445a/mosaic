@@ -64,7 +64,7 @@ from mosaic.losses.structure_prediction import (
 )
 from mosaic.losses.transformations import ClippedGradient, EditBudget
 from mosaic.models.opendde import OpenDDEModelAbag
-from mosaic.optimizers import edit_budgeted_gradient_mcmc
+from mosaic.optimizers import _ranking_leaf, edit_budgeted_gradient_mcmc
 from mosaic.structure_prediction import TargetChain
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -314,9 +314,22 @@ def main():
         rescore_wall = time.time() - t0
         print(f"[chunk {chunk_idx}] rescore done ({rescore_wall:.1f}s), "
               f"real_value={float(real_value):.4f}", flush=True)
-        for k in ("target_contact", "binder_pose_rmsd", "iptm", "bt_pae", "tb_pae", "ptm_energy"):
-            if k in real_aux:
-                print(f"    {k}={float(real_aux[k]):.4f}", flush=True)
+
+        # real_aux is a nested pytree (ClippedGradient/LinearCombination
+        # wrap each sub-loss's own aux dict, same ".0.0.target_contact"-style
+        # nesting the cheap MCMC log lines above already show) -- not a flat
+        # dict, so look up each named metric via the same nested-aux helper
+        # optimizers.py's own biohub_optimizer uses for exactly this.
+        real_metrics = {
+            name: _ranking_leaf(real_aux, name)
+            for name in ("target_contact", "binder_pose_rmsd", "iptm", "bt_pae", "tb_pae", "ptm_energy")
+        }
+        for k, v in real_metrics.items():
+            if v is not None:
+                print(f"    {k}={float(v):.4f}", flush=True)
+
+        def _f(v):
+            return float(v) if v is not None else float("nan")
 
         rows.append({
             "chunk": chunk_idx, "steps_done": steps_done + chunk_steps,
@@ -324,12 +337,12 @@ def main():
             "cheap_best_val": float(best_val),
             "cheap_chunk_wall_s": chunk_wall,
             "real_value": float(real_value),
-            "real_target_contact": float(real_aux.get("target_contact", float("nan"))),
-            "real_binder_pose_rmsd": float(real_aux.get("binder_pose_rmsd", float("nan"))),
-            "real_iptm": float(real_aux.get("iptm", float("nan"))),
-            "real_bt_pae": float(real_aux.get("bt_pae", float("nan"))),
-            "real_tb_pae": float(real_aux.get("tb_pae", float("nan"))),
-            "real_ptm_energy": float(real_aux.get("ptm_energy", float("nan"))),
+            "real_target_contact": _f(real_metrics["target_contact"]),
+            "real_binder_pose_rmsd": _f(real_metrics["binder_pose_rmsd"]),
+            "real_iptm": _f(real_metrics["iptm"]),
+            "real_bt_pae": _f(real_metrics["bt_pae"]),
+            "real_tb_pae": _f(real_metrics["tb_pae"]),
+            "real_ptm_energy": _f(real_metrics["ptm_energy"]),
             "rescore_wall_s": rescore_wall,
         })
 
