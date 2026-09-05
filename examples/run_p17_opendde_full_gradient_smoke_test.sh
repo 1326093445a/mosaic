@@ -43,6 +43,12 @@ echo "output dir: $OUTPUT_DIR"
 echo "log:        $LOG_PATH"
 echo
 
+echo "[0/1] applying patches/patch_jopendde_outer_product_mean.py (idempotent; "
+echo "      fixes the confirmed ~199GiB OuterProductMean blowup -- see that "
+echo "      file's docstring)..."
+.venv/bin/python patches/patch_jopendde_outer_product_mean.py
+echo
+
 cmd=(.venv/bin/python examples/p17_opendde_full_gradient_smoke_test.py)
 
 if [[ "$DEVICE" == "inherit" ]]; then
