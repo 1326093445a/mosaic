@@ -92,7 +92,8 @@ def main():
     text = target.read_text()
 
     if MARKER in text:
-        print("already patched (found MOSAIC PATCH marker) -- nothing to do")
+        print("already patched (found MOSAIC PATCH marker) -- checking bytecode cache")
+        _purge_stale_pyc(target)
         return
 
     if ORIGINAL not in text:
@@ -112,6 +113,27 @@ def main():
     import py_compile
     py_compile.compile(str(target), doraise=True)
     print("py_compile OK")
+
+    _purge_stale_pyc(target)
+
+
+def _purge_stale_pyc(source_path: Path) -> None:
+    """Delete the compiled __pycache__ entry for this source file.
+
+    Needed on filesystems with coarse mtime resolution (common on network-
+    mounted storage, e.g. /storage/... cluster mounts) where Python's
+    source-vs-.pyc staleness check can't tell the source just changed --
+    confirmed necessary here: a re-run after this patch reproduced the
+    exact same crash with byte-identical internal XLA instruction IDs
+    (same fusion/reduce/constant numbers down to the last digit), which
+    only makes sense if the patched source was never actually re-imported.
+    """
+    import importlib.util
+
+    cached = Path(importlib.util.cache_from_source(str(source_path)))
+    if cached.exists():
+        cached.unlink()
+        print(f"purged stale bytecode cache: {cached}")
 
 
 if __name__ == "__main__":
