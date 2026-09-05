@@ -43,10 +43,13 @@ echo "output dir: $OUTPUT_DIR"
 echo "log:        $LOG_PATH"
 echo
 
-echo "[0/1] applying patches/patch_jopendde_outer_product_mean.py (idempotent; "
-echo "      fixes the confirmed ~199GiB OuterProductMean blowup -- see that "
-echo "      file's docstring)..."
+echo "[0/1] applying jopendde patches (idempotent; see each file's docstring):"
+echo "      - patch_jopendde_outer_product_mean.py (trunk MSA OuterProductMean)"
+echo "      - patch_jopendde_structural_token_expander.py (the one actually"
+echo "        responsible for the ~199GiB crash -- confirmed by bisection,"
+echo "        see examples/p17_opendde_full_gradient_bisect.py)"
 .venv/bin/python patches/patch_jopendde_outer_product_mean.py
+.venv/bin/python patches/patch_jopendde_structural_token_expander.py
 echo
 
 cmd=(.venv/bin/python examples/p17_opendde_full_gradient_smoke_test.py)
