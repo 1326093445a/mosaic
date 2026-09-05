@@ -388,7 +388,7 @@ class OpenDDEModel(StructurePredictionModel):
         """
         return DistogramOnlyOpenDDELoss(
             model=self.model,
-            features=self._as_opendde_features(features),
+            features=features,
             loss=loss,
             num_cycles=recycling_steps,
         )
