@@ -11,7 +11,7 @@
 # at 200 steps, docs/guidance_alphaseq_testing_notes.md section 13.3).
 #
 # Usage:
-#   examples/run_p17_opendde_diffusion_steps_convergence_check.sh [DEVICES] [RESCORING_CSV] [OUTPUT_DIR] [STEPS_LIST]
+#   examples/run_p17_opendde_diffusion_steps_convergence_check.sh [DEVICES] [RESCORING_CSV] [OUTPUT_DIR] [STEPS_LIST] [SEED_LIST]
 #
 # Args (all optional):
 #   DEVICES        comma-separated physical GPU ids. Default: 0,1,2,3,4,5,6,7
@@ -25,9 +25,17 @@
 #   STEPS_LIST     comma-separated diffusion step counts to test, one per
 #                  device (extra values queue after the first batch).
 #                  Default: 8,16,24,32,48,64,96,128 (8 values for 8 GPUs)
+#   SEED_LIST      comma-separated seeds. Default: 0 (fixed, matching
+#                  STEPS_LIST's default step-count sweep). One of
+#                  STEPS_LIST/SEED_LIST must be a single value (broadcast
+#                  to match the other) unless both have equal length
+#                  (zipped pairwise) -- e.g. to isolate sampling noise from
+#                  step count instead, pass STEPS_LIST=64 SEED_LIST=0,1,2,3,4,5,6,7
 #
-# Example:
+# Example (step-count sweep, default):
 #   examples/run_p17_opendde_diffusion_steps_convergence_check.sh
+# Example (seed sweep at fixed steps, to isolate sampling noise):
+#   examples/run_p17_opendde_diffusion_steps_convergence_check.sh 0,1,2,3,4,5,6,7 "" "" 64 0,1,2,3,4,5,6,7
 
 set -euo pipefail
 
@@ -39,6 +47,7 @@ DEVICES="${1:-0,1,2,3,4,5,6,7}"
 RESCORING_CSV="${2:-}"
 OUTPUT_DIR="${3:-results/p17_opendde_diffusion_convergence_$(date +%Y%m%d_%H%M%S)}"
 STEPS_LIST="${4:-8,16,24,32,48,64,96,128}"
+SEED_LIST="${5:-0}"
 
 if [[ -z "$RESCORING_CSV" ]]; then
     RESCORING_CSV="$(ls -t results/p17_mcmc_rescoring_*/rescoring_seed*.csv 2>/dev/null | head -1)"
@@ -64,6 +73,7 @@ echo "rescoring csv:  $RESCORING_CSV"
 echo "sequence:       $SEQUENCE"
 echo "output dir:     $OUTPUT_DIR"
 echo "steps list:     $STEPS_LIST"
+echo "seed list:      $SEED_LIST"
 echo
 
 echo "[0/1] applying jopendde patches (idempotent)..."
@@ -74,6 +84,7 @@ echo
 .venv/bin/python examples/p17_opendde_diffusion_steps_convergence_dispatch.py \
     --devices "$DEVICES" \
     --diffusion-steps-list "$STEPS_LIST" \
+    --seed-list "$SEED_LIST" \
     --sequence "$SEQUENCE" \
     --output-dir "$OUTPUT_DIR"
 

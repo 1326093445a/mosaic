@@ -185,6 +185,7 @@ def main():
     row = {
         "diffusion_steps": args.diffusion_steps,
         "recycling_steps": args.recycling_steps,
+        "seed": args.seed,
         "wall_time_s": wall,
         "value": float(value),
         "target_contact": _f(metrics["target_contact"]),
