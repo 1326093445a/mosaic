@@ -163,9 +163,17 @@ def main():
     wall = time.time() - t0
     print(f"done ({wall:.1f}s), value={float(value):.4f}", flush=True)
 
+    # AUX_KEY_NAMES maps our snake_case result name -> the loss class's own
+    # actual aux dict key (pTMEnergy.__call__ literally returns
+    # {"pTMEnergy": E}, camelCase, not "ptm_energy" -- a real mismatch that
+    # silently NaN'd this metric in every earlier run).
+    AUX_KEY_NAMES = {
+        "target_contact": "target_contact", "binder_pose_rmsd": "binder_pose_rmsd",
+        "iptm": "iptm", "bt_pae": "bt_pae", "tb_pae": "tb_pae", "ptm_energy": "pTMEnergy",
+    }
     metrics = {
-        name: _ranking_leaf(aux, name)
-        for name in ("target_contact", "binder_pose_rmsd", "iptm", "bt_pae", "tb_pae", "ptm_energy")
+        name: _ranking_leaf(aux, aux_key)
+        for name, aux_key in AUX_KEY_NAMES.items()
     }
     for k, v in metrics.items():
         if v is not None:

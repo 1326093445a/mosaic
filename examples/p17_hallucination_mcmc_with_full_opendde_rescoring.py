@@ -320,9 +320,17 @@ def main():
         # nesting the cheap MCMC log lines above already show) -- not a flat
         # dict, so look up each named metric via the same nested-aux helper
         # optimizers.py's own biohub_optimizer uses for exactly this.
+        # AUX_KEY_NAMES maps our snake_case result name -> the loss class's
+        # own actual aux dict key (pTMEnergy.__call__ literally returns
+        # {"pTMEnergy": E}, camelCase, not "ptm_energy" -- a real mismatch
+        # that silently NaN'd this metric in every earlier run).
+        AUX_KEY_NAMES = {
+            "target_contact": "target_contact", "binder_pose_rmsd": "binder_pose_rmsd",
+            "iptm": "iptm", "bt_pae": "bt_pae", "tb_pae": "tb_pae", "ptm_energy": "pTMEnergy",
+        }
         real_metrics = {
-            name: _ranking_leaf(real_aux, name)
-            for name in ("target_contact", "binder_pose_rmsd", "iptm", "bt_pae", "tb_pae", "ptm_energy")
+            name: _ranking_leaf(real_aux, aux_key)
+            for name, aux_key in AUX_KEY_NAMES.items()
         }
         for k, v in real_metrics.items():
             if v is not None:
