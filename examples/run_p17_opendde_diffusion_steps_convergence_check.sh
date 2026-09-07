@@ -11,31 +11,36 @@
 # at 200 steps, docs/guidance_alphaseq_testing_notes.md section 13.3).
 #
 # Usage:
-#   examples/run_p17_opendde_diffusion_steps_convergence_check.sh [DEVICES] [RESCORING_CSV] [OUTPUT_DIR] [STEPS_LIST] [SEED_LIST]
+#   examples/run_p17_opendde_diffusion_steps_convergence_check.sh [DEVICES] [RESCORING_CSV] [OUTPUT_DIR] [STEPS_LIST] [SEED_LIST] [RECYCLING_LIST] [USE_WT_LIST]
 #
 # Args (all optional):
-#   DEVICES        comma-separated physical GPU ids. Default: 0,1,2,3,4,5,6,7
+#   DEVICES         comma-separated physical GPU ids. Default: 0,1,2,3,4,5,6,7
 #                   (all 8)
-#   RESCORING_CSV  path to an existing rescoring_seed*.csv (from
-#                  run_p17_hallucination_mcmc_with_full_opendde_rescoring.sh)
-#                  to pull the candidate sequence from (its LAST row).
-#                  Default: the most recently modified
-#                  results/p17_mcmc_rescoring_*/rescoring_seed*.csv
-#   OUTPUT_DIR     Default: results/p17_opendde_diffusion_convergence_<timestamp>
-#   STEPS_LIST     comma-separated diffusion step counts to test, one per
-#                  device (extra values queue after the first batch).
-#                  Default: 8,16,24,32,48,64,96,128 (8 values for 8 GPUs)
-#   SEED_LIST      comma-separated seeds. Default: 0 (fixed, matching
-#                  STEPS_LIST's default step-count sweep). One of
-#                  STEPS_LIST/SEED_LIST must be a single value (broadcast
-#                  to match the other) unless both have equal length
-#                  (zipped pairwise) -- e.g. to isolate sampling noise from
-#                  step count instead, pass STEPS_LIST=64 SEED_LIST=0,1,2,3,4,5,6,7
+#   RESCORING_CSV   path to an existing rescoring_seed*.csv (from
+#                   run_p17_hallucination_mcmc_with_full_opendde_rescoring.sh)
+#                   to pull the candidate sequence from (its LAST row).
+#                   Default: the most recently modified
+#                   results/p17_mcmc_rescoring_*/rescoring_seed*.csv
+#   OUTPUT_DIR      Default: results/p17_opendde_diffusion_convergence_<timestamp>
+#   STEPS_LIST      comma-separated diffusion step counts. Default:
+#                   8,16,24,32,48,64,96,128 (8 values for 8 GPUs)
+#   SEED_LIST       comma-separated seeds. Default: 0
+#   RECYCLING_LIST  comma-separated recycling_steps values. Default: 4
+#                   (matches the search's own default; the one validated
+#                   real reference used 10)
+#   USE_WT_LIST     comma-separated 0/1 -- 1 scores the real WT sequence
+#                   instead of the rescoring CSV's candidate for that job.
+#                   Default: 0
+#
+#   Every list must be length 1 (broadcast to match the longest) or match
+#   the longest list's length (zipped pairwise, not a full grid).
 #
 # Example (step-count sweep, default):
 #   examples/run_p17_opendde_diffusion_steps_convergence_check.sh
-# Example (seed sweep at fixed steps, to isolate sampling noise):
+# Example (seed sweep at fixed steps, isolate sampling noise):
 #   examples/run_p17_opendde_diffusion_steps_convergence_check.sh 0,1,2,3,4,5,6,7 "" "" 64 0,1,2,3,4,5,6,7
+# Example (WT vs. design across recycling_steps, isolate the recycling confound):
+#   examples/run_p17_opendde_diffusion_steps_convergence_check.sh 0,1,2,3,4,5,6,7 "" "" 64 0 4,6,8,10,4,6,8,10 1,1,1,1,0,0,0,0
 
 set -euo pipefail
 
@@ -48,6 +53,8 @@ RESCORING_CSV="${2:-}"
 OUTPUT_DIR="${3:-results/p17_opendde_diffusion_convergence_$(date +%Y%m%d_%H%M%S)}"
 STEPS_LIST="${4:-8,16,24,32,48,64,96,128}"
 SEED_LIST="${5:-0}"
+RECYCLING_LIST="${6:-4}"
+USE_WT_LIST="${7:-0}"
 
 if [[ -z "$RESCORING_CSV" ]]; then
     RESCORING_CSV="$(ls -t results/p17_mcmc_rescoring_*/rescoring_seed*.csv 2>/dev/null | head -1)"
@@ -74,6 +81,8 @@ echo "sequence:       $SEQUENCE"
 echo "output dir:     $OUTPUT_DIR"
 echo "steps list:     $STEPS_LIST"
 echo "seed list:      $SEED_LIST"
+echo "recycling list: $RECYCLING_LIST"
+echo "use-wt list:    $USE_WT_LIST"
 echo
 
 echo "[0/1] applying jopendde patches (idempotent)..."
@@ -85,6 +94,8 @@ echo
     --devices "$DEVICES" \
     --diffusion-steps-list "$STEPS_LIST" \
     --seed-list "$SEED_LIST" \
+    --recycling-steps-list "$RECYCLING_LIST" \
+    --use-wt-list "$USE_WT_LIST" \
     --sequence "$SEQUENCE" \
     --output-dir "$OUTPUT_DIR"
 

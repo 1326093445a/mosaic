@@ -91,23 +91,31 @@ def reference_binder_target_ca(model):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--sequence", type=str, required=True,
+    p.add_argument("--sequence", type=str, default=None,
                     help="123-aa binder sequence to score (from an existing "
-                         "rescoring CSV's `sequence` column)")
+                         "rescoring CSV's `sequence` column). Ignored if --use-wt.")
+    p.add_argument("--use-wt", action="store_true",
+                    help="Score the real, unmutated P17 WT binder sequence instead "
+                         "of --sequence -- the real baseline to check whether a low "
+                         "ipTM/high RMSD reading is about this candidate or about "
+                         "the scoring settings (recycling_steps in particular).")
     p.add_argument("--diffusion-steps", type=int, required=True)
     p.add_argument("--recycling-steps", type=int, default=OPENDDE_RECYCLING_STEPS)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--output", type=Path, required=True)
     args = p.parse_args()
+    if not args.use_wt and not args.sequence:
+        raise SystemExit("--sequence is required unless --use-wt is set")
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     print(f"=== convergence check: diffusion_steps={args.diffusion_steps} "
-          f"recycling_steps={args.recycling_steps} ===", flush=True)
+          f"recycling_steps={args.recycling_steps} use_wt={args.use_wt} ===", flush=True)
 
     model, binder_seq, target_seq = load_structure()
-    if len(args.sequence) != len(binder_seq):
+    sequence = binder_seq if args.use_wt else args.sequence
+    if len(sequence) != len(binder_seq):
         raise ValueError(
-            f"--sequence length {len(args.sequence)} != real P17 binder length "
+            f"--sequence length {len(sequence)} != real P17 binder length "
             f"{len(binder_seq)}; did you pass the right column from the CSV?"
         )
     reference_binder_ca, reference_target_ca = reference_binder_target_ca(model)
@@ -153,7 +161,7 @@ def main():
     )
     grad_fn = eqx.filter_jit(eqx.filter_value_and_grad(loss, has_aux=True))
 
-    x = seq_to_one_hot(args.sequence)
+    x = seq_to_one_hot(sequence)
     key = jax.random.key(args.seed)
 
     print(f"scoring at diffusion_steps={args.diffusion_steps}...", flush=True)
@@ -186,6 +194,7 @@ def main():
         "diffusion_steps": args.diffusion_steps,
         "recycling_steps": args.recycling_steps,
         "seed": args.seed,
+        "use_wt": int(args.use_wt),
         "wall_time_s": wall,
         "value": float(value),
         "target_contact": _f(metrics["target_contact"]),
