@@ -86,19 +86,32 @@ def seq_to_one_hot(seq: str) -> np.ndarray:
     return np.eye(len(TOKENS), dtype=np.float32)[idx]
 
 
+def amino_acid_residues(chain):
+    """Filter out waters/cryoprotectant (e.g. EDO) that gemmi assigns to the
+    same chain ID as the polymer -- P17_Alpha.pdb has these interspersed in
+    chains A/B (247/135 waters + a handful of EDO), which P17_JN1.pdb's
+    B/T chains happen not to have; without this filter, one_letter_code()
+    silently emits 'X' for each non-amino-acid residue and the resulting
+    "sequence" is garbage (and longer than the real 195/123-residue chains)."""
+    return [r for r in chain
+            if (info := gemmi.find_tabulated_residue(r.name)) and info.is_amino_acid()]
+
+
 def load_structure(pdb_path: Path, binder_chain: str, target_chain: str):
     st = gemmi.read_structure(str(pdb_path))
     st.setup_entities()
     model = st[0]
-    binder_seq = gemmi.one_letter_code([r.name for r in model[binder_chain]]).upper()
-    target_seq = gemmi.one_letter_code([r.name for r in model[target_chain]]).upper()
+    binder_res = amino_acid_residues(model[binder_chain])
+    target_res = amino_acid_residues(model[target_chain])
+    binder_seq = gemmi.one_letter_code([r.name for r in binder_res]).upper()
+    target_seq = gemmi.one_letter_code([r.name for r in target_res]).upper()
     return model, binder_seq, target_seq
 
 
 def reference_binder_target_ca(model, binder_chain: str, target_chain: str):
     def ca_coords(chain):
         coords = []
-        for res in chain:
+        for res in amino_acid_residues(chain):
             for a in res:
                 if a.name == "CA":
                     coords.append([a.pos.x, a.pos.y, a.pos.z])
