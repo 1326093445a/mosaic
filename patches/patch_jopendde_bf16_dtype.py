@@ -46,10 +46,27 @@ input `x`, and the consuming Linear's own weight) rather than hardcoding a
 dtype. So float32 runs are bit-for-bit unchanged and this is a no-op for
 them; only a caller that has deliberately cast to bf16 sees a difference.
 
-NOTE ON NUMERICS: this makes bf16 *possible*, it does not make it
-*validated*. Check a bf16 run's outputs against the native torch reference
-for the same input before trusting it (for P17-vs-Alpha, no MSA, no
-template, recycling=3, seed 0: native torch ipTM = 0.9006).
+NOTE ON NUMERICS: bf16 attention is now the DEFAULT (fp32 cannot run on a
+24GB card at all, so it is not a useful default), with
+JOPENDDE_ATTENTION_DTYPE=fp32 as the escape hatch. What that default is and
+is not backed by:
+
+  Validated:     the forward pass. P17-vs-Alpha, no MSA, no template,
+                 recycling=3, 64 diffusion steps, seed 0 -> ipTM 0.885-0.892
+                 here vs 0.9006 from native torch on the identical input.
+  Not validated: the BACKWARD pass -- i.e. the gradient-based design search
+                 this port exists for. bf16 gradients are a materially
+                 different proposition from bf16 inference.
+  Also note:     results are NOT bitwise reproducible across processes.
+                 Repeated runs of the same seed/config gave 0.8849 / 0.8903 /
+                 0.8917 (two back-to-back runs in one process agreed exactly),
+                 so XLA autotuning -- which picks kernels from timing
+                 measurements -- moves the answer by ~0.007. The gap to torch
+                 is only modestly larger than that, so do not read it as a
+                 precise bias measurement.
+
+The fp32-attention control could not be run locally to isolate bf16's own
+contribution: it still needs a 10.71GiB allocation and OOMs on this card.
 
 jopendde is an external git dependency
 (pyproject.toml: jopendde = { git = "https://github.com/escalante-bio/jopendde.git" }),
@@ -95,23 +112,39 @@ SITES = [
         "original": """@register_from_torch("opendde.model.modules.primitives.Attention")
 @register_from_torch("opendde.model.triangular.layers.Attention")
 class Attention(AbstractFromTorch):""",
-        "patched": '''# MOSAIC PATCH: opt-in autocast-style compute dtype for the attention core.
-# Off by default (returns None -> byte-for-byte the original fp32 behaviour).
-# Set JOPENDDE_ATTENTION_DTYPE=bf16 to run the QK^T/softmax/AV core in bfloat16
-# while every parameter and every other activation stays float32, mirroring
-# native torch OpenDDE's torch.autocast(dtype=bfloat16) path -- which is what
-# `opendde pred -d bf16` actually does. This is the single change that brings
-# the model within a 24GB card's budget (measured peak 15.25GiB vs an
-# unsatisfiable 29.79GiB request before).
+        "patched": '''# MOSAIC PATCH: autocast-style compute dtype for the attention core.
+#
+# DEFAULTS TO bfloat16, matching native torch OpenDDE, whose `opendde pred`
+# runs under torch.autocast(dtype=bfloat16) for `-d bf16`: weights and
+# reductions stay float32 and only the matmuls drop to bf16. Without this the
+# QK^T score tensor is f32[7452,621,621] = 10.71GiB at P17's complex size and
+# the model cannot run on a 24GB card at all -- so fp32 is not a useful
+# default here, it is an unrunnable one.
+#
+# Escape hatch: JOPENDDE_ATTENTION_DTYPE=fp32 restores the original
+# all-float32 behaviour (byte-for-byte), which is worth having on a
+# large-memory accelerator where fp32 fits.
+#
+# CAVEAT: only the FORWARD pass has been checked against the native torch
+# reference (P17-vs-Alpha, no MSA/template, recycling=3, 64 diffusion steps:
+# ipTM ~0.885-0.892 here vs 0.9006 there). bf16 inside a BACKWARD pass --
+# i.e. the gradient-based design search this port exists for -- is NOT
+# validated. If a design run behaves oddly, set JOPENDDE_ATTENTION_DTYPE=fp32
+# and compare.
 def _mosaic_attention_dtype():
     import os
 
     v = os.environ.get("JOPENDDE_ATTENTION_DTYPE", "").strip().lower()
-    if v in ("bf16", "bfloat16"):
+    if v in ("", "bf16", "bfloat16"):
         return jnp.bfloat16
     if v in ("f16", "fp16", "float16"):
         return jnp.float16
-    return None
+    if v in ("f32", "fp32", "float32", "off", "none"):
+        return None
+    raise ValueError(
+        f"JOPENDDE_ATTENTION_DTYPE={v!r} not recognised; expected one of "
+        "bf16 / fp16 / fp32 (or unset, which means bf16)"
+    )
 
 
 @register_from_torch("opendde.model.modules.primitives.Attention")
@@ -150,7 +183,7 @@ class Attention(AbstractFromTorch):''',
         # (the single largest allocation in the model -- f32[7452,621,621] =
         # 10.71GiB at P17's complex size) is computed in the compute dtype and
         # cast straight back, so nothing outside this block changes dtype.
-        # Opt-in via JOPENDDE_ATTENTION_DTYPE and off by default.
+        # bf16 by default; JOPENDDE_ATTENTION_DTYPE=fp32 opts back out.
         _compute_dtype = _mosaic_attention_dtype()
         _out_dtype = q.dtype
         if _compute_dtype is not None:
