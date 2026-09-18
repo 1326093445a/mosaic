@@ -68,20 +68,51 @@ PATCHED = '''    def _pair_project_by_role_full(
         # direct crash-shape arithmetic (602*602*384*384*4 bytes =
         # 199.09GiB) matching an observed RESOURCE_EXHAUSTED allocation of
         # exactly that size. Instead: apply each of the n_roles**2
-        # projections to the FULL z once each (small: n_roles**2 cheap
-        # [N,N,Cz]-shaped results, not one [N,N,Cz,Cz] tensor), then select
-        # per position. Verified forward- and gradient-exact against the
-        # original gather-based computation in float64 (~1e-15 difference,
-        # machine epsilon).
+        # projections to z and select per position.
+        #
+        # SECOND PASS: the first version of this patch did that selection with
+        # jnp.stack([lin(z) for lin in self.pair_block_proj]) + take_along_axis,
+        # which materializes ALL n_roles**2 projections at once -- [49, N, N, Cz],
+        # i.e. 49 x 592MB = 29.79GiB at N=621/Cz=384, confirmed by an OOM
+        # requesting exactly 54 x f32[621,621,384]. That removed the 199GiB
+        # gather but simply relocated the peak, and it is what kept mosaic's
+        # OpenDDE path from running on a 24GB card. Native torch chunks this
+        # projection instead (`structural_token_expansion.pair_chunk_size: 128`);
+        # the port dropped that along with every other chunked path.
+        #
+        # So: scan over the stacked weights, accumulating only the positions
+        # each role-pair owns. Peak memory is the accumulator plus ONE
+        # [N, N, Cz] projection (~2 x 592MB), independent of n_roles. A
+        # jax.lax.scan (NOT a Python loop) is required -- an unrolled loop lets
+        # XLA fuse all 49 addends into a single wide `add` with every operand
+        # live at once, reproducing the very 29.79GiB buffer this avoids.
+        #
+        # Exactly equivalent to the take_along_axis select: role_pair_idx lies
+        # in [0, n_roles**2), so every (i, j) matches exactly one p and the
+        # other n_roles**2 - 1 terms contribute a hard zero. Verified
+        # bit-exact (max abs diff 0.0) against the take_along_axis formulation
+        # in float64, which in turn was verified forward- and gradient-exact
+        # against the original gather.
         role_pair_idx = role[:, None] * self.n_roles + role[None, :]  # [N, N]
-        candidates = jnp.stack(
-            [lin(z) for lin in self.pair_block_proj], axis=0
-        )  # [n_roles*n_roles, N, N, Cz]
-        idx = jnp.broadcast_to(
-            role_pair_idx[None, :, :, None],
-            (1,) + role_pair_idx.shape + (candidates.shape[-1],),
+        weights = jnp.stack(
+            [lin.weight for lin in self.pair_block_proj], axis=0
+        )  # [n_roles*n_roles, Cz_out, Cz_in]
+        acc_dtype = jnp.result_type(z.dtype, weights.dtype)
+
+        def _accumulate_role_pair(acc, xs):
+            p, w = xs
+            contrib = jnp.einsum("...i,oi->...o", z, w)
+            keep = (role_pair_idx == p)[..., None]
+            return acc + jnp.where(keep, contrib, 0).astype(acc_dtype), None
+
+        acc0 = jnp.zeros(z.shape[:-1] + (weights.shape[-2],), dtype=acc_dtype)
+        out, _ = jax.lax.scan(
+            _accumulate_role_pair,
+            acc0,
+            (jnp.arange(weights.shape[0]), weights),
+            unroll=1,
         )
-        return jnp.take_along_axis(candidates, idx, axis=0)[0]'''
+        return out'''
 
 
 def main():
