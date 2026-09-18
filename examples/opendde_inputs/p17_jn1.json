@@ -1,0 +1,22 @@
+[
+  {
+    "name": "P17_vs_JN1",
+    "modelSeeds": [0, 1, 2],
+    "sequences": [
+      {
+        "proteinChain": {
+          "sequence": "QVQLQESGGGLVQAGGSLRLSCAASGRTSSVYNMAWFRQTPGKEREFVAAITGNGGTTLYADSVKGRLTISRGNAKNTVSLQMNVLKPDDTAVYYCAAGGWGKERNYAYWGQGTQVTVSSHHH",
+          "count": 1,
+          "id": ["B"]
+        }
+      },
+      {
+        "proteinChain": {
+          "sequence": "CPFHEVFNATRFASVYAWNRTRISNCVADYSVLYNFAPFFAFKCYGVSPTKLNDLCFTNVYADSFVIKGNEVSQIAPGQTGNIADYNYKLPDDFTGCVIAWNSNKLDSKHSGNYDYWYRSFRKSKLKPFERDISTEIYQAGNKPCKGKGPNCYFPLQSYGFRPTYGVGHQPYRVVVLSFELLHA",
+          "count": 1,
+          "id": ["T"]
+        }
+      }
+    ]
+  }
+]

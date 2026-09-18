@@ -1,10 +1,16 @@
 """Real RMSD + ipSAE(pae_cutoff=12, dist_cutoff=12) analysis of the native
 (torch) OpenDDE P17-vs-Alpha (binding) vs. P17-vs-JN.1 (non-binding)
-predictions produced by OpenDDE/examples/p17_alpha.json /
-OpenDDE/examples/p17_jn1.json (run with --need_atom_confidence true so the
-per-run `*_full_data_sample_0.json` has the full token_pair_pae matrix
-needed for ipSAE; the default `*_summary_confidence_*.json` only has
-scalar iptm/ptm/gpde aggregates).
+predictions produced from examples/opendde_inputs/p17_alpha.json and
+examples/opendde_inputs/p17_jn1.json (run with --need_atom_confidence true
+so the per-run `*_full_data_sample_0.json` has the full token_pair_pae
+matrix needed for ipSAE; the default `*_summary_confidence_*.json` only
+has scalar iptm/ptm/gpde aggregates).
+
+Those two JSONs are the canonical inputs behind every number here -- the
+binder chain is byte-identical between them, so the ONLY thing that differs
+is the target (Alpha, 195 aa vs. JN.1, 184 aa). `opendde pred -i` accepts
+any path, so point it straight at these rather than keeping a second copy
+inside the OpenDDE clone (which is a separate git repo, untracked here).
 
 Two things this answers, directly requested by the user after seeing the
 scalar ipTM/gPDE comparison:
@@ -33,9 +39,29 @@ scalar ipTM/gPDE comparison:
      diagnostic "how many interface residues are within 12A" residue
      count) -- reported here too, alongside the score, for completeness.
 
-Usage (after running examples/p17_alpha.json and examples/p17_jn1.json
-through `opendde pred ... --need_atom_confidence true` for seeds 0,1,2 --
-see run_p17_alpha_vs_jn1_native_opendde.sh):
+Generate the predictions this reads (from the OpenDDE clone's venv, which
+is a separate install from mosaic's -- see patches/ and the OpenDDE repo's
+own pyproject; OPENDDE_ROOT_DIR reuses the checkpoints mosaic already
+cached, so nothing is re-downloaded):
+
+    cd OpenDDE && source .venv/bin/activate
+    export OPENDDE_ROOT_DIR=/home/yfeng17/.cache/mosaic/opendde
+    export LAYERNORM_TYPE=torch
+    for name in alpha jn1; do
+      opendde pred \\
+        -i ../examples/opendde_inputs/p17_${name}.json \\
+        -o ./test_outputs/p17_${name}_full \\
+        -s 0,1,2 -c 3 -p 64 -e 1 -d bf16 -n opendde_v1 \\
+        --load_checkpoint_path "$OPENDDE_ROOT_DIR/checkpoint/opendde_abag.pt" \\
+        --use_msa false --use_template false \\
+        --trimul_kernel torch --triatt_kernel torch \\
+        --need_atom_confidence true
+    done
+
+`-d bf16` is not optional in practice: it selects torch.autocast, and the
+same run in fp32 OOMs on a 24GB card.
+
+Then:
     .venv/bin/python examples/p17_alpha_vs_jn1_native_opendde_analysis.py \\
         --output results/p17_alpha_vs_jn1_native_opendde/rmsd_ipsae.csv
 """

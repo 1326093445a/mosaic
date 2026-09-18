@@ -1,0 +1,22 @@
+[
+  {
+    "name": "P17_vs_Alpha",
+    "modelSeeds": [0, 1, 2],
+    "sequences": [
+      {
+        "proteinChain": {
+          "sequence": "QVQLQESGGGLVQAGGSLRLSCAASGRTSSVYNMAWFRQTPGKEREFVAAITGNGGTTLYADSVKGRLTISRGNAKNTVSLQMNVLKPDDTAVYYCAAGGWGKERNYAYWGQGTQVTVSSHHH",
+          "count": 1,
+          "id": ["B"]
+        }
+      },
+      {
+        "proteinChain": {
+          "sequence": "NLCPFGEVFNATRFASVYAWNRKRISNCVADYSVLYNSASFSTFKCYGVSPTKLNDLCFTNVYADSFVIRGDEVRQIAPGQTGKIADYNYKLPDDFTGCVIAWNSNNLDSKVGGNYNYLYRLFRKSNLKPFERDISTEIYQAGSTPCNGVEGFNCYFPLQSYGFQPTYGVGYQPYRVVVLSFELLHAPATVCGPK",
+          "count": 1,
+          "id": ["A"]
+        }
+      }
+    ]
+  }
+]
