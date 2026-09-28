@@ -292,7 +292,10 @@ def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenize
                            epitope_idx, edit_budget: int, stop_grad_ablang2: bool,
                            opendde_path: str, pose_tolerance: float,
                            opendde_sampling_steps: int | None,
-                           opendde_num_samples: int):
+                           opendde_num_samples: int, confidence_loss=None):
+    # Existing callers retain their original objective unless explicitly enabled.
+    if confidence_loss is not None and opendde_path != "full":
+        raise ValueError("confidence_loss requires opendde_path='full'")
     # epitope_idx restricts the contact loss to the 5 real hotspot target
     # residues -- deliberate difference from VHH72's script (see module
     # docstring): P17 has no downstream real-data validation to catch a
@@ -326,6 +329,8 @@ def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenize
             CLIP_GRADIENT_NORM,
         )
         full_opendde_loss = contact_loss + pose_loss
+        if confidence_loss is not None:
+            full_opendde_loss = full_opendde_loss + confidence_loss
         if opendde_num_samples == 1:
             opendde_loss = ClippedGradient(
                 opendde.build_loss(

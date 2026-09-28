@@ -1,0 +1,196 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="1152pt" height="648pt" viewBox="0 0 1152 648" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-09-23T16:08:19.295095</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.10.5, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 648 
+L 1152 648 
+L 1152 0 
+L 0 0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 68.4 396 
+L 262.8 396 
+Q 273.6 396 273.6 385.2 
+L 273.6 219.6 
+Q 273.6 208.8 262.8 208.8 
+L 68.4 208.8 
+Q 57.6 208.8 57.6 219.6 
+L 57.6 385.2 
+Q 57.6 396 68.4 396 
+z
+" clip-path="url(#pece6dbdf98)" style="fill: #eef5fc"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 342 396 
+L 536.4 396 
+Q 547.2 396 547.2 385.2 
+L 547.2 219.6 
+Q 547.2 208.8 536.4 208.8 
+L 342 208.8 
+Q 331.2 208.8 331.2 219.6 
+L 331.2 385.2 
+Q 331.2 396 342 396 
+z
+" clip-path="url(#pece6dbdf98)" style="fill: #eef5fc"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 615.6 396 
+L 810 396 
+Q 820.8 396 820.8 385.2 
+L 820.8 219.6 
+Q 820.8 208.8 810 208.8 
+L 615.6 208.8 
+Q 604.8 208.8 604.8 219.6 
+L 604.8 385.2 
+Q 604.8 396 615.6 396 
+z
+" clip-path="url(#pece6dbdf98)" style="fill: #eaf7f3"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 889.2 396 
+L 1083.6 396 
+Q 1094.4 396 1094.4 385.2 
+L 1094.4 219.6 
+Q 1094.4 208.8 1083.6 208.8 
+L 889.2 208.8 
+Q 878.4 208.8 878.4 219.6 
+L 878.4 385.2 
+Q 878.4 396 889.2 396 
+z
+" clip-path="url(#pece6dbdf98)" style="fill: #fff5e8"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 280.8 302.4 
+L 321.428522 302.4 
+" clip-path="url(#pece6dbdf98)" style="fill: none; stroke: #586b81; stroke-width: 2.3; stroke-linecap: round"/>
+    <path d="M 312.628522 298 
+L 321.428522 302.4 
+L 312.628522 306.8 
+z
+" clip-path="url(#pece6dbdf98)" style="fill: #586b81; stroke: #586b81; stroke-width: 2.3; stroke-linecap: round"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 554.4 302.4 
+L 595.028522 302.4 
+" clip-path="url(#pece6dbdf98)" style="fill: none; stroke: #586b81; stroke-width: 2.3; stroke-linecap: round"/>
+    <path d="M 586.228522 298 
+L 595.028522 302.4 
+L 586.228522 306.8 
+z
+" clip-path="url(#pece6dbdf98)" style="fill: #586b81; stroke: #586b81; stroke-width: 2.3; stroke-linecap: round"/>
+   </g>
+   <g id="patch_8">
+    <path d="M 828 302.4 
+L 868.628522 302.4 
+" clip-path="url(#pece6dbdf98)" style="fill: none; stroke: #586b81; stroke-width: 2.3; stroke-linecap: round"/>
+    <path d="M 859.828522 298 
+L 868.628522 302.4 
+L 859.828522 306.8 
+z
+" clip-path="url(#pece6dbdf98)" style="fill: #586b81; stroke: #586b81; stroke-width: 2.3; stroke-linecap: round"/>
+   </g>
+   <g id="patch_9">
+    <path d="M 986.4 396 
+L 986.4 468 
+L 165.6 468 
+L 165.6 398.571478 
+" clip-path="url(#pece6dbdf98)" style="fill: none; stroke: #a96012; stroke-width: 2.3; stroke-linecap: round"/>
+    <path d="M 161.2 407.371478 
+L 165.6 398.571478 
+L 170 407.371478 
+z
+" clip-path="url(#pece6dbdf98)" style="fill: #a96012; stroke: #a96012; stroke-width: 2.3; stroke-linecap: round"/>
+   </g>
+   <g id="text_1">
+    <text style="font-weight: 700; font-size: 30px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #182d48" x="57.6" y="87.360937" transform="rotate(-0 57.6 87.360937)">Gradient-guided antibody optimization</text>
+   </g>
+   <g id="text_2">
+    <text style="font-size: 18px; font-family: 'DejaVu Sans'; text-anchor: start; fill: #586b81" x="57.6" y="141.766875" transform="rotate(-0 57.6 141.766875)">Start from P17. Improve interface confidence through repeated CDR edits.</text>
+   </g>
+   <g id="text_3">
+    <text style="font-weight: 700; font-size: 13px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #2468a6" x="165.6" y="241.187187" transform="rotate(-0 165.6 241.187187)">1</text>
+   </g>
+   <g id="text_4">
+    <text style="font-weight: 700; font-size: 25px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #2468a6" x="165.6" y="287.698438" transform="rotate(-0 165.6 287.698438)">Guide</text>
+   </g>
+   <g id="text_5">
+    <text style="font-weight: 700; font-size: 16px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #182d48" x="165.6" y="342.7525" transform="rotate(-0 165.6 342.7525)">OpenDDE + AbLang2</text>
+   </g>
+   <g id="text_6">
+    <text style="font-size: 13.5px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #586b81" x="165.6" y="378.125156" transform="rotate(-0 165.6 378.125156)">RMSD + confidence gradients</text>
+   </g>
+   <g id="text_7">
+    <text style="font-weight: 700; font-size: 13px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #2468a6" x="439.2" y="241.187187" transform="rotate(-0 439.2 241.187187)">2</text>
+   </g>
+   <g id="text_8">
+    <text style="font-weight: 700; font-size: 25px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #2468a6" x="439.2" y="287.698438" transform="rotate(-0 439.2 287.698438)">Propose</text>
+   </g>
+   <g id="text_9">
+    <text style="font-weight: 700; font-size: 16px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #182d48" x="439.2" y="342.815" transform="rotate(-0 439.2 342.815)">Small CDR edits</text>
+   </g>
+   <g id="text_10">
+    <text style="font-size: 13.5px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #586b81" x="439.2" y="378.125156" transform="rotate(-0 439.2 378.125156)">Framework stays fixed</text>
+   </g>
+   <g id="text_11">
+    <text style="font-weight: 700; font-size: 13px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #087d70" x="712.8" y="241.187187" transform="rotate(-0 712.8 241.187187)">3</text>
+   </g>
+   <g id="text_12">
+    <text style="font-weight: 700; font-size: 25px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #087d70" x="712.8" y="287.698438" transform="rotate(-0 712.8 287.698438)">Score</text>
+   </g>
+   <g id="text_13">
+    <text style="font-weight: 700; font-size: 16px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #182d48" x="712.8" y="342.815" transform="rotate(-0 712.8 342.815)">Full OpenDDE</text>
+   </g>
+   <g id="text_14">
+    <text style="font-size: 13.5px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #586b81" x="712.8" y="378.125156" transform="rotate(-0 712.8 378.125156)">Evaluate ipSAE</text>
+   </g>
+   <g id="text_15">
+    <text style="font-weight: 700; font-size: 13px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #a96012" x="986.4" y="241.187187" transform="rotate(-0 986.4 241.187187)">4</text>
+   </g>
+   <g id="text_16">
+    <text style="font-weight: 700; font-size: 25px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #a96012" x="986.4" y="287.698438" transform="rotate(-0 986.4 287.698438)">Select</text>
+   </g>
+   <g id="text_17">
+    <text style="font-weight: 700; font-size: 16px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #182d48" x="986.4" y="342.815" transform="rotate(-0 986.4 342.815)">Choose next parents</text>
+   </g>
+   <g id="text_18">
+    <text style="font-size: 13.5px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #586b81" x="986.4" y="378.125156" transform="rotate(-0 986.4 378.125156)">Confidence + search policy</text>
+   </g>
+   <g id="text_19">
+    <text style="font-weight: 700; font-size: 17px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #a96012" x="576" y="447.490937" transform="rotate(-0 576 447.490937)">Repeat with the retained candidates</text>
+   </g>
+   <g id="text_20">
+    <text style="font-weight: 700; font-size: 18px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #182d48" x="576" y="544.966875" transform="rotate(-0 576 544.966875)">Compare: independent searches  vs.  a diverse population</text>
+   </g>
+   <g id="text_21">
+    <text style="font-size: 14px; font-family: 'DejaVu Sans'; text-anchor: middle; fill: #586b81" x="576" y="601.463125" transform="rotate(-0 576 601.463125)">Model weights stay frozen  •  ipSAE measures confidence, not binding affinity</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="pece6dbdf98">
+   <rect x="0" y="0" width="1152" height="648"/>
+  </clipPath>
+ </defs>
+</svg>
