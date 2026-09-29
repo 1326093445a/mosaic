@@ -55,6 +55,7 @@ of a published algorithm. Equal call ceilings do not imply equal GPU time.
 | [Shared harness](../src/mosaic/search.py) | Backend-independent policy logic, feasibility checks, caching, budgets and event callbacks |
 | [P17 runner](../examples/p17_confidence_search.py) | Full-gradient proposal objective, separate forward-only retention scoring, run metadata and memory snapshots |
 | [Launcher](../examples/run_p17_confidence_search.sh) | Applies the existing OpenDDE outer-product, structural-token and bf16 patches |
+| [Multi-GPU launcher](../examples/run_p17_confidence_search_multi_gpu.sh) | Runs both policies on separate GPUs, with smoke/pilot presets, dry-run preview and worker exit codes |
 | [Tests](../tests/test_confidence_search.py) | Policy behavior, constraints, score aggregation, reproducibility and memory-counter checks |
 | [Presentation figure](figures/p17_optimization_slide.pdf) / [detailed figure](figures/p17_optimization_flow.pdf) | Model/search flow for slides or technical discussion |
 
@@ -125,6 +126,39 @@ CUDA_VISIBLE_DEVICES=0 bash examples/run_p17_confidence_search.sh \
 
 Each arm covers WT scoring, one parent gradient and at most one new candidate
 score. This checks execution and logging; it cannot demonstrate policy superiority.
+
+## H200 multi-GPU launcher
+
+The launcher resolves the checkout and `.venv` relative to its own location,
+so `/storage/frank/mosaic` works without replacing paths in the script. Run
+inside an existing GPU allocation with the cluster environment and model assets
+available:
+
+```bash
+cd /storage/frank/mosaic
+bash examples/run_p17_confidence_search_multi_gpu.sh --dry-run
+bash examples/run_p17_confidence_search_multi_gpu.sh --mode smoke --devices 0,1
+# After inspecting the smoke results:
+bash examples/run_p17_confidence_search_multi_gpu.sh
+```
+
+The default pilot runs search seeds 0–3 for each policy: eight processes, one
+per GPU, width 4, up to 32 unique scored sequences, 32 gradient calls and 320
+proposals per run. These are provisional pilot budgets. Both policies keep
+proposal-model seed 0, selection seed 0, eight sampling steps, edit cap 5 and
+the full proposal loss defaults. Four search seeds are exploratory, not evidence
+of a statistically established policy advantage.
+
+GPU IDs default to the caller's `CUDA_VISIBLE_DEVICES`, or 0–7 if unset;
+`--devices` overrides this list. With fewer GPUs, jobs run in bounded batches.
+`--num-seeds N` changes the search seed count per policy. This distributes runs,
+not an individual model call, and explicitly selects the JAX CUDA backend.
+Patches run once before workers start. A fresh batch directory holds each run's
+outputs, individual `.log` files, `patches.log`, `commands.sh` and `status.tsv`.
+The launcher waits for all runs and exits nonzero if any fail. `--dry-run` only
+prints the plan; it does not patch dependencies, create outputs or load models.
+The launcher has been checked without real model execution; H200 fit and
+performance still require the smoke run.
 
 ## Deferred decisions and reference map
 
