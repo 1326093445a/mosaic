@@ -94,12 +94,30 @@ if (( ! DRY_RUN )); then
     [[ -f "$REPO_ROOT/P17_JN1.pdb" ]] || die "Missing P17_JN1.pdb"
     mkdir -p "$(dirname "$OUTPUT_DIR")"
     mkdir "$OUTPUT_DIR"
+    mkdir "$OUTPUT_DIR/logs" "$OUTPUT_DIR/tables" "$OUTPUT_DIR/runs"
+    cat > "$OUTPUT_DIR/README.md" <<'EOF'
+# P17 search batch
+
+- `runs/independent/seed_N/` and `runs/population/seed_N/`: complete per-run results.
+- Each run has a README, config/summary JSON, tables, logs, structures,
+  confidence arrays, and a best-structure folder.
+- `logs/independent_seedN.log` / `logs/population_seedN.log`: worker console logs.
+- `logs/patches.log`: dependency preparation.
+- `tables/status.tsv`: worker GPU, PID and exit code (0 means success).
+- `commands.sh`: exact launch commands; paths are specific to this batch.
+
+Inspect each run's `best/` for the winning structures, `tables/candidates.csv`
+for ranking, and `tables/predictions.csv` for per-seed scores and file paths.
+A failed run may have completed prediction files but no final summary.
+This batch does not perform held-out rescoring or aggregate statistical analysis.
+EOF
+    printf '#!/usr/bin/env bash\ncd %q\n' "$REPO_ROOT" > "$OUTPUT_DIR/commands.sh"
     # Apply shared dependency patches serially, before any workers start.
     for patch in "${PATCHES[@]}"; do
-        "$PYTHON" "$patch" >> "$OUTPUT_DIR/patches.log" 2>&1 \
-            || die "Patch failed: $patch; see $OUTPUT_DIR/patches.log"
+        "$PYTHON" "$patch" >> "$OUTPUT_DIR/logs/patches.log" 2>&1 \
+            || die "Patch failed: $patch; see $OUTPUT_DIR/logs/patches.log"
     done
-    printf 'run\tgpu\tpid\texit_code\n' > "$OUTPUT_DIR/status.tsv"
+    printf 'run\tgpu\tpid\texit_code\n' > "$OUTPUT_DIR/tables/status.tsv"
 else
     echo "Dry run: patches would run once before workers: ${PATCHES[*]}"
 fi
@@ -121,7 +139,7 @@ wait_batch() {
         code=0
         wait "${PIDS[$index]}" || code=$?
         printf '%s\t%s\t%s\t%s\n' "${RUN_NAMES[$index]}" "${RUN_GPUS[$index]}" \
-            "${PIDS[$index]}" "$code" >> "$OUTPUT_DIR/status.tsv"
+            "${PIDS[$index]}" "$code" >> "$OUTPUT_DIR/tables/status.tsv"
         echo "Finished ${RUN_NAMES[$index]}: exit $code"
         if (( code != 0 )); then FAILED=1; fi
     done
@@ -136,14 +154,14 @@ for policy in independent population; do
         cmd=(env "CUDA_VISIBLE_DEVICES=$device" PYTHONUNBUFFERED=1 JAX_PLATFORMS=cuda
             "$PYTHON" examples/p17_confidence_search.py
             --policy "$policy" --seed "$seed" "${COMMON_ARGS[@]}"
-            --output-dir "$OUTPUT_DIR/$name")
+            --output-dir "$OUTPUT_DIR/runs/$policy/seed_$seed")
         printf -v command_line '%q ' "${cmd[@]}"
-        printf -v log_path '%q' "$OUTPUT_DIR/$name.log"
+        printf -v log_path '%q' "$OUTPUT_DIR/logs/$name.log"
         if (( DRY_RUN )); then
             echo "$command_line > $log_path 2>&1 &"
         else
             echo "$command_line > $log_path 2>&1 &" >> "$OUTPUT_DIR/commands.sh"
-            "${cmd[@]}" > "$OUTPUT_DIR/$name.log" 2>&1 &
+            "${cmd[@]}" > "$OUTPUT_DIR/logs/$name.log" 2>&1 &
             PIDS+=("$!"); RUN_NAMES+=("$name"); RUN_GPUS+=("$device")
             echo "Started $name on GPU $device (PID $!)"
         fi
@@ -161,6 +179,6 @@ done
 if (( ! DRY_RUN )); then
     echo 'wait' >> "$OUTPUT_DIR/commands.sh"
     wait_batch
-    echo "Batch complete. Worker exit codes: $OUTPUT_DIR/status.tsv"
+    echo "Batch complete. Worker exit codes: $OUTPUT_DIR/tables/status.tsv"
 fi
 exit "$FAILED"

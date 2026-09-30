@@ -558,3 +558,400 @@ def test_memory_logging_failure_does_not_replace_model_error(runner, monkeypatch
     with pytest.raises(RuntimeError, match="original model failure"):
         with runner.record_memory_call(broken_log, "gradient", np.array([0])):
             raise RuntimeError("original model failure")
+
+
+@pytest.fixture
+def export_prediction():
+    from mosaic.losses.structure_prediction import StructureModelOutput
+
+    coords = np.arange(4 * 37 * 3, dtype=np.float32).reshape(4, 37, 3) / 10
+    mask = np.zeros((4, 37), dtype=np.float32)
+    mask[:, :3] = 1
+    mask[1, 32] = 1  # ARG CZ: export includes side chains, not just CA atoms.
+    return StructureModelOutput(
+        distogram_logits=np.zeros((4, 4, 2)),
+        distogram_bins=np.array([1.0, 2.0]),
+        plddt=np.array([0.7, 0.8, 0.9, 0.6]),
+        pae=np.arange(16, dtype=np.float32).reshape(4, 4),
+        pae_logits=np.zeros((4, 4, 2)),
+        pae_bins=np.array([1.0, 2.0]),
+        structure_coordinates=coords.reshape(-1, 3),
+        backbone_coordinates=coords[:, [0, 1, 2, 4]],
+        full_sequence=np.eye(20)[[0, 1, 7, 2]],  # AR + GN in mosaic ordering.
+        asym_id=np.array([0, 0, 1, 1]),
+        residue_idx=np.array([1, 2, 1, 2]),
+        atom37_coords=coords,
+        atom37_mask=mask,
+    )
+
+
+def test_exact_scoring_structures_and_confidence_are_exported(
+    runner, export_prediction, tmp_path
+):
+    import csv
+    import equinox as eqx
+    import gemmi
+    import jax
+
+    # Exercise the JIT boundary used in the real runner without loading weights.
+    compact = eqx.filter_jit(runner.compact_prediction)(export_prediction)
+    output = jax.tree.map(np.asarray, compact)
+    assert output.pae_logits is None and output.distogram_logits is None
+    artifacts = runner.SearchOutputs(tmp_path)
+    assert artifacts.candidate_id([0, 1]) == 0
+    assert artifacts.candidate_id([0, 1]) == 0
+    assert artifacts.candidate_id([0, 2]) == 1
+    metrics = runner.confidence_metrics(
+        output.pae, output.backbone_coordinates[:, 1], 2, 12.0, 12.0
+    ) | {"iptm": 0.8}
+    for seed in [3, 9]:
+        row = artifacts.save_prediction(0, seed, "AR", "GN", output, metrics)
+        st = gemmi.read_structure(str(tmp_path / row["structure_file"]))
+        assert [chain.name for chain in st[0]] == ["A", "B"]
+        cif = gemmi.read_structure(str(tmp_path / row["cif_file"]))
+        assert [chain.name for chain in cif[0]] == ["A", "B"]
+        np.testing.assert_allclose(
+            cif[0]["A"][1]["CZ"][0].pos.tolist(),
+            output.atom37_coords[1, 32],
+            atol=0.001,
+        )
+        assert [[res.name for res in chain] for chain in st[0]] == [
+            ["ALA", "ARG"],
+            ["GLY", "ASN"],
+        ]
+        assert [res.seqid.num for res in st[0]["B"]] == [1, 2]
+        assert st[0]["A"][1]["CZ"][0].b_iso == pytest.approx(80.0)
+        np.testing.assert_allclose(
+            st[0]["A"][1]["CZ"][0].pos.tolist(), output.atom37_coords[1, 32], atol=0.001
+        )
+        with np.load(tmp_path / row["confidence_file"]) as arrays:
+            np.testing.assert_array_equal(arrays["pae"], output.pae)
+            np.testing.assert_array_equal(arrays["atom37_coords"], output.atom37_coords)
+            assert arrays["sequence"].item() == "ARGN"
+    rows = list(csv.DictReader((tmp_path / "tables/predictions.csv").open()))
+    assert [r["selection_seed"] for r in rows] == ["3", "9"]
+    assert all(float(r["ipsae_min"]) == metrics["ipsae_min"] for r in rows)
+    assert all(r["binder_chain"] == "A" and r["target_chain"] == "B" for r in rows)
+    assert artifacts.copy_best(0, [3, 9]) == [
+        "best/seed_3.pdb",
+        "best/seed_3.cif",
+        "best/seed_9.pdb",
+        "best/seed_9.cif",
+    ]
+    assert (tmp_path / "best/seed_3.pdb").read_bytes() == (
+        tmp_path / rows[0]["structure_file"]
+    ).read_bytes()
+    with pytest.raises(FileExistsError):
+        artifacts.save_prediction(0, 3, "AR", "GN", output, metrics)
+
+
+@pytest.mark.parametrize("failure", ["sequence", "nonfinite", "ca_mismatch"])
+def test_export_rejects_misidentified_or_invalid_structures(
+    runner, export_prediction, tmp_path, failure
+):
+    import equinox as eqx
+
+    output = export_prediction
+    binder = "AR"
+    if failure == "sequence":
+        binder = "AA"
+    elif failure == "nonfinite":
+        output = eqx.tree_at(lambda p: p.plddt, output, np.full(4, np.nan))
+    else:
+        output = eqx.tree_at(
+            lambda p: p.backbone_coordinates, output, output.backbone_coordinates + 1
+        )
+    artifacts = runner.SearchOutputs(tmp_path)
+    with pytest.raises(ValueError):
+        artifacts.save_prediction(0, 0, binder, "GN", output, {"iptm": 0.8})
+    assert not (tmp_path / "tables/predictions.csv").exists()
+    assert not list((tmp_path / "structures").rglob("*.pdb"))
+
+
+def test_runner_writes_complete_layout_without_extra_predictions(
+    runner, export_prediction, tmp_path, monkeypatch
+):
+    import csv
+    import json
+    import equinox as eqx
+    import jax.numpy as jnp
+    import mosaic.models.opendde as opendde_module
+    import mosaic.losses.ablang2 as ablang_module
+    import p17_hallucination_search as original
+
+    class ToyModel(eqx.Module):
+        output: object
+
+        def binder_features(self, *args, **kwargs):
+            return None, None
+
+        def model_output(self, *, PSSM, **kwargs):
+            return eqx.tree_at(
+                lambda p: p.full_sequence,
+                self.output,
+                jnp.concatenate([PSSM, jnp.asarray(self.output.full_sequence[2:])]),
+            )
+
+    def toy_loss(sequence, *, key):
+        return -jnp.sum(sequence * jnp.arange(20)), {}
+
+    monkeypatch.setattr(
+        opendde_module, "OpenDDEModelAbag", lambda: ToyModel(export_prediction)
+    )
+    monkeypatch.setattr(ablang_module, "load_ablang2", lambda: (None, None))
+    monkeypatch.setattr(original, "load_structure", lambda: (None, "AR", "GN"))
+    monkeypatch.setattr(original, "CDR_RESIDUE_INDICES_1IDX", [1, 2])
+    monkeypatch.setattr(original, "HOTSPOT_TARGET_RESIDUE_INDICES_1IDX", [1])
+    monkeypatch.setattr(
+        original, "reference_binder_target_ca_distances", lambda _: np.zeros((2, 2))
+    )
+    monkeypatch.setattr(
+        original,
+        "reference_binder_target_ca",
+        lambda _: (np.zeros((2, 3)), np.zeros((2, 3))),
+    )
+    monkeypatch.setattr(
+        original, "build_composite_losses", lambda **kw: (toy_loss, None)
+    )
+    out = tmp_path / "run"
+    runner.main(
+        [
+            "--policy",
+            "population",
+            "--output-dir",
+            str(out),
+            "--width",
+            "2",
+            "--max-score-calls",
+            "2",
+            "--max-gradient-calls",
+            "1",
+            "--max-proposals",
+            "2",
+            "--selection-seeds",
+            "0",
+            "1",
+        ]
+    )
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["full_prediction_calls"] == 4
+    assert summary["full_gradient_calls"] == 1
+    assert len(list((out / "structures").rglob("*.pdb"))) == 4
+    predictions = list(csv.DictReader((out / "tables/predictions.csv").open()))
+    candidates = list(csv.DictReader((out / "tables/candidates.csv").open()))
+    assert len(predictions) == 4 and len(candidates) == 2
+    assert all(float(p["binder_pose_rmsd_A"]) >= 0 for p in predictions)
+    assert len(list((out / "structures").rglob("*.cif"))) == 4
+    for candidate in candidates:
+        matching = [p for p in predictions if p["candidate_id"] == candidate["id"]]
+        assert len(matching) == 2
+        assert all(p["binder_sequence"] == candidate["sequence"] for p in matching)
+        assert float(candidate["score"]) == pytest.approx(
+            np.mean([float(p["ipsae_min"]) for p in matching])
+        )
+    memory = [
+        json.loads(line)
+        for line in (out / "logs/memory.jsonl").read_text().splitlines()
+    ]
+    assert sum(e["event"] == "confidence" for e in memory) == 4
+    assert len(summary["best_structure_files"]) == 4
+    assert all((out / path).exists() for path in summary["best_structure_files"])
+    assert (out / "logs/events.jsonl").exists() and (out / "README.md").exists()
+
+
+def test_pose_rmsd_removes_global_motion_but_preserves_binder_displacement(runner):
+    from p17_search_outputs import pose_metrics
+
+    binder = np.array([[3.0, 1.0, 0.0], [4.0, 0.0, 1.0], [3.0, 0.0, 2.0]])
+    target = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    )
+    rotation = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    prediction = np.concatenate([binder, target]) @ rotation + np.array([7.0, 8.0, 9.0])
+    metrics = pose_metrics(prediction, binder, target)
+    assert all(v == pytest.approx(0.0, abs=1e-10) for v in metrics.values())
+    prediction[:3] += np.array([0.0, 5.0, 0.0])
+    metrics = pose_metrics(prediction, binder, target)
+    assert metrics["binder_pose_rmsd_A"] == pytest.approx(5.0)
+    assert metrics["binder_internal_rmsd_A"] == pytest.approx(0.0, abs=1e-10)
+    assert metrics["target_aligned_rmsd_A"] == pytest.approx(0.0, abs=1e-10)
+    with pytest.raises(ValueError):
+        pose_metrics(prediction[:-1], binder, target)
+
+
+def test_winner_loader_deduplicates_and_preserves_source_ids(runner, tmp_path):
+    import json
+    import tarfile
+    from p17_rescore_winners import load_candidates
+
+    batch = tmp_path / "batch"
+    config = dict(
+        binder_sequence="AR",
+        target_sequence="GN",
+        checkpoint="opendde_abag.pt",
+        recycling_steps=4,
+        designable_positions_0idx=[0],
+        config={"edit_budget": 1},
+        arguments=dict(
+            sampling_steps=8, pae_cutoff=12.0, distance_cutoff=12.0, selection_seeds=[0]
+        ),
+    )
+    for policy in ["independent", "population"]:
+        directory = batch / "runs" / policy / "seed_0"
+        directory.mkdir(parents=True)
+        (directory / "config.json").write_text(json.dumps(config))
+        (directory / "summary.json").write_text(
+            json.dumps(dict(best_sequence="VR", best_id=7, best_score=0.2))
+        )
+    candidates, links, _ = load_candidates(batch)
+    assert [c["sequence"] for c in candidates] == ["AR", "VR"]
+    assert [r["candidate_id"] for r in links] == [1, 1]
+    assert all(r["source_candidate_id"] == 7 for r in links)
+    archive = tmp_path / "batch.tar.gz"
+    with tarfile.open(archive, "w:gz") as f:
+        f.add(batch, arcname="batch")
+    assert load_candidates(archive)[0] == candidates
+    (directory / "summary.json").write_text(
+        json.dumps(dict(best_sequence="VA", best_id=7, best_score=0.2))
+    )
+    with pytest.raises(ValueError, match="constraints"):
+        load_candidates(batch)
+
+
+def test_winner_rescoring_exports_scored_pose_without_optimization(
+    runner, export_prediction, tmp_path, monkeypatch
+):
+    import csv
+    import json
+    import equinox as eqx
+    import jax.numpy as jnp
+    import mosaic.models.opendde as model_module
+    import p17_hallucination_search as original
+    import p17_rescore_winners as rescoring
+
+    class ToyModel(eqx.Module):
+        output: object
+
+        def binder_features(self, *args, **kwargs):
+            return None, None
+
+        def model_output(self, *, PSSM, **kwargs):
+            return eqx.tree_at(
+                lambda p: p.full_sequence,
+                self.output,
+                jnp.concatenate([PSSM, jnp.asarray(self.output.full_sequence[2:])]),
+            )
+
+    baseline = dict(
+        binder_sequence="AR",
+        target_sequence="GN",
+        recycling_steps=4,
+        checkpoint="opendde_abag.pt",
+        arguments=dict(
+            sampling_steps=8, selection_seeds=[0], pae_cutoff=12.0, distance_cutoff=12.0
+        ),
+    )
+    candidates = [
+        dict(candidate_id=i, sequence=s, is_wt=i == 0)
+        for i, s in enumerate(["AR", "VR"])
+    ]
+    links = [
+        dict(
+            candidate_id=1,
+            source_run="population_seed0",
+            source_candidate_id=7,
+            original_score=0.2,
+        )
+    ]
+    monkeypatch.setattr(
+        rescoring, "load_candidates", lambda _: (candidates, links, baseline)
+    )
+    monkeypatch.setattr(
+        model_module, "OpenDDEModelAbag", lambda: ToyModel(export_prediction)
+    )
+    monkeypatch.setattr(original, "load_structure", lambda: (None, "AR", "GN"))
+    ca = export_prediction.backbone_coordinates[:, 1]
+    monkeypatch.setattr(
+        original, "reference_binder_target_ca", lambda _: (ca[:2], ca[2:])
+    )
+    reference = tmp_path / "ref.pdb"
+    reference.write_text("HEADER    TEST\n")
+    monkeypatch.setattr(original, "COMPLEX_PDB", reference)
+    out = tmp_path / "rescore"
+    rescoring.main(
+        ["--input", str(tmp_path), "--output-dir", str(out), "--seeds", "0", "1"]
+    )
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["prediction_calls"] == 4
+    assert len(list((out / "structures").rglob("*.cif"))) == 4
+    rows = list(csv.DictReader((out / "tables/predictions.csv").open()))
+    assert len(rows) == 4
+    assert all(
+        float(row["binder_pose_rmsd_A"]) == pytest.approx(0.0, abs=1e-6) for row in rows
+    )
+    assert all((out / row["cif_file"]).exists() for row in rows)
+    assert (out / "reference.pdb").read_bytes() == reference.read_bytes()
+
+
+def test_rescore_shards_cover_each_candidate_once_and_keep_ids(runner):
+    from p17_rescore_winners import select_shard
+
+    candidates = [dict(candidate_id=i, sequence=str(i)) for i in range(9)]
+    shards = [select_shard(candidates, 8, i) for i in range(8)]
+    assert [r["candidate_id"] for r in shards[0]] == [0, 8]
+    assert sorted(r["candidate_id"] for shard in shards for r in shard) == list(
+        range(9)
+    )
+    assert select_shard(candidates, 10, 9) == []
+    for count, index in [(0, 0), (8, -1), (8, 8)]:
+        with pytest.raises(ValueError):
+            select_shard(candidates, count, index)
+
+
+def test_merge_pose_shards_rewrites_artifact_paths_and_checks_completion(
+    runner, tmp_path
+):
+    import csv
+    import json
+    from p17_rescore_winners import merge_shard_tables
+
+    for i in range(2):
+        directory = tmp_path / f"shard_{i}"
+        (directory / "tables").mkdir(parents=True)
+        row = dict(
+            candidate_id=i,
+            selection_seed=0,
+            structure_file="seed_0.pdb",
+            cif_file="seed_0.cif",
+            confidence_file="seed_0.npz",
+        )
+        for field in ("structure_file", "cif_file", "confidence_file"):
+            (directory / row[field]).touch()
+        tables = {
+            "predictions.csv": [row],
+            "candidates.csv": [dict(candidate_id=i, sequence=f"seq{i}")],
+            "source_runs.csv": [dict(candidate_id=i, source_run=f"run{i}")],
+        }
+        for name, rows in tables.items():
+            with (directory / "tables" / name).open("w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=list(rows[0]))
+                writer.writeheader()
+                writer.writerows(rows)
+        (directory / "summary.json").write_text(
+            json.dumps(dict(completed=True, sequences=1, prediction_calls=1))
+        )
+    missing = tmp_path / "shard_1/seed_0.cif"
+    missing.unlink()
+    with pytest.raises(ValueError, match="missing prediction artifact"):
+        merge_shard_tables(tmp_path, 2)
+    assert not (tmp_path / "tables").exists()
+    missing.touch()
+    merge_shard_tables(tmp_path, 2)
+    rows = list(csv.DictReader((tmp_path / "tables/predictions.csv").open()))
+    assert [row["candidate_id"] for row in rows] == ["0", "1"]
+    assert [row["cif_file"] for row in rows] == [
+        "shard_0/seed_0.cif",
+        "shard_1/seed_0.cif",
+    ]
+    assert all((tmp_path / row["confidence_file"]).exists() for row in rows)
+    assert json.loads((tmp_path / "summary.json").read_text())["prediction_calls"] == 2

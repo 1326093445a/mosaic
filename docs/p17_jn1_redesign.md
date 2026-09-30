@@ -1360,6 +1360,74 @@ matched-compute pilot. Both arms must use the same proposal path and weights.
 
 ---
 
+## 15. Scored structure export and organized outputs (2026-09-29)
+
+The confidence runner now saves every scored candidate/selection-seed prediction
+as a protein-heavy-atom PDB, plus compressed PAE/pLDDT and coordinate arrays.
+It retains the canonical atom37 view from the exact forward used for scoring;
+there is no extra refold. Logit tensors are pruned before host transfer.
+Sequence identity, chain separation, finite values and agreement between
+exported CA atoms and scoring coordinates are checked before indexing files.
+
+New runs use output layout version 2: `tables/candidates.csv` and
+`tables/predictions.csv`, `logs/events.jsonl` and `logs/memory.jsonl`,
+`structures/candidate_NNNNN/seed_N.pdb`, `confidence/candidate_NNNNN/seed_N.npz`,
+and `best/` copies at successful completion. Config and summary JSON remain at
+the run root. The prediction CSV maps candidate IDs, sequences, selection seeds,
+chain identities, scores and relative paths. Candidate 0 is WT; rejected
+candidates are saved too. Completed predictions survive later evaluation errors.
+
+The multi-GPU launcher groups runs under `runs/<policy>/seed_N/`, batch console
+logs under `logs/`, and worker status under `tables/status.tsv`. All paths resolve
+from the checkout, including `/storage/frank/mosaic` on the H200 node. Each batch
+and run includes a README. Existing result folders are not migrated.
+
+See [current output layout and launch commands](p17_status_and_next_steps.md).
+`examples/p17_search_outputs.py` owns serialization; the backend-independent
+search harness and objectives are unchanged. Export adds host/disk overhead to
+reported scoring time but no extra prediction calls. Confidence archives contain
+raw mean-PAE matrices, not the large PAE logits. Automatic resume, held-out
+rescoring and batch statistical aggregation remain unimplemented.
+
+Validation: 43 confidence-search tests passed, one GPU-counter test skipped on
+CPU. This includes JIT payload pruning, real Gemmi PDB round trips with side-chain
+coordinates and pLDDT, invalid export rejection, and a toy end-to-end runner
+checking ID/sequence/score mapping and unchanged prediction counts. The real-model
+H200 smoke run is still required.
+
+---
+
+## 16. Pose RMSD diagnostics and CIF winner review (2026-09-29)
+
+The RMSD proposal loss does not gate ipSAE retention. Scored predictions now save
+CIF alongside PDB, plus target-aligned binder pose RMSD, target fit RMSD and
+independently aligned binder RMSD in `tables/predictions.csv`. The loss and
+retention policies are unchanged. Reference target alignment preserves the
+binder displacement needed to evaluate binding pose.
+
+`examples/run_p17_rescore_winners.sh` wraps a forward-only runner that reads a
+completed batch directory or archive, deduplicates WT/winner sequences, preserves
+source-run IDs and exports CIF/PDB/NPZ plus per-seed confidence and RMSD. The
+completed pilot contains nine distinct sequences; seeds 0, 1, 2 require 27
+predictions. Reference chain labels and the reference PDB hash are saved. These
+are new predictions of saved sequences, not recovered original coordinates.
+See [pose-review commands and caveats](p17_status_and_next_steps.md).
+
+The combined `run_p17_pose_validation.sh` launcher now distributes candidates
+across eight GPUs by default (respecting `CUDA_VISIBLE_DEVICES`). It runs the
+27 validation predictions first, then nine seed-0 repeats in fresh processes on
+the same candidate-to-GPU assignments. It combines per-worker CSVs into stage
+summaries and preserves links to CIF/PDB/NPZ files. CPU checks cover disjoint
+assignments and path rewriting; dummy-worker checks cover parallel scheduling,
+stage barriers and failure handling. The updated suite passes 48 tests with one
+GPU-memory test skipped. This change does not launch cluster jobs.
+
+Validation: 46 tests passed, one GPU-memory test skipped on CPU. New checks cover
+rigid-body invariance, binder displacement, CIF round trips, source-ID mapping
+and a toy rescoring workflow. Real-model rescoring is pending on the cluster.
+
+---
+
 ## Appendix: file map
 
 | Path | Purpose |
@@ -1367,6 +1435,8 @@ matched-compute pilot. Both arms must use the same proposal path and weights.
 | `examples/p17_hallucination_search.py` | Main design pipeline |
 | `src/mosaic/search.py` | Shared confidence-driven independent/population harness |
 | `examples/p17_confidence_search.py` | P17 adapter and reproducible event logging |
+| `examples/p17_search_outputs.py` | Scored PDB/confidence export and output index |
+| `examples/run_p17_confidence_search_multi_gpu.sh` | Portable multi-GPU smoke/pilot launcher |
 | `examples/run_p17_confidence_search.sh` | New harness launcher with all three OpenDDE patches |
 | `tests/test_confidence_search.py` | CPU policy and scoring checks |
 | `examples/p17_hallucination_mcmc_with_full_opendde_rescoring.py` | Search + full-path rescoring |

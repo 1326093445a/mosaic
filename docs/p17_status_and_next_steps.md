@@ -1,6 +1,6 @@
 # P17 optimization: status and next steps
 
-Updated **2026-09-23**. Start here for the current handoff; the
+Updated **2026-09-29**. Start here for the current handoff; the
 [full project record](p17_jn1_redesign.md) retains the biology, infrastructure,
 literature discussion, and Claude/Codex reviews.
 
@@ -59,8 +59,9 @@ of a published algorithm. Equal call ceilings do not imply equal GPU time.
 | [Tests](../tests/test_confidence_search.py) | Policy behavior, constraints, score aggregation, reproducibility and memory-counter checks |
 | [Presentation figure](figures/p17_optimization_slide.pdf) / [detailed figure](figures/p17_optimization_flow.pdf) | Model/search flow for slides or technical discussion |
 
-Runs write `config.json`, `events.jsonl`, `memory.jsonl`, `candidates.csv`, and
-`summary.json`. Search seeds and model/scoring seeds are separate. Repeated
+Runs write `config.json`, `summary.json`, `logs/events.jsonl`,
+`logs/memory.jsonl`, `tables/candidates.csv` and `tables/predictions.csv`,
+plus PDB structures and compressed confidence arrays. See the layout below. Search seeds and model/scoring seeds are separate. Repeated
 sequences reuse evaluations under the fixed model-seed configuration.
 The previous MCMC optimizer and its runners remain separate. The existing shared
 loss builder accepts optional confidence terms without changing old callers.
@@ -74,7 +75,7 @@ pTM is not an additional term. The coordinate gradient is not detached.
 
 Retention remains mean per-seed ipSAE-min. There is no RMSD retention gate.
 `proposal_loss` replaces the runner's old `cheap_loss` output label; per-term
-proposal diagnostics are logged in `events.jsonl`. The summary separately counts
+proposal diagnostics are logged in `logs/events.jsonl`. The summary separately counts
 full-gradient calls and standalone confidence predictions; each full-gradient
 call includes a full forward and backward pass.
 
@@ -154,11 +155,149 @@ GPU IDs default to the caller's `CUDA_VISIBLE_DEVICES`, or 0–7 if unset;
 `--num-seeds N` changes the search seed count per policy. This distributes runs,
 not an individual model call, and explicitly selects the JAX CUDA backend.
 Patches run once before workers start. A fresh batch directory holds each run's
-outputs, individual `.log` files, `patches.log`, `commands.sh` and `status.tsv`.
+outputs under `runs/<policy>/seed_N/`, console logs under `logs/`,
+`logs/patches.log`, `commands.sh` and `tables/status.tsv`.
 The launcher waits for all runs and exits nonzero if any fail. `--dry-run` only
 prints the plan; it does not patch dependencies, create outputs or load models.
 The launcher has been checked without real model execution; H200 fit and
 performance still require the smoke run.
+
+## Saved structures and output layout (version 2)
+
+Every unique candidate scored by full OpenDDE, including WT and rejected
+candidates, saves one protein-heavy-atom PDB per selection seed. These are the
+same predictions used for scoring; export does not rerun the model. Large
+logits are excluded from the host transfer. The saved NPZ contains mean PAE,
+pLDDT (0–1), CA and atom37 coordinates, atom masks, sequence, chain IDs and
+residue numbering. PDB B-factors contain pLDDT on the 0–100 scale. PDB coordinates
+use standard text precision; NPZ retains numeric coordinate arrays.
+
+```text
+batch/
+├── README.md
+├── commands.sh
+├── logs/                        # patch and per-worker console logs
+├── tables/status.tsv            # worker GPU, PID and exit code
+└── runs/
+    ├── independent/seed_0/      # also seed_1, seed_2, seed_3
+    │   ├── README.md
+    │   ├── config.json
+    │   ├── summary.json
+    │   ├── tables/
+    │   │   ├── candidates.csv   # rank, sequence, aggregate score, structure folder
+    │   │   └── predictions.csv  # per-seed metrics, chain identities, file paths
+    │   ├── logs/               # events.jsonl and memory.jsonl
+    │   ├── structures/candidate_00000/seed_0.pdb
+    │   ├── confidence/candidate_00000/seed_0.npz
+    │   └── best/               # winning candidate PDBs, one per selection seed
+    └── population/seed_0/       # same layout for every population run
+```
+
+Candidate 0 is WT. Candidate IDs match events and both CSVs. `predictions.csv`
+paths are relative to the run directory; its seed column is the structural
+selection seed, distinct from the search seed in the enclosing directory.
+All scored candidates get structure/confidence folders, not only candidate 0.
+The `best/` copies and `summary.json` are written after successful completion.
+Prediction files and their index are written incrementally; an interrupted run
+can therefore have usable predictions without a final summary or candidates CSV.
+
+This changes the former flat output paths for new runs; existing result folders
+are not migrated. The search objectives and budgets are unchanged. Export adds
+host transfer and disk I/O, included in scoring time, but no extra model calls.
+No gradient-path structures or held-out predictions are generated.
+
+Validation: **43 tests passed, one GPU-memory test skipped on CPU** in
+`tests/test_confidence_search.py`. New checks cover PDB round trips (chain,
+residue, side-chain coordinates and pLDDT), NPZ contents, JIT payload pruning,
+rejection of mismatched/nonfinite predictions, and an entire toy runner with
+both scoring seeds and matching prediction counts. These tests do not establish
+real-model H200 memory fit or performance.
+
+## Pose review of the completed pilot
+
+RMSD currently guides proposals; it is not a condition for retention. The loss
+aligns the predicted target CA atoms to reference target CA atoms, then measures
+binder CA displacement using that same transform. Independently aligning the
+binder would hide rigid-body pose drift. A low binder-internal RMSD therefore
+does not establish a correct binding pose.
+
+Exports now include mmCIF alongside PDB, and `tables/predictions.csv` reports
+`binder_pose_rmsd_A`, `target_aligned_rmsd_A` and `binder_internal_rmsd_A` on the
+exact scored forward prediction. These remain diagnostics; selection is unchanged.
+The reference is `P17_JN1.pdb`, binder chain B and target chain T. Prediction
+chain names are recorded in the CSV and may differ from reference chain names.
+
+The downloaded September 29 pilot completed all eight runs but predates structure
+export. Its sequences are preserved. To generate new structures for WT and all
+eight distinct winners, sync the updated scripts to the H200 checkout and run:
+
+```bash
+cd /storage/frank/mosaic
+CUDA_VISIBLE_DEVICES=0 bash examples/run_p17_rescore_winners.sh \
+  --input results/p17_confidence_pilot_20260929_194857_1770469 \
+  --output-dir results/p17_winner_pose_review \
+  --seeds 0 1 2
+```
+
+For both validation and repeatability in one command, distribute the sequences
+across all eight allocated GPUs:
+
+```bash
+cd /storage/frank/mosaic
+bash examples/run_p17_pose_validation.sh --devices 0,1,2,3,4,5,6,7
+```
+
+The launcher defaults to `CUDA_VISIBLE_DEVICES`, or GPUs 0–7 if unset. Use
+`--devices` to specify the allocation explicitly; `--device 0` still supports
+single-GPU execution. `--input` accepts a batch directory or archive;
+`--output-dir` overrides the fresh timestamped output root. `--dry-run` previews
+all assignments without patching dependencies or running models.
+
+Global candidate IDs are partitioned by ID modulo GPU count. For the nine
+sequences in this pilot, GPU 0 handles WT plus one winner and GPUs 1–7 each
+handle one winner. Stage 1 predicts seeds 0, 1, 2 concurrently across GPUs.
+After every worker succeeds, stage 2 repeats seed 0 in fresh processes with the
+same candidate-to-GPU assignment. Total work remains 27 + 9 = 36 predictions,
+not 36 per GPU. Each prediction must fit on its assigned GPU.
+
+Patches run once. Each stage has `shard_N/` folders for structures, confidence
+arrays, metadata and local tables. Stage-level `tables/candidates.csv`,
+`tables/source_runs.csv` and `tables/predictions.csv` combine the workers; artifact
+paths in the combined prediction CSV are relative to that stage directory.
+`logs/` contains separate worker logs, and `status.tsv` records stage, shard,
+GPU, PID and exit code. A worker failure prevents the repeat stage from starting.
+The launcher waits for all active workers before reporting a stage failure.
+
+Validation: 48 tests passed, one GPU-memory test skipped on CPU. The actual
+archive dry-run confirms the 27 + 9 split. Disposable fake-worker checks verify
+parallel execution without GPU overlap, a barrier between stages, fresh repeat
+processes, valid merged artifact paths, and failure propagation. No cluster
+predictions were launched by these checks.
+
+These stages are the next diagnostic pass, not proof of policy superiority or
+binding. Review their results before sizing additional structural seeds or a
+larger policy comparison. Two executions of seed 0 can expose a repeatability
+problem but cannot establish its full distribution or cause.
+
+For the standalone `run_p17_rescore_winners.sh` command above, add `--dry-run`
+to preview without patches, model loading or output writes. `--input` also accepts the downloaded `.tar.gz` archive directly. Default sampling
+steps and cutoffs come from the saved run configuration. This batch is 27
+forward predictions on one GPU; it does not run gradients, optimization or
+AbLang2 inference. Seed 0 revisits the original selection seed; 1 and 2 were not
+used for selection in this pilot. This does not test repeated seed 0 across
+fresh processes; use a second fresh output directory for that check.
+
+Outputs include `reference.pdb`, config and summary JSON,
+`tables/candidates.csv`, `tables/source_runs.csv`, `tables/predictions.csv`,
+`structures/` (CIF/PDB), `confidence/` (NPZ), and `logs/memory.jsonl`.
+Candidate IDs are local to this new batch; `source_runs.csv` maps them back to
+original runs and candidate IDs. Predictions are saved incrementally. They are
+new predictions, not recovery of the original unsaved poses, and may differ.
+
+Validation: 46 confidence-search tests passed, one GPU-memory test skipped on CPU.
+Checks include rigid-body alignment invariance, preserved binder displacement,
+CIF round trips, deduplicated winner loading from directories/archives, and a toy
+end-to-end rescoring run. No real-model rescoring has been launched locally.
 
 ## Deferred decisions and reference map
 
@@ -168,13 +307,13 @@ scaling the pilot. A separate full-versus-distogram ablation can follow; do not
 change the proposal objective between policy arms. Germinal-inspired gradient
 balancing, an explicit pose-retention condition, alternative ranking metrics,
 surrogate/BO evaluation allocation, batching, and policy 3 remain follow-ups.
-Raw PAE persistence, automatic resume and a held-out rescoring runner are not
-implemented in this version.
+Automatic resume remains unimplemented. Winner rescoring now supports additional
+structural seeds, and raw mean-PAE matrices are saved with each prediction.
 
 The [full handoff](p17_jn1_redesign.md) contains the **26-paper index plus a pinned
 BindCraft2 source reference** in §8.13; policy rationale in §10; Claude's response
 in §11; initial implementation in §12; memory instrumentation in §13; and the
-latest full-gradient integration and logging fixes in §14.
+full-gradient integration and logging fixes in §14; structure export in §15.
 The [literature survey](protein_search_policy_review.md) records broader context
 and limits of the paper review. The main influences remain EvoProtGrad/PPDE,
 AdaLead, ME-GIDE, PEX, LaMBO-2, BADASS and Germinal; their ideas are adaptations

@@ -13,7 +13,7 @@ call counts and timings, including compilation, are recorded; equal ceilings
 alone do not establish matched compute. No model weights are trained.
 
 Per-device memory is sampled around every gradient and confidence call and
-written to memory.jsonl (see device_memory_stats()). `peak_bytes_in_use` is a
+written to logs/memory.jsonl (see device_memory_stats()). `peak_bytes_in_use` is a
 running maximum since process start, not reset per call -- see that function's
 docstring for what this does and does not tell you.
 """
@@ -33,6 +33,7 @@ import time
 import numpy as np
 
 from mosaic.search import ConfidenceScore, SearchConfig, run_gradient_search
+from p17_search_outputs import SearchOutputs, compact_prediction
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -324,8 +325,10 @@ def main(argv=None):
     epitope_idx = np.array(sorted(i - 1 for i in HOTSPOT_TARGET_RESIDUE_INDICES_1IDX))
     references = reference_binder_target_ca_distances(model)
     binder_ca, target_ca = reference_binder_target_ca(model)
+    outputs = SearchOutputs(args.output_dir, binder_ca, target_ca)
 
     metadata = dict(
+        output_layout_version=2,
         config=asdict(config),
         arguments={
             k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
@@ -380,6 +383,7 @@ def main(argv=None):
         for path in (
             "src/mosaic/search.py",
             "examples/p17_confidence_search.py",
+            "examples/p17_search_outputs.py",
             "examples/p17_hallucination_search.py",
             "examples/p17_alpha_vs_jn1_native_opendde_analysis.py",
             "src/mosaic/models/opendde.py",
@@ -521,14 +525,26 @@ def main(argv=None):
             output.pae_bins,
             pair_mask=output.asym_id[:, None] != output.asym_id[None, :],
         ).max()
-        # Return only data needed for scoring, not large model-output tensors.
-        return output.pae, output.backbone_coordinates[:, 1], iptm
+        # Keep exact scored atoms for export, without transferring large logits.
+        return compact_prediction(output), iptm
 
     def predict_sequence(sequence, seed):
         with record_memory_call(log_memory, "confidence", sequence, seed=seed):
             x = jax.nn.one_hot(jnp.asarray(sequence), len(TOKENS))
-            pae, ca, iptm = prediction(opendde, features, x, jax.random.key(seed))
-            pae, ca, iptm = np.asarray(pae), np.asarray(ca), float(iptm)
+            output, iptm = prediction(opendde, features, x, jax.random.key(seed))
+            output = jax.tree.map(np.asarray, output)
+            pae, ca, iptm = output.pae, output.backbone_coordinates[:, 1], float(iptm)
+            metrics = confidence_metrics(
+                pae, ca, len(sequence), args.pae_cutoff, args.distance_cutoff
+            )
+            outputs.save_prediction(
+                outputs.candidate_id(sequence),
+                seed,
+                "".join(TOKENS[i] for i in sequence),
+                target_seq,
+                output,
+                dict(iptm=iptm, **metrics),
+            )
         return pae, ca, iptm
 
     def confidence_fn(sequence):
@@ -550,8 +566,8 @@ def main(argv=None):
     )
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
     with (
-        (args.output_dir / "events.jsonl").open("x") as log,
-        (args.output_dir / "memory.jsonl").open("x") as memory_handle,
+        (args.output_dir / "logs/events.jsonl").open("x") as log,
+        (args.output_dir / "logs/memory.jsonl").open("x") as memory_handle,
     ):
         memory_log = memory_handle
 
@@ -562,6 +578,8 @@ def main(argv=None):
             log.write(json.dumps(event, allow_nan=False) + "\n")
             log.flush()
             if event["event"] == "evaluation":
+                if outputs.candidate_id(event["sequence"]) != event["candidate_id"]:
+                    raise RuntimeError("saved structure/candidate ID mismatch")
                 print(
                     f"evaluated {event['candidate_id']}: ipSAE={event['score']:.4f} "
                     f"edits={event['edit_count']}",
@@ -577,11 +595,18 @@ def main(argv=None):
             on_event=on_event,
         )
     active_ids = {candidate.id for candidate in result.active}
-    with (args.output_dir / "candidates.csv").open("x", newline="") as handle:
+    ranking = {
+        c.id: i + 1
+        for i, c in enumerate(sorted(result.evaluated, key=lambda c: (-c.score, c.id)))
+    }
+    with (args.output_dir / "tables/candidates.csv").open("x", newline="") as handle:
         writer = csv.DictWriter(
             handle,
             fieldnames=[
                 "id",
+                "rank",
+                "is_wt",
+                "structure_dir",
                 "sequence",
                 "edits",
                 "score",
@@ -595,6 +620,9 @@ def main(argv=None):
             writer.writerow(
                 dict(
                     id=candidate.id,
+                    rank=ranking[candidate.id],
+                    is_wt=candidate.id == 0,
+                    structure_dir=f"structures/candidate_{candidate.id:05d}",
                     sequence="".join(TOKENS[i] for i in candidate.sequence),
                     edits=int(np.count_nonzero(wt != candidate.sequence)),
                     score=candidate.score,
@@ -603,7 +631,12 @@ def main(argv=None):
                     best=candidate.id == result.best.id,
                 )
             )
+    best_structure_files = outputs.copy_best(result.best.id, args.selection_seeds)
     summary = dict(
+        output_layout_version=2,
+        best_structure_files=best_structure_files,
+        predictions_table="tables/predictions.csv",
+        candidates_table="tables/candidates.csv",
         stats=result.stats,
         stop_reason=result.stop_reason,
         best_id=result.best.id,
