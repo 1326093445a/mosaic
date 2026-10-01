@@ -10,15 +10,22 @@ literature discussion, and Claude/Codex reviews.
 repeat batch completed. Predicted confidence improved, but reference-pose
 recovery and binding have not been established.** Full confidence-aware gradients
 are implemented; optional pose-aware retention and a gated sequential experiment
-are now implemented and locally tested. Three H200 diagnostic attempts stopped:
-first at the reference geometry precision check (fixed), then at the first
-full gradient with an 82.70 GiB allocation failure, then with a reduced 51.10 GiB
-request in BF16 mode. The latest allocator counters suggest pool fragmentation.
-The shell launcher now defaults to preallocation with a 90% memory fraction;
-full-size H200 execution with these allocator settings remains unverified.
+are now implemented and locally tested. In the latest H200 run, both diagnostic
+workers completed (three gradients/eight predictions each, about 52.7 GiB peak
+JAX memory), then failed the target-fit and repeat-adjusted influence gates.
 
-The next step is a pose-measurement/guidance diagnostic, followed conditionally
-by a four-arm population comparison. The new controls and sequential launcher
+**Saved-structure review found invalid backbone geometry in all 16 predictions:**
+median adjacent-CA distances are 14–20 Å, and within-residue N–CA distances are
+13–19 Å. CIFs match the scoring arrays; independent Gemmi alignment reproduces
+the RMSDs. The anomaly also occurs in the earlier pose-validation archive and
+predates the wider BF16 change. Investigating coordinate generation/mapping and
+sampling is now the priority; increasing pose weights or starting population
+search is not justified by these outputs. See
+[§17.10](p17_jn1_redesign.md#1710-completed-diagnostics-reveal-invalid-backbone-geometry).
+
+
+After resolving predicted-backbone validity and repeatability, rerun the
+pose-measurement/guidance diagnostic before the four-arm population comparison. The new controls and sequential launcher
 are **implemented; real-model validation is pending**. See [the detailed handoff, §17](p17_jn1_redesign.md#17-completed-cluster-review-and-next-two-tests--2026-09-30).
 
 ## Goal and agreed approach
@@ -68,6 +75,7 @@ of a published algorithm. Equal call ceilings do not imply equal GPU time.
 | [Launcher](../examples/run_p17_confidence_search.sh) | Applies the existing OpenDDE outer-product, structural-token and bf16 patches |
 | [Multi-GPU launcher](../examples/run_p17_confidence_search_multi_gpu.sh) | Runs both policies on separate GPUs, with smoke/pilot presets, dry-run preview and worker exit codes |
 | [Sequential pose experiment](../examples/run_p17_pose_experiment.sh) | Diagnostics → report gate → four population arms → held-out rescoring |
+| [WT coordinate validation](../examples/run_p17_wt_validation.sh) | Three forward paths, two sampling budgets, raw/mapped backbone audit and repeats |
 | [Diagnostic checks](../examples/p17_pose_diagnostics.py) | Reference correspondence, NumPy/JAX geometry, paired gradients and feasible-proposal influence |
 | [Tests](../tests/test_confidence_search.py) | Policy behavior, constraints, score aggregation, reproducibility and memory-counter checks |
 | [Presentation figure](figures/p17_optimization_slide.pdf) / [detailed figure](figures/p17_optimization_flow.pdf) | Model/search flow for slides or technical discussion |
@@ -140,6 +148,25 @@ artifact check covered seed-0 validation/repeat artifacts, not every seed-1/2 fi
 
 ## Next moves, in order
 
+**Immediate next cluster run: WT-only coordinate validation.** The launcher is
+implemented; run it from the updated checkout:
+
+```bash
+bash examples/run_p17_wt_validation.sh --devices 0,1,2,3,4,5,6,7
+```
+
+This runs 12 independent workers (24 forward predictions): current Mosaic input,
+direct WT input through JAX, and native Torch; each at 8/64 sampling steps and
+seeds 0/1, with two repeats. Four recycles and BF16 stay fixed. It uses eight
+GPUs in the first batch and four in the second. Raw/mapped coordinates, CIFs,
+geometry CSV/JSON, logs and provenance are preserved. `--dry-run` previews the
+plan. See [§17.11](p17_jn1_redesign.md#1711-wt-only-coordinate-validation-runner-implemented-cluster-run-pending).
+Execution success and geometry validity are separate. No search follows this run.
+Full-size H200 validation remains pending; local tests and CPU abstract tracing
+of both full-size JAX paths have passed.
+
+**After coordinate validity and repeatability are resolved:**
+
 1. **Test 1: verify pose measurement and guidance influence.** Audit residue/CA
    correspondence, units and target alignment; cross-check rigid transforms and
    binder-only displacement. Compare gradients and feasible mutation-proposal
@@ -196,7 +223,8 @@ run's precision, falling back to fp32 for older archives.
 BF16 validation: **99 CPU tests passed** (one GPU-only skip, two checkpoint
 tests deselected), and **six GPU tests passed**, including a small real-checkpoint
 forward/gradient run on RTX 4090. Full-size P17 forward/backward shape tracing
-also passed. These checks do not establish that the H200 diagnostic fits memory.
+also passed. The subsequent H200 diagnostic fit memory; the saved-structure audit in §17.10
+now blocks scientific interpretation and search.
 
 See [§17.8](p17_jn1_redesign.md#178-first-gradient-oom-and-explicit-bf16-mode)
 for validation evidence and the remaining full-size memory uncertainty.

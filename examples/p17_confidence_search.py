@@ -438,6 +438,7 @@ def main(argv=None):
             "examples/p17_confidence_search.py",
             "examples/p17_search_outputs.py",
             "examples/p17_pose_diagnostics.py",
+            "examples/p17_structure_audit.py",
             "examples/p17_hallucination_search.py",
             "examples/p17_alpha_vs_jn1_native_opendde_analysis.py",
             "src/mosaic/models/opendde.py",
@@ -454,6 +455,11 @@ def main(argv=None):
             metadata["versions"][package] = version(package)
         except PackageNotFoundError:
             metadata["versions"][package] = None
+    if args.pose_diagnostic:
+        from p17_structure_audit import DISTANCE_LIMITS
+
+        metadata["predicted_backbone_distance_limits_A"] = DISTANCE_LIMITS
+        metadata["diagnostic_schema_version"] = 2
     metadata_path = args.output_dir / "config.json"
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
 
@@ -486,7 +492,7 @@ def main(argv=None):
             write_report(
                 args.output_dir,
                 dict(
-                    schema_version=1,
+                    schema_version=2,
                     passed=False,
                     checks={"reference_geometry": False},
                     error=f"{type(exc).__name__}: {exc}",
@@ -630,7 +636,7 @@ def main(argv=None):
         # Keep exact scored atoms for export, without transferring large logits.
         return compact_prediction(output), iptm
 
-    def predict_sequence(sequence, seed, *, store=None):
+    def predict_sequence(sequence, seed, *, store=None, include_geometry=False):
         store = outputs if store is None else store
         with record_memory_call(log_memory, "confidence", sequence, seed=seed):
             x = jax.nn.one_hot(jnp.asarray(sequence), len(TOKENS))
@@ -648,6 +654,16 @@ def main(argv=None):
                 output,
                 dict(iptm=iptm, **metrics),
             )
+        if include_geometry:
+            from p17_structure_audit import BACKBONE_SLOTS, backbone_geometry
+
+            geometry = backbone_geometry(
+                output.atom37_coords[:, BACKBONE_SLOTS],
+                output.atom37_mask[:, BACKBONE_SLOTS],
+                output.asym_id,
+                output.residue_idx,
+            )
+            return pae, ca, iptm, geometry
         return pae, ca, iptm
 
     retention_ceiling = None
@@ -735,9 +751,11 @@ def main(argv=None):
                         seq, gradient_eval, args.weight_pose
                     ),
                     gradient_off=lambda seq: gradient_details(seq, off_eval, 0.0),
-                    predict=predict_sequence,
+                    predict=lambda seq, seed: predict_sequence(
+                        seq, seed, include_geometry=True
+                    ),
                     repeat_predict=lambda seq, seed: predict_sequence(
-                        seq, seed, store=repeat_outputs
+                        seq, seed, store=repeat_outputs, include_geometry=True
                     ),
                     references=(binder_ca, target_ca),
                     seeds=args.selection_seeds,
@@ -754,7 +772,7 @@ def main(argv=None):
                 write_report(
                     args.output_dir,
                     dict(
-                        schema_version=1,
+                        schema_version=2,
                         passed=False,
                         checks={"completed": False},
                         error=f"{type(exc).__name__}: {exc}",

@@ -16,7 +16,7 @@ the open decisions.
 sequencing recommendation, and an infra note.**
 **Current handoff: §17 records the completed search pilot and pose-validation
 review; §17.6 describes the implemented, locally tested diagnostic-first
-workflow; §§17.7–17.9 record the diagnostic failures and fixes. §§14–16
+workflow; §§17.7–17.10 record diagnostic failures, fixes and the saved-structure audit. §§14–16
 describe gradients, exports and rescoring. Historical statements
 that the original GPU runs are pending are superseded by §17. Real-model H200
 validation of the new diagnostic/ablation controls remains pending.**
@@ -1872,6 +1872,146 @@ yet been validated with the full-size H200 diagnostic. A large immediate
 `nvidia-smi` allocation with preallocation enabled is reserved pool memory,
 not a measurement of live tensors.
 
+### 17.10 Completed diagnostics reveal invalid backbone geometry
+
+Offline review of `results/p17_pose_experiment_20261001_072622_3296093.tar.gz`
+confirmed that **both workers completed** three gradient evaluations and eight
+forward predictions. They exited nonzero because their diagnostic criteria
+failed, not because of a runtime OOM. Recorded JAX peaks were **52.69/52.65 GiB**,
+with a **125.85 GiB preallocated pool**. Search and held-out stages were blocked.
+
+| Diagnostic | Model seed 0 | Model seed 1 |
+|---|---:|---:|
+| Maximum target-fit RMSD (Å) | 16.450 | 16.774 |
+| Pose-on/off proposal TV | 0.8882 | 0.9530 |
+| Pose-on/repeat proposal TV | 0.3845 | 0.5564 |
+| Required proposal TV (three times repeat) | 1.1536 | 1.6692 |
+
+Both influence thresholds exceed TV's maximum of one. This is an unresolvable
+comparison under the current repeat-noise rule, not evidence of no pose influence.
+A single repeat pair is not a statistical estimate of the noise distribution.
+The report should distinguish repeat instability from absent influence; changing
+or clipping a threshold after seeing these results would not validate the method.
+
+**The more fundamental finding is invalid predicted backbone geometry.** Across
+all 16 saved predictions (32 chains), median adjacent-CA distances range from
+**14.12 to 19.81 Å**, and median within-residue N–CA distances from **12.87 to
+19.04 Å**. An existing native OpenDDE control has medians of approximately
+3.76/3.77 Å for adjacent CAs and 1.46 Å for N–CA; the reference is likewise normal.
+For worker 0 WT/structural seed 0, the binder/target medians are 14.17/16.40 Å
+(adjacent CA) and 17.99/18.69 Å (N–CA).
+
+All saved CIF sequences match their NPZ sequences. CIF CA coordinates match the
+scoring NPZ arrays within **5.1e-8 Å**. Independent Gemmi superposition reproduces
+the reported target and binder-internal RMSDs within **3e-14 Å**. This rules out
+CIF serialization and the RMSD reporting formula as explanations for the anomaly;
+it does not validate upstream atom indexing or coordinate generation. All 16
+reported minimum-direction ipSAE values are zero despite mean pLDDT near 0.87.
+
+The earlier `p17_pose_validation_complete.tar.gz` already contains the same
+anomaly: WT/seed-0 binder/target adjacent-CA medians 14.68/15.94 Å and N–CA medians
+17.83/17.58 Å. Its independent seed-0 repeat is similarly abnormal. This predates
+the wider BF16 mode. The native control differs in setup and is a geometry
+sanity control, not a matched numerical comparison.
+
+**Interpretation and next action:** the observed high RMSDs cannot currently be
+read as docking-pose drift of otherwise valid chains. Audit the prediction-side
+atom layout and sampler output on fixed WT before loss-weight tuning or policy
+comparison. Current NumPy/JAX agreement checks lack a predicted-backbone
+plausibility check; that is a validation gap. Sampling convergence, feature/
+coordinate mapping, and numerical repeatability remain hypotheses to isolate;
+this offline audit does not identify a root cause. Earlier confidence increases
+remain numerical observations, not established valid structural improvements.
+
+Reproducible offline evidence is saved in
+`results/p17_pose_experiment_review_072622/analyze_archive.py`, `review.json` and
+`structure_audit.csv`. No new model predictions or search runs were launched.
+
+### 17.11 WT-only coordinate validation runner (implemented; cluster run pending)
+
+Run this before another optimization experiment:
+
+```bash
+bash examples/run_p17_wt_validation.sh --devices 0,1,2,3,4,5,6,7
+```
+
+Add `--dry-run` to inspect the plan without creating an output directory or
+loading models. Paths follow the checkout, including `/storage/frank/mosaic`.
+The shell retains the successful H200 allocator defaults (preallocation enabled,
+90% pool) and respects explicit overrides. BF16 remains the default; AbLang2 is
+not needed for this coordinate check. Native workers select the CPU JAX backend
+before imports so Torch alone owns their assigned GPU.
+
+The default plan has **12 workers and 24 forward predictions**: three input/model
+paths × sampling steps 8/64 × model seeds 0/1, each repeated twice. It runs at
+most eight workers at once, in batches of eight then four. All paths use the
+same ABAG checkpoint, four recycles, one sample and no MSA or target template.
+No gradients, sequence proposals, loss-weight changes or search follow the run.
+
+| Path | What it isolates |
+|---|---|
+| `mosaic` | Current padded binder input refreshed to WT; raw sampler coordinates and the production atom37 mapping |
+| `direct` | Direct WT featurization through the same Mosaic/JAX forward implementation, bypassing binder refresh/padding |
+| `native` | Native PyTorch OpenDDE on directly featurized WT, with atom names cross-checked against its native atom array |
+
+The JAX paths use the same post-split model key; the Mosaic path also uses its
+usual geometry key. Featurizer preparation is seeded at zero. Each worker reuses
+its prepared features and resets the same prediction seed/key for the second
+call. Native predictions explicitly set OpenDDE's `inference_seed` rollout
+field as well as Torch's global RNG. Across frameworks, equal seed numbers do **not** produce equal random
+samples. Torch autocast/`skip_amp` and Mosaic's BF16 layer policy also differ.
+Atom metadata hashes and resolved native configuration expose these limitations;
+this is a controlled geometry comparison, not a bitwise parity test.
+
+Each worker saves:
+
+- `arrays/atom_metadata.npz`: token assignments, explicit atom-name encoding,
+  masks, reference positions and residue/chain metadata at the model boundary.
+- `arrays/repeat_*.npz`: raw coordinates; JAX paths additionally retain production
+  atom37 coordinates/masks, PAE and pLDDT.
+- `structures/repeat_*_raw.cif` and, for JAX paths, `*_mapped.cif`.
+- `reports/repeat_*.json`: independent name-based backbone extraction, raw and
+  mapped geometry, mapping error, and unaligned raw-coordinate repeat differences.
+- `config.json`, `reports/software.json`, `native_config.json` (native only),
+  `logs/memory.jsonl` and `summary.json`: settings, hashes, versions and status.
+
+At the batch root, `tables/geometry.csv`, `summary.json`, `status.tsv`, worker logs
+and `plan.json` summarize the controls. Exit 0 means the worker completed, while
+`geometry_passed` reports scientific quality separately. Invalid finite geometry
+is saved and does not block independent controls; an execution error still stops
+later batches and leaves a partial summary. Nonfinite arrays remain in NPZs;
+CIF export is skipped when coordinates are nonfinite.
+
+The audit uses broad, provisional angstrom limits: N–CA and CA–C 1.0–2.0,
+C–O 0.9–1.7, peptide C–N 1.0–1.8, adjacent CA 2.5–4.5. Missing/duplicate atoms
+or nonfinite active raw coordinates fail explicitly. Consecutive residues within
+one chain are checked; chain boundaries and residue gaps are not connected.
+Raw-to-atom37 **backbone** agreement is checked to 1e-4 Å. Passing these checks
+establishes neither a correct fold nor binding.
+
+The existing pose diagnostic now emits schema version 2 and requires predicted
+backbone plausibility. `repeat_noise_resolvable=false` with
+`proposal_influence=null` and `influence_status=inconclusive_repeat_variability`
+identifies a required TV threshold ≥1. The original threshold is retained, not
+clipped; influence is inconclusive rather than declared absent. The sequential
+experiment requires the new checks and cannot accept an old schema-1 report.
+
+Interpret the control matrix before choosing another experiment. Agreement of
+malformed raw and mapped coordinates points upstream of reporting. Valid raw
+backbones with a mapping disagreement point at the atom layout conversion.
+A difference between `mosaic` and `direct` implicates the refreshed input path;
+a difference between the two JAX paths collectively and `native` motivates
+examining the port/precision implementation. Improvement at 64 steps is evidence
+of budget sensitivity, not by itself proof of the only cause. Do not resume
+optimization merely because a forward pass completed.
+
+Local validation: focused CPU tests, lint and shell syntax/dry-run checks pass.
+The real native checkpoint loader and featurizer were exercised on a small
+synthetic complex on CPU. Both full-size WT JAX paths were abstractly traced at
+four recycles/eight steps/BF16: raw buffers 3215/2417 atoms and output atom37
+shape 307×37×3, with FP32 coordinates. These checks execute no full-size
+prediction; the H200 control matrix and 64-step runtime/memory remain untested.
+
 ## Appendix: file map
 
 | Path | Purpose |
@@ -1879,6 +2019,10 @@ not a measurement of live tensors.
 | `examples/p17_hallucination_search.py` | Main design pipeline |
 | `src/mosaic/search.py` | Shared confidence-driven independent/population harness |
 | `examples/p17_confidence_search.py` | P17 adapter and reproducible event logging |
+| `examples/run_p17_wt_validation.sh` | WT-only coordinate comparison on allocated GPUs |
+| `examples/p17_wt_validation.py` | Matched budgets, raw/mapped arrays, native control and repeat evidence |
+| `examples/p17_structure_audit.py` | Independent named-backbone mapping and broad geometry checks |
+| `tests/test_wt_validation.py` | Geometry, mapping, repeat-noise and control-plan regressions |
 | `examples/p17_pose_diagnostics.py` | Pose correspondence, geometry and proposal-influence checks |
 | `examples/run_p17_pose_experiment.sh` | Gated sequential diagnostic/ablation/held-out workflow |
 | `examples/p17_pose_experiment.py` | Bounded GPU workers, stage barriers and comparison summaries |

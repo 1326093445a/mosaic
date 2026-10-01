@@ -189,6 +189,8 @@ def check_gate(root):
     required = {
         "completed",
         "same_coordinate_reporting",
+        "predicted_backbone_plausible",
+        "repeat_noise_resolvable",
         "interpretable_target_fit",
         "proposal_influence",
         "paired_pose_consistent",
@@ -199,7 +201,7 @@ def check_gate(root):
         report = json.loads(path.read_text())
         checks = report.get("checks", {})
         if (
-            report.get("schema_version") != 1
+            report.get("schema_version") != 2
             or report.get("passed") is not True
             or any(checks.get(name) is not True for name in required)
             or not report.get("reference_audit", {}).get("geometry")

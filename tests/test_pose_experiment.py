@@ -66,7 +66,9 @@ def test_real_reference_pose_precision_and_gradient(modules, precision, compiled
         # complex. Target alignment must recover the imposed shift exactly.
         coords = jnp.asarray(reference).at[: len(binder), 0].add(shift)
         coords = (
-            jnp.matmul(coords, jnp.asarray(rotation), precision=jax.lax.Precision.HIGHEST)
+            jnp.matmul(
+                coords, jnp.asarray(rotation), precision=jax.lax.Precision.HIGHEST
+            )
             + 7.0
         )
         return loss_fn(
@@ -119,8 +121,9 @@ def test_reference_audit_records_insertions_and_rejects_missing_ca(modules):
     "target_fit,influence,passed",
     [(0.0, True, True), (16.0, True, False), (0.0, False, False)],
 )
+@pytest.mark.parametrize("geometry_passed", [True, False])
 def test_diagnostic_gates_target_fit_and_effective_proposals(
-    modules, tmp_path, target_fit, influence, passed
+    modules, tmp_path, target_fit, influence, passed, geometry_passed
 ):
     diag, _ = modules
     (tmp_path / "tables").mkdir()
@@ -138,7 +141,12 @@ def test_diagnostic_gates_target_fit_and_effective_proposals(
     def predict(sequence, seed):
         calls.append((tuple(sequence), seed))
         binder, target = references()
-        return np.zeros((8, 8)), np.concatenate([binder + [2.0, 0.0, 0.0], target]), 0.8
+        return (
+            np.zeros((8, 8)),
+            np.concatenate([binder + [2.0, 0.0, 0.0], target]),
+            0.8,
+            {"passed": geometry_passed},
+        )
 
     report = diag.run_diagnostic(
         root=tmp_path,
@@ -157,7 +165,8 @@ def test_diagnostic_gates_target_fit_and_effective_proposals(
         min_proposal_tv=1e-4,
         repeat_factor=3.0,
     )
-    assert report["passed"] is passed
+    assert report["passed"] is (passed and geometry_passed)
+    assert report["checks"]["predicted_backbone_plausible"] is geometry_passed
     assert report["full_gradient_calls"] == 3
     assert report["full_prediction_calls"] == len(calls) == (8 if influence else 6)
     assert (tmp_path / "tables/diagnostic_proposals.csv").exists()

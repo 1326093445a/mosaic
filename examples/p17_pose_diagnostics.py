@@ -187,6 +187,20 @@ def proposal_comparison(wt, mask, config, gradients):
     )
 
 
+def assess_influence(effect, min_proposal_tv, repeat_factor):
+    required = max(min_proposal_tv, repeat_factor * effect["repeat_proposal_tv"])
+    resolvable = required < 1.0
+    influence = effect["proposal_tv"] > required if resolvable else None
+    status = (
+        "inconclusive_repeat_variability"
+        if not resolvable
+        else "detected_above_repeat_threshold"
+        if influence
+        else "not_demonstrated_above_repeat_threshold"
+    )
+    return required, resolvable, influence, status
+
+
 def run_diagnostic(
     *,
     root,
@@ -271,7 +285,7 @@ def run_diagnostic(
     crosscheck_errors, target_fits = [], []
 
     def observe(label, sequence, index, seed, callback):
-        pae, ca, iptm = callback(sequence, seed)
+        pae, ca, iptm, geometry = callback(sequence, seed)
         pose, error = crosscheck_pose(ca, *references)
         crosscheck_errors.append(error)
         target_fits.append(pose["target_aligned_rmsd_A"])
@@ -281,6 +295,7 @@ def run_diagnostic(
             seed=int(seed),
             sequence=sequence.tolist(),
             iptm=float(iptm),
+            backbone_geometry=geometry,
             **pose,
             **confidence,
         )
@@ -308,20 +323,28 @@ def run_diagnostic(
     repeat_pose_difference = abs(
         evaluations[0][2]["binder_pose_rmsd"] - evaluations[1][2]["binder_pose_rmsd"]
     )
-    required_tv = max(min_proposal_tv, repeat_factor * effect["repeat_proposal_tv"])
+    required_tv, resolvable, influence, influence_status = assess_influence(
+        effect, min_proposal_tv, repeat_factor
+    )
     checks = dict(
         completed=True,
         same_coordinate_reporting=max(crosscheck_errors) <= 1e-3,
+        predicted_backbone_plausible=all(
+            row["backbone_geometry"]["passed"] for row in observations
+        ),
         interpretable_target_fit=max(target_fits) <= max_target_rmsd,
-        proposal_influence=effect["proposal_tv"] > required_tv,
+        repeat_noise_resolvable=resolvable,
+        proposal_influence=influence,
         paired_pose_consistent=paired_pose_difference
         <= max(1e-3, repeat_factor * repeat_pose_difference),
     )
     return dict(
-        schema_version=1,
+        schema_version=2,
         passed=all(checks.values()),
         checks=checks,
-        failed_checks=[name for name, value in checks.items() if not value],
+        failed_checks=[name for name, value in checks.items() if value is False],
+        inconclusive_checks=[name for name, value in checks.items() if value is None],
+        influence_status=influence_status,
         thresholds=dict(
             max_target_rmsd_A=max_target_rmsd,
             min_proposal_tv=min_proposal_tv,
