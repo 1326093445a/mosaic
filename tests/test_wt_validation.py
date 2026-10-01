@@ -259,3 +259,72 @@ def test_native_rollout_seed_is_explicit_and_prepared_batch_is_immutable(modules
     assert repeat["input_feature_dict"]["ref_pos"][0, 0] == 0
     assert original["input_feature_dict"]["inference_seed"].item() == 0
     assert original["input_feature_dict"]["ref_pos"][0, 0] == 0
+
+
+def test_aggregation_controls_use_distinct_workers_and_one_native_control(
+    modules, tmp_path
+):
+    _, runner, *_ = modules
+    args = SimpleNamespace(
+        paths=list(runner.PATHS),
+        steps=[64],
+        seeds=[0, 1],
+        recycles=4,
+        opendde_dtype="bf16",
+        reference=tmp_path / "reference.pdb",
+        output_dir=tmp_path,
+        aggregation_modes=["original", "stable"],
+    )
+    plan = runner.build_plan(args)
+    assert len(plan) == 10
+    assert len({job["name"] for job in plan}) == 10
+    native = [job for job in plan if job["name"].startswith("native")]
+    assert len(native) == 2
+    assert all("--aggregation-mode" not in job["command"] for job in native)
+    for mode in args.aggregation_modes:
+        selected = [job for job in plan if job["aggregation_mode"] == mode]
+        assert len(selected) == 4
+        for job in selected:
+            cmd = job["command"]
+            assert cmd[cmd.index("--aggregation-mode") + 1] == mode
+
+
+def test_template_cache_is_prepared_on_cpu_before_workers(
+    modules, monkeypatch, tmp_path
+):
+    import os
+
+    _, runner, *_ = modules
+    calls = []
+    monkeypatch.setenv("JAX_PLATFORMS", "cuda")
+    monkeypatch.setattr(
+        runner.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+
+    def launch(stage, jobs, devices, root):
+        assert stage == "wt"
+        assert len(calls) == 6  # five version-checked patches, then cache preparation
+        assert calls[-1][0][1] == "-c"
+        assert calls[-1][1]["env"]["JAX_PLATFORMS"] == "cpu"
+        assert os.environ["JAX_PLATFORMS"] == "cuda"
+        assert len(jobs) == 4
+        calls.append(("workers", {}))
+
+    monkeypatch.setattr(runner, "run_stage", launch)
+    monkeypatch.setattr(runner, "collect_results", lambda *args: None)
+    runner.main(
+        [
+            "--paths",
+            "direct",
+            "--steps",
+            "64",
+            "--aggregation-modes",
+            "original",
+            "stable",
+            "--output-dir",
+            str(tmp_path / "run"),
+        ]
+    )
+    assert calls[-1][0] == "workers"

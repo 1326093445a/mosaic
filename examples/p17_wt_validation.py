@@ -31,6 +31,21 @@ ATOM_FIELDS = (
     "asym_id",
     "residue_index",
     "restype",
+    "ref_element",
+    "ref_charge",
+    "frame_atom_index",
+    "has_frame",
+    "distogram_rep_atom_mask",
+    "pae_rep_atom_mask",
+    "structural_token_index",
+    "parent_residue_idx",
+    "subtoken_role_id",
+    "atom_to_structural_token_idx",
+    "atom_to_structural_tokatom_idx",
+    "structural_has_frame",
+    "structural_frame_atom_index",
+    "structural_distogram_rep_atom_mask",
+    "structural_pae_rep_atom_mask",
 )
 
 
@@ -48,34 +63,38 @@ def sha256_file(path):
 
 def build_plan(args):
     jobs = []
+    modes = getattr(args, "aggregation_modes", ["stable"])
     for steps in args.steps:
         for mode in args.paths:
-            for seed in args.seeds:
-                name = f"{mode}_steps{steps}_seed{seed}"
-                jobs.append(
-                    dict(
-                        name=name,
-                        command=[
-                            sys.executable,
-                            str(Path(__file__).resolve()),
-                            "--worker",
-                            "--path",
-                            mode,
-                            "--sampling-steps",
-                            str(steps),
-                            "--seed",
-                            str(seed),
-                            "--recycles",
-                            str(args.recycles),
-                            "--opendde-dtype",
-                            args.opendde_dtype,
-                            "--reference",
-                            str(args.reference),
-                            "--output-dir",
-                            str(args.output_dir / "workers" / name),
-                        ],
+            controls = [None] if mode == "native" else modes
+            for aggregation in controls:
+                for seed in args.seeds:
+                    suffix = f"_{aggregation}" if aggregation and len(modes) > 1 else ""
+                    name = f"{mode}{suffix}_steps{steps}_seed{seed}"
+                    command = [
+                        sys.executable,
+                        str(Path(__file__).resolve()),
+                        "--worker",
+                        "--path",
+                        mode,
+                        "--sampling-steps",
+                        str(steps),
+                        "--seed",
+                        str(seed),
+                        "--recycles",
+                        str(args.recycles),
+                        "--opendde-dtype",
+                        args.opendde_dtype,
+                        "--reference",
+                        str(args.reference),
+                        "--output-dir",
+                        str(args.output_dir / "workers" / name),
+                    ]
+                    if aggregation:
+                        command += ["--aggregation-mode", aggregation]
+                    jobs.append(
+                        dict(name=name, command=command, aggregation_mode=aggregation)
                     )
-                )
     return jobs
 
 
@@ -304,6 +323,8 @@ def run_worker(args):
     # Must precede any JAX import; native Torch should own its GPU exclusively.
     if args.path == "native":
         os.environ["JAX_PLATFORMS"] = "cpu"
+    if args.path != "native":
+        os.environ["MOSAIC_OPENDDE_AGGREGATION"] = args.aggregation_mode
     import numpy as np
     from mosaic.cache import cache_dir
     from p17_structure_audit import (
@@ -346,6 +367,8 @@ def run_worker(args):
             for k, v in os.environ.items()
             if k.startswith("XLA_")
             or k.startswith("OPENDDE_FORCE_")
+            or k.startswith("MOSAIC_OPENDDE_")
+            or k == "JOPENDDE_ATTENTION_DTYPE"
             or k in ("JAX_PLATFORMS", "CUDA_VISIBLE_DEVICES", "TF_GPU_ALLOCATOR")
         },
         precision_note="Native uses Torch autocast/skip_amp; Mosaic uses its BF16 layer policy. Random streams are not matched across frameworks.",
@@ -363,6 +386,12 @@ def run_worker(args):
     if observed != "".join(sequences):
         raise ValueError("model token sequence differs from reference")
     import importlib.metadata
+
+    if args.path != "native":
+        # The dependency patch imports these at trace time. Import them now so
+        # the pre-prediction provenance report includes the exact kernel source.
+        for module_name in ("mosaic.opendde_numerics", "mosaic.opendde_padding"):
+            importlib.import_module(module_name)
 
     versions = {}
     for package in (
@@ -386,6 +415,8 @@ def run_worker(args):
                 "mosaic.models.opendde",
                 "mosaic.losses.opendde",
                 "mosaic.opendde_precision",
+                "mosaic.opendde_numerics",
+                "mosaic.opendde_padding",
                 "opendde.model.",
                 "runner.inference",
             )
@@ -480,6 +511,7 @@ def run_worker(args):
         dict(
             completed=True,
             path=args.path,
+            aggregation_mode=args.aggregation_mode if args.path != "native" else None,
             seed=args.seed,
             sampling_steps=args.sampling_steps,
             recycles=args.recycles,
@@ -501,6 +533,9 @@ def collect_results(root, jobs):
                 dict(
                     worker=job["name"],
                     repeat=None,
+                    aggregation_mode=job.get("aggregation_mode"),
+                    repeat_bitwise_identical=None,
+                    repeat_raw_max_displacement_A=None,
                     completed=False,
                     geometry_passed=None,
                     mapping_agrees=None,
@@ -521,6 +556,11 @@ def collect_results(root, jobs):
                 dict(
                     worker=job["name"],
                     repeat=report["repeat"],
+                    aggregation_mode=summary.get("aggregation_mode"),
+                    repeat_bitwise_identical=report.get("repeat_bitwise_identical"),
+                    repeat_raw_max_displacement_A=report.get(
+                        "repeat_raw_max_displacement_A"
+                    ),
                     completed=True,
                     geometry_passed=report["passed"],
                     mapping_agrees=report.get("mapping_agrees"),
@@ -553,6 +593,18 @@ def main(argv=None):
     parser.add_argument("--opendde-dtype", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--reference", type=Path, default=REPO / "P17_JN1.pdb")
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        "--aggregation-modes",
+        choices=("original", "stable"),
+        nargs="+",
+        default=["stable"],
+    )
+    parser.add_argument(
+        "--aggregation-mode",
+        choices=("original", "stable"),
+        default="stable",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--path", choices=PATHS, help=argparse.SUPPRESS)
@@ -565,7 +617,7 @@ def main(argv=None):
         or any(s < 0 for s in args.seeds)
     ):
         parser.error("positive budgets and nonnegative seeds required")
-    for name in ("steps", "seeds", "paths"):
+    for name in ("steps", "seeds", "paths", "aggregation_modes"):
         if len(set(getattr(args, name))) != len(getattr(args, name)):
             parser.error(f"duplicate {name}")
     args.reference = args.reference.resolve()
@@ -635,6 +687,7 @@ def main(argv=None):
         "tables/geometry.csv and summary.json summarize independent controls.\n"
         "workers/*/{arrays,structures,reports,logs} preserve atom metadata, raw and mapped coordinates, CIFs, geometry and memory.\n"
         "Each worker reuses features and repeats one model seed twice. Native Torch and JAX random streams and mixed precision differ.\n"
+        "Aggregation controls run in fresh processes; both receive the same current padding fixes. The original control only restores the original averaging kernel.\n"
         "Worker exit 0 means completed; check geometry_passed separately. No optimization follows this run.\n"
     )
 
@@ -648,6 +701,8 @@ def main(argv=None):
                 "outer_product_mean",
                 "structural_token_expander",
                 "bf16_dtype",
+                "aggregation",
+                "padding",
             ):
                 subprocess.run(
                     [
@@ -655,6 +710,29 @@ def main(argv=None):
                         str(REPO / "patches" / f"patch_jopendde_{name}.py"),
                     ],
                     cwd=REPO,
+                    stdout=handle,
+                    stderr=subprocess.STDOUT,
+                    check=True,
+                )
+        if any(path != "native" for path in args.paths):
+            # Build a schema-updated template cache once before parallel workers
+            # can race to create it with different host RNG states.
+            print("Preparing shared atom-template cache on CPU...", flush=True)
+            cache_env = dict(os.environ, JAX_PLATFORMS="cpu")
+            with (root / "logs/template_cache.log").open("x") as handle:
+                subprocess.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        (
+                            "import random, numpy as np, torch; "
+                            "random.seed(0); np.random.seed(0); torch.manual_seed(0); "
+                            "from mosaic.models.opendde import _get_atom_templates; "
+                            "_get_atom_templates()"
+                        ),
+                    ],
+                    cwd=REPO,
+                    env=cache_env,
                     stdout=handle,
                     stderr=subprocess.STDOUT,
                     check=True,

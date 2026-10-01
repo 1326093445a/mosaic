@@ -2010,7 +2010,135 @@ The real native checkpoint loader and featurizer were exercised on a small
 synthetic complex on CPU. Both full-size WT JAX paths were abstractly traced at
 four recycles/eight steps/BF16: raw buffers 3215/2417 atoms and output atom37
 shape 307×37×3, with FP32 coordinates. These checks execute no full-size
-prediction; the H200 control matrix and 64-step runtime/memory remain untested.
+prediction. The H200 control matrix was untested at implementation time; its
+subsequent results and the first reproduced code defect are recorded below.
+
+### 17.12 WT control results and a reproduced padding-index bug — 2026-10-01
+
+Reviewed `results/p17_wt_validation_complete.tar.gz`, containing run
+`p17_wt_validation_20261001_082109_3348404`. All 12 workers completed, producing
+24 predictions (two seeds and two repeats per path/budget).
+
+| Path | 8-step geometry passes | 64-step geometry passes |
+|---|---:|---:|
+| Mosaic | 0/4 | 0/4 |
+| Direct JAX | 0/4 | 4/4 |
+| Native OpenDDE | 0/4 | 4/4 |
+
+The Mosaic 64-step failures are localized: one or two peptide C–N distances per
+prediction fall below the unchanged 1.0 Å lower bound (0.587–0.988 Å), while
+median backbone distances are plausible. This differs substantially from the
+grossly distorted 8-step predictions across all paths. Raw-to-mapped backbone
+agreement is exact in the JAX reports; an independent calculation of raw N–CA
+medians reproduced all 24 reports. Basic geometry passes do not establish fold,
+pose, or binding accuracy.
+
+Native same-seed repeats were bitwise identical; JAX repeats were not. The
+reported maximum coordinate displacements are unaligned and are not RMSDs.
+The validator holds prepared features and the JAX key fixed across repeats,
+so repeated geometry re-featurization is not an explanation for this observation.
+The source of JAX repeat variability remains unresolved.
+
+Review of `refresh_binder_geometry` found that padded atoms used the residue
+token count as their structural-token index. The structural array is larger:
+this value can identify a real structural token. The downstream scatter-based
+mean consequently includes padded values and counts in that token. The fix uses
+the structural-token count as this branch's out-of-range padding value, matching
+the existing residue branch's convention.
+
+`tests/test_opendde_padding.py` exercises the real refresh and downstream
+aggregation with small synthetic arrays, without a checkpoint or biological
+input. Before the correction, both eager and JIT tests failed: an expected
+average of 1.0 became 400.2 when padding carried the deliberately large test
+value 999. After the correction, 14 focused CPU tests passed (two slow tests
+deselected) across padding, adapter contracts and precision; lint passed.
+
+This establishes the indexing defect and its local correction, not its share
+of the observed structure errors. Full-model GPU validation of the correction
+is pending. Structural-token validity and attention treatment of padding still
+require review; changing this index does not prove complete padding invariance.
+The direct JAX repeat discrepancy also occurs without this design refresh and
+cannot be attributed solely to this defect. Geometry thresholds, loss weights,
+sampling defaults and experiment gates were not relaxed.
+
+### 17.13 Numerical fixes and the next forward-only cluster control — 2026-10-01
+
+Follow-up work reproduced additional defects using checkpoint-free synthetic
+arrays and small kernels:
+
+- **Averaging:** on the local RTX 4090, the original BF16 scatter mean differed
+  by up to 0.015625 between identical calls; FP32 differed by up to 2.38e-7 in
+  the same probe. `mosaic.opendde_numerics.stable_segment_mean` uses stable
+  integer sorting, a fixed-order segmented scan, float32 accumulation for
+  half precision, and one write per output segment. This removes conflicting
+  floating-point scatter additions. This is evidence about that kernel, not
+  proof of full-model reproducibility or native parity.
+- **Metadata:** absent structural subtokens previously claimed a representative
+  atom through their dummy offset. Representative masks now respect existence;
+  structural frame validity is copied from the current native atom template,
+  instead of retaining placeholder flags. Atom-template cache schema is now 2;
+  old schema-1 caches are not reused. The WT launcher prepares this cache once
+  on CPU before spawning workers, avoiding concurrent cache creation with
+  different host RNG states. The first launch can pause here for a few minutes;
+  progress is recorded in `logs/template_cache.log`.
+- **Atom attention and coordinates:** a synthetic attention result that should
+  have been 2 became about 34.33 when padded keys were present. Explicit key
+  masks now pass through both atom encoder and decoder attention. Padding is
+  excluded from coordinate centering, noise injection and diffusion updates.
+  Padding is identified by token-index bounds, not reference-conformer masks.
+- **Empty structural tokens:** occupancy derived from atom assignments supplies
+  the refiner pair mask and the refiner/diffusion attention key mask. Empty
+  single/pair states are cleared before and after refinement.
+
+External dependency changes are reproducibly installed by
+`patches/patch_jopendde_aggregation.py` and `patches/patch_jopendde_padding.py`.
+The patches verify expected source, reject mismatched patch bodies, and remove
+stale bytecode. The padding patch checks every affected source before writing.
+The WT validator and main pose/search launchers now apply both patches.
+
+Validation completed locally:
+
+- 73 focused CPU tests passed, with two slow tests excluded from that run.
+- 14 checkpoint-free numerical/masking tests passed on the RTX 4090 with GPU
+  preallocation disabled and a small allocator limit. Fixed-input numerical
+  repeats were identical, and the segmented mean passed a finite-difference
+  derivative check. These checks are not a full-model gradient validation.
+- The real CPU featurizer comparison passed separately on generic short inputs
+  spanning the amino-acid alphabet, including structural representatives,
+  frame-validity flags and valid-frame indices. No model checkpoint was loaded
+  for this comparison.
+- Lint, shell syntax and the cluster launcher's no-write dry run passed.
+
+Next cluster run, from the repository root:
+
+```bash
+bash examples/run_p17_numerical_validation.sh --devices 0,1,2,3,4,5,6,7
+```
+
+This uses BF16, 64 sampling steps and four recycles: two seeds and two repeats
+for Mosaic/original aggregation, Mosaic/stable aggregation, direct/original
+aggregation, direct/stable aggregation, and native Torch. There are **10 workers
+and 20 predictions**, at most eight workers at once. The first eight workers
+are the JAX controls; the final two are native controls. Paths follow the
+checkout, including `/storage/frank/mosaic` on the cluster.
+
+Both JAX aggregation arms include the current padding/metadata fixes. The
+`original` control restores only the old averaging kernel; it is not an exact
+replay of the earlier archived code. Each control has a fresh process because
+its aggregation mode is selected at JAX trace time. The native controls run
+once per seed, independent of this JAX-only choice.
+
+Output remains under a new `results/p17_wt_validation_*` directory. The root
+`tables/geometry.csv` now includes aggregation mode and repeat comparisons;
+workers preserve raw/mapped CIFs, NPZ arrays, expanded atom/structural metadata,
+source hashes, settings, logs and memory reports. The numerical helper sources
+are imported before provenance collection so their hashes are recorded.
+
+Full-model geometry, whole-model repeatability, backward behavior, and H200
+runtime/memory remain unverified after these changes. Fixed reduction order can
+change performance and floating-point results. The launcher performs no search;
+existing geometry and experiment gates remain in force. A passing kernel test
+or successful worker exit does not establish a correct fold, pose or affinity.
 
 ## Appendix: file map
 

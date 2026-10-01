@@ -11,4 +11,6 @@ done
 .venv/bin/python patches/patch_jopendde_outer_product_mean.py
 .venv/bin/python patches/patch_jopendde_structural_token_expander.py
 .venv/bin/python patches/patch_jopendde_bf16_dtype.py
+.venv/bin/python patches/patch_jopendde_aggregation.py
+.venv/bin/python patches/patch_jopendde_padding.py
 PYTHONUNBUFFERED=1 JAX_PLATFORMS=cuda exec .venv/bin/python examples/p17_rescore_winners.py "$@"

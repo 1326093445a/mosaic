@@ -138,7 +138,7 @@ def test_atom_template_cache_is_versioned_and_recovers_from_corruption(
 
     assert first is templates
     assert len(files) == 1
-    assert "v1-revision123" in files[0].name
+    assert "v2-revision123" in files[0].name
     assert built == [None]
 
     adapter._ATOM_TEMPLATE_CACHE.clear()
@@ -245,6 +245,8 @@ def test_refreshed_atom_metadata_matches_native_featurization():
         "atom_to_tokatom_idx",
         "distogram_rep_atom_mask",
         "pae_rep_atom_mask",
+        "structural_distogram_rep_atom_mask",
+        "structural_pae_rep_atom_mask",
     ):
         refreshed_value = np.asarray(getattr(refreshed, field))[refreshed_mask]
         native_value = np.asarray(getattr(native, field))[native_mask]
@@ -254,6 +256,29 @@ def test_refreshed_atom_metadata_matches_native_featurization():
         np.asarray(refreshed.frame_atom_index),
         np.asarray(native.frame_atom_index),
     )
+    # Match expanded tokens by identity; the design buffer can include absent
+    # subtokens, which must have their frame-validity flag cleared.
+    native_ids = {
+        (int(parent), int(role)): i
+        for i, (parent, role) in enumerate(
+            zip(native.parent_residue_idx, native.subtoken_role_id)
+        )
+    }
+    for i, (parent, role) in enumerate(
+        zip(refreshed.parent_residue_idx, refreshed.subtoken_role_id)
+    ):
+        native_i = native_ids.get((int(parent), int(role)))
+        if native_i is None:
+            assert not bool(refreshed.structural_has_frame[i])
+        else:
+            assert int(refreshed.structural_has_frame[i]) == int(
+                native.structural_has_frame[native_i]
+            )
+            if bool(native.structural_has_frame[native_i]):
+                np.testing.assert_array_equal(
+                    refreshed.structural_frame_atom_index[i],
+                    native.structural_frame_atom_index[native_i],
+                )
     for token in range(len(TOKENS)):
         refreshed_pos = np.asarray(refreshed.ref_pos)[
             refreshed_mask & (np.asarray(refreshed.atom_to_token_idx) == token)

@@ -433,6 +433,8 @@ def main(argv=None):
                 "outer_product_mean",
                 "structural_token_expander",
                 "bf16_dtype",
+                "aggregation",
+                "padding",
             ):
                 subprocess.run(
                     [

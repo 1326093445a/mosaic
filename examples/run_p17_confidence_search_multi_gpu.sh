@@ -84,7 +84,9 @@ COMMON_ARGS=(--proposal-path full --proposal-model-seed 0 --selection-seeds 0
     --max-proposals "$PROPOSALS")
 PATCHES=(patches/patch_jopendde_outer_product_mean.py
     patches/patch_jopendde_structural_token_expander.py
-    patches/patch_jopendde_bf16_dtype.py)
+    patches/patch_jopendde_bf16_dtype.py
+    patches/patch_jopendde_aggregation.py
+    patches/patch_jopendde_padding.py)
 
 echo "Repo: $REPO_ROOT"
 echo "Mode: $MODE; seeds per policy: $NUM_SEEDS; GPUs: $DEVICES"

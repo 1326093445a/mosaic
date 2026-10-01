@@ -134,6 +134,7 @@ class OpenDDEAtomTemplates(eqx.Module):
     s_pae_off: Int[Array, "2 20 2"]
     s_frame_off: Int[Array, "2 20 2 3"]
     s_valid: Int[Array, "2 20 2"]  # 1 if the sub-token exists (sc absent for Gly)
+    s_has_frame: Int[Array, "2 20 2"]  # native frame validity, distinct from existence
     max_atoms: int = eqx.field(static=True, default=MAX_ATOMS_PER_RES)
     max_struct: int = eqx.field(static=True, default=MAX_STRUCT_PER_RES)
 
@@ -165,7 +166,7 @@ def build_opendde_atom_templates(featurize_one) -> OpenDDEAtomTemplates:
     n_at, d_off, p_off = ishp(), ishp(), ishp()
     a_stok, a_stka = ishp(ma), ishp(ma)
     s_doff, s_poff = ishp(ms), ishp(ms)
-    s_froff, s_val = ishp(ms, 3), ishp(ms)
+    s_froff, s_val, s_has = ishp(ms, 3), ishp(ms), ishp(ms)
 
     for ci, ctx in enumerate(("int", "cterm")):
         tok = 1 if ctx == "int" else 2
@@ -199,6 +200,7 @@ def build_opendde_atom_templates(featurize_one) -> OpenDDEAtomTemplates:
             for s in range(ns):
                 gs = int(s_idx[s])
                 s_val[ci, i, s] = 1
+                s_has[ci, i, s] = int(g("structural_has_frame")[gs])
                 drep = [x for x in np.nonzero(sdrep)[0] if ast[x] == gs]
                 prep = [x for x in np.nonzero(sprep)[0] if ast[x] == gs]
                 s_doff[ci, i, s] = (drep[0] - base) if drep else 0
@@ -218,6 +220,7 @@ def build_opendde_atom_templates(featurize_one) -> OpenDDEAtomTemplates:
         a_struct_tok=jnp.asarray(a_stok), a_struct_tokatom=jnp.asarray(a_stka),
         s_disto_off=jnp.asarray(s_doff), s_pae_off=jnp.asarray(s_poff),
         s_frame_off=jnp.asarray(s_froff), s_valid=jnp.asarray(s_val),
+        s_has_frame=jnp.asarray(s_has),
     )
 
 
@@ -328,7 +331,11 @@ def refresh_binder_geometry(
     # structural-token axis (fixed 2 sub-tokens per binder residue; Gly's sc is a
     # phantom no atom maps to): binder atom -> 2*residue + local(0=bb,1=sc).
     b_stok = 2 * b_tok + pick("a_struct_tok").reshape(-1)
-    new_astok = scatter_idx(n_token, b_stok, feat.atom_to_structural_token_idx, feat.atom_to_structural_token_idx.dtype)
+    # This branch aggregates into the expanded token array. The residue count
+    # is generally an IN-RANGE structural index, so using it for padding would
+    # let padded atoms contribute to a real token's sum and count.
+    n_struct = int(feat.structural_token_index.shape[0])
+    new_astok = scatter_idx(n_struct, b_stok, feat.atom_to_structural_token_idx, feat.atom_to_structural_token_idx.dtype)
     new_astka = scatter_idx(0, pick("a_struct_tokatom").reshape(-1), feat.atom_to_structural_tokatom_idx, feat.atom_to_structural_tokatom_idx.dtype)
 
     # representative-atom masks (per-atom booleans), residue + structural branch.
@@ -339,8 +346,19 @@ def refresh_binder_geometry(
 
     new_drep = rep_mask(offset + pick("disto_off"), "distogram_rep_atom_mask")
     new_prep = rep_mask(offset + pick("pae_off"), "pae_rep_atom_mask")
-    new_sdrep = rep_mask((offset[:, None] + pick("s_disto_off")).reshape(-1), "structural_distogram_rep_atom_mask")
-    new_sprep = rep_mask((offset[:, None] + pick("s_pae_off")).reshape(-1), "structural_pae_rep_atom_mask")
+    s_valid = pick("s_valid") > 0
+
+    def structural_rep_mask(offset_field, mask_field):
+        # An absent subtoken has a placeholder offset, not a representative.
+        representatives = jnp.where(s_valid, offset[:, None] + pick(offset_field), A_total)
+        return rep_mask(representatives.reshape(-1), mask_field)
+
+    new_sdrep = structural_rep_mask("s_disto_off", "structural_distogram_rep_atom_mask")
+    new_sprep = structural_rep_mask("s_pae_off", "structural_pae_rep_atom_mask")
+    new_shas_frame = jnp.concatenate([
+        jnp.where(s_valid, pick("s_has_frame"), 0).reshape(-1).astype(feat.structural_has_frame.dtype),
+        feat.structural_has_frame[2 * L:],
+    ])
 
     # frame atom indices (global): residue branch [n_token, 3] = N,CA,C; structural
     # branch [2L + n_struct_tgt, 3]. Target rows shift by (sum_k - A_alloc).
@@ -360,7 +378,7 @@ def refresh_binder_geometry(
             f.atom_to_structural_token_idx, f.atom_to_structural_tokatom_idx,
             f.distogram_rep_atom_mask, f.pae_rep_atom_mask, f.frame_atom_index,
             f.structural_distogram_rep_atom_mask, f.structural_pae_rep_atom_mask,
-            f.structural_frame_atom_index,
+            f.structural_frame_atom_index, f.structural_has_frame,
         ),
         feat,
         (
@@ -368,7 +386,7 @@ def refresh_binder_geometry(
             new_a2t, new_tka, d_lm, v_lm, pad,
             new_astok, new_astka,
             new_drep, new_prep, new_frame,
-            new_sdrep, new_sprep, new_sframe,
+            new_sdrep, new_sprep, new_sframe, new_shas_frame,
         ),
     )
 

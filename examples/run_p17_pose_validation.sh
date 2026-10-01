@@ -122,7 +122,9 @@ EOF
 
 for patch in patches/patch_jopendde_outer_product_mean.py \
              patches/patch_jopendde_structural_token_expander.py \
-             patches/patch_jopendde_bf16_dtype.py; do
+             patches/patch_jopendde_bf16_dtype.py \
+             patches/patch_jopendde_aggregation.py \
+             patches/patch_jopendde_padding.py; do
     "$PYTHON" "$patch" >> "$OUTPUT_DIR/logs/patches.log" 2>&1 \
         || die "Patch failed; see $OUTPUT_DIR/logs/patches.log"
 done

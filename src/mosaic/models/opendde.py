@@ -487,7 +487,7 @@ def _binder_extents(features) -> tuple[int, int]:
 
 # Atom templates are architecture data derived from OpenDDE CCD features.
 _ATOM_TEMPLATE_ARCH = "opendde_v1"
-_ATOM_TEMPLATE_SCHEMA_VERSION = 1
+_ATOM_TEMPLATE_SCHEMA_VERSION = 2
 _ATOM_TEMPLATE_CACHE: dict[tuple[str, str, str, int], OpenDDEAtomTemplates] = {}
 
 
@@ -533,6 +533,7 @@ def _atom_template_shapes() -> dict[str, tuple[int, ...]]:
         "s_pae_off": (2, 20, struct),
         "s_frame_off": (2, 20, struct, 3),
         "s_valid": (2, 20, struct),
+        "s_has_frame": (2, 20, struct),
     }
 
 

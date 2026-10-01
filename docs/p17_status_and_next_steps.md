@@ -6,6 +6,29 @@ literature discussion, and Claude/Codex reviews.
 
 ## Current status
 
+**Latest WT controls completed: all 12 workers exited successfully, but only
+8/24 predictions passed the backbone checks.** All 8-step predictions failed.
+At 64 steps, direct JAX and native OpenDDE each passed 4/4; Mosaic passed 0/4
+because of one or two short peptide C–N bonds per prediction. Raw-to-mapped
+backbone coordinates agreed across the JAX reports. Native same-seed repeats
+were identical; both JAX paths varied.
+
+Local fixes now cover padding indices, representative/frame metadata, atom and
+structural attention masks, diffusion padding, and the averaging kernel.
+Validation: 73 focused CPU tests, 14 small GPU tests, and a separate real CPU
+featurizer comparison passed. **Full-model validation after these changes is
+pending.** See [§17.13](p17_jn1_redesign.md#1713-numerical-fixes-and-the-next-forward-only-cluster-control--2026-10-01).
+
+The next run is a forward-only comparison (10 workers, 20 predictions, up to
+8 GPUs), with the original averaging kernel retained as a control:
+
+```bash
+bash examples/run_p17_numerical_validation.sh --devices 0,1,2,3,4,5,6,7
+```
+
+It saves structures, metadata, repeat comparisons and memory logs; no search
+stage follows automatically.
+
 **The eight-run cluster search pilot and the 36-prediction pose-validation/
 repeat batch completed. Predicted confidence improved, but reference-pose
 recovery and binding have not been established.** Full confidence-aware gradients
