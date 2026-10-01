@@ -23,6 +23,7 @@ from jaxtyping import Array, Float, Int
 from jopendde.features import Features
 from jopendde.model import OpenDDE as JaxOpenDDE
 
+from mosaic.opendde_precision import cast_float_arrays, compute_dtype, prepare_opendde_model
 from mosaic.common import LinearCombination, LossTerm
 from mosaic.cache import cache_dir
 from mosaic.losses.opendde import (
@@ -274,6 +275,7 @@ class OpenDDEModel(StructurePredictionModel):
     """OpenDDE wrapped behind mosaic's structure-prediction interface."""
 
     model: JaxOpenDDE
+    compute_precision: str = eqx.field(static=True, default="fp32", kw_only=True)
     dense_atom_to_atom37: Int[Array, "32 Adense"]
     # Architecture-level residue atom/layout templates used to refresh design
     # geometry. These are not target-chain structural templates.
@@ -356,6 +358,7 @@ class OpenDDEModel(StructurePredictionModel):
             )
         return MultiSampleOpenDDELoss(
             model=self.model,
+            compute_precision=self.compute_precision,
             features=features,
             loss=loss,
             dense_atom_to_atom37=self.dense_atom_to_atom37,
@@ -388,6 +391,7 @@ class OpenDDEModel(StructurePredictionModel):
         """
         return DistogramOnlyOpenDDELoss(
             model=self.model,
+            compute_precision=self.compute_precision,
             features=features,
             loss=loss,
             num_cycles=recycling_steps,
@@ -419,6 +423,8 @@ class OpenDDEModel(StructurePredictionModel):
             feat = (
                 features.features if isinstance(features, OpenDDEDesignFeatures) else features
             )
+        if self.compute_precision == "bf16":
+            feat = cast_float_arrays(feat, compute_dtype(self.compute_precision))
         s_inputs, s, z = self.model.get_pairformer_output(feat, recycling_steps)
         return opendde_forward_from_trunk(
             self.model,
@@ -642,9 +648,12 @@ def _get_atom_templates() -> OpenDDEAtomTemplates:
     return templates
 
 
-def _build_model(model_name: str, checkpoint_file: str | None = None) -> OpenDDEModel:
+def _build_model(
+    model_name: str, checkpoint_file: str | None = None, *, compute_precision: str = "fp32"
+) -> OpenDDEModel:
     from jopendde.inference import Predictor
 
+    compute_dtype(compute_precision)  # Validate before checkpoint loading.
     predictor = Predictor.from_checkpoint(
         model_name,
         checkpoint_file=checkpoint_file,
@@ -665,7 +674,8 @@ def _build_model(model_name: str, checkpoint_file: str | None = None) -> OpenDDE
         predictor.model,
     )
     return OpenDDEModel(
-        model=model,
+        model=prepare_opendde_model(model, compute_precision),
+        compute_precision=compute_precision,
         dense_atom_to_atom37=jnp.array(_build_dense_atom_to_atom37()),
         atom_templates=_get_atom_templates(),
         pae_bin_params=tuple(sp.pae_bins),
@@ -673,17 +683,19 @@ def _build_model(model_name: str, checkpoint_file: str | None = None) -> OpenDDE
     )
 
 
-def OpenDDEModelV1() -> OpenDDEModel:
+def OpenDDEModelV1(*, compute_precision: str = "fp32") -> OpenDDEModel:
     return _build_model(
         "opendde_v1",
         checkpoint_file="opendde.pt",
+        compute_precision=compute_precision,
     )
 
 
-def OpenDDEModelAbag() -> OpenDDEModel:
+def OpenDDEModelAbag(*, compute_precision: str = "fp32") -> OpenDDEModel:
     """Load the ABAG-optimized weights (`opendde_abag.pt`) for antibody-antigen
     complexes."""
     return _build_model(
         "opendde_v1",
         checkpoint_file="opendde_abag.pt",
+        compute_precision=compute_precision,
     )

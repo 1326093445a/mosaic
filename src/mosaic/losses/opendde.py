@@ -33,6 +33,7 @@ from jopendde.features import Features
 from jopendde.model import OpenDDE as JaxOpenDDE
 from jopendde.transformer import rearrange_qk_to_dense_trunk
 
+from mosaic.opendde_precision import cast_float_arrays, compute_dtype
 from mosaic.common import TOKENS, LinearCombination, LossTerm
 from mosaic.losses.atom37 import scatter_atom37
 from mosaic.losses.structure_prediction import StructureModelOutput, reduce_samples
@@ -476,6 +477,10 @@ def opendde_forward_from_trunk(
     plddt_logits, pae_logits, _pde, _resolved = model.run_confidence_head(
         feat, s_inputs, s, z, conf_coords
     )
+    # Report and reduce confidence in float32, including BF16 model runs.
+    distogram_logits = distogram_logits.astype(jnp.float32)
+    plddt_logits = plddt_logits.astype(jnp.float32)
+    pae_logits = pae_logits.astype(jnp.float32)
     plddt_logits = plddt_logits[0]  # [N_atom, Bplddt]
     pae_logits = pae_logits[0]      # [N, N, Bpae]
 
@@ -523,6 +528,7 @@ class MultiSampleOpenDDELoss(LossTerm):
     """
 
     model: JaxOpenDDE
+    compute_precision: str = eqx.field(static=True, default="fp32", kw_only=True)
     # Poly-Trp design features plus atom templates and binder extents. Setting
     # the binder sequence always refreshes its atom + structural-token geometry,
     # so the trunk sees the designed side chains (see `OpenDDEDesignFeatures`).
@@ -542,6 +548,8 @@ class MultiSampleOpenDDELoss(LossTerm):
         # augments once per featurization); diffusion noise varies per sample below.
         key, geom_key = jax.random.split(key)
         feat = set_binder_sequence(sequence, self.features, geom_key)
+        if self.compute_precision == "bf16":
+            feat = cast_float_arrays(feat, compute_dtype(self.compute_precision))
         s_inputs, s, z = self.model.get_pairformer_output(feat, self.num_cycles)
 
         def single_sample(key):
@@ -572,7 +580,7 @@ class _DistogramOnlyOutput(eqx.Module):
     """
 
     distogram_logits: Float[Array, "N N Bins"]
-    distogram_bins: Float[Array, "Bins"]
+    distogram_bins: Float[Array, "Bins"]  # noqa: F821 - jaxtyping dimension
 
 
 class DistogramOnlyOpenDDELoss(LossTerm):
@@ -597,19 +605,22 @@ class DistogramOnlyOpenDDELoss(LossTerm):
     """
 
     model: JaxOpenDDE
-    features: OpenDDEFeatures
+    compute_precision: str = eqx.field(static=True, default="fp32", kw_only=True)
+    features: OpenDDEDesignFeatures
     loss: LossTerm | LinearCombination
     num_cycles: int = eqx.field(static=True, default=4)
 
     def __call__(self, sequence: Float[Array, "N 20"], key):
         key, geom_key = jax.random.split(key)
         feat = set_binder_sequence(sequence, self.features, geom_key)
+        if self.compute_precision == "bf16":
+            feat = cast_float_arrays(feat, compute_dtype(self.compute_precision))
         s_inputs, s, z = self.model.get_pairformer_output(feat, self.num_cycles)
         distogram_logits = self.model.distogram_head(z)
         distogram_bins = _bin_centers(
             self.model.dist_min_bin, self.model.dist_max_bin, self.model.dist_no_bins
         )
         output = _DistogramOnlyOutput(
-            distogram_logits=distogram_logits, distogram_bins=distogram_bins
+            distogram_logits=distogram_logits.astype(jnp.float32), distogram_bins=distogram_bins
         )
         return self.loss(sequence=sequence, output=output, key=key)

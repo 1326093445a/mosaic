@@ -697,7 +697,7 @@ def test_runner_writes_complete_layout_without_extra_predictions(
         return -jnp.sum(sequence * jnp.arange(20)), {}
 
     monkeypatch.setattr(
-        opendde_module, "OpenDDEModelAbag", lambda: ToyModel(export_prediction)
+        opendde_module, "OpenDDEModelAbag", lambda **kwargs: ToyModel(export_prediction)
     )
     monkeypatch.setattr(ablang_module, "load_ablang2", lambda: (None, None))
     monkeypatch.setattr(original, "load_structure", lambda: (None, "AR", "GN"))
@@ -871,7 +871,7 @@ def test_winner_rescoring_exports_scored_pose_without_optimization(
         rescoring, "load_candidates", lambda _: (candidates, links, baseline)
     )
     monkeypatch.setattr(
-        model_module, "OpenDDEModelAbag", lambda: ToyModel(export_prediction)
+        model_module, "OpenDDEModelAbag", lambda **kwargs: ToyModel(export_prediction)
     )
     monkeypatch.setattr(original, "load_structure", lambda: (None, "AR", "GN"))
     ca = export_prediction.backbone_coordinates[:, 1]

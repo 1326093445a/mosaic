@@ -44,6 +44,8 @@ def build_plan(args):
         "1",
         "--sampling-steps",
         str(args.sampling_steps),
+        "--opendde-dtype",
+        args.opendde_dtype,
         "--max-score-calls",
         str(args.max_score_calls),
         "--max-gradient-calls",
@@ -105,6 +107,8 @@ def build_plan(args):
                     str(root / "search"),
                     "--output-dir",
                     str(root / "heldout" / f"shard_{shard}"),
+                    "--opendde-dtype",
+                    args.opendde_dtype,
                     "--seeds",
                     "101",
                     "102",
@@ -297,6 +301,7 @@ def main(argv=None):
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--search-seeds", type=int, nargs="+", default=[0, 1])
     parser.add_argument("--sampling-steps", type=int, default=8)
+    parser.add_argument("--opendde-dtype", choices=["fp32", "bf16"], default="bf16")
     parser.add_argument("--max-score-calls", type=int, default=32)
     parser.add_argument("--max-gradient-calls", type=int, default=32)
     parser.add_argument("--max-proposals", type=int, default=320)
@@ -352,6 +357,7 @@ def main(argv=None):
         parser.error(f"output already exists: {root}")
     plan = build_plan(args)
     print(f"Repo: {REPO}\nGPUs: {','.join(args.devices)}; output: {root}")
+    print(f"OpenDDE compute: {args.opendde_dtype}; AbLang2: fp32")
     commands = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",

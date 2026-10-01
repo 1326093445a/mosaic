@@ -1,6 +1,6 @@
 # P17 optimization: status and next steps
 
-Updated **2026-09-30**. Start here for the current handoff; the
+Updated **2026-10-01**. Start here for the current handoff; the
 [full project record](p17_jn1_redesign.md) retains the biology, infrastructure,
 literature discussion, and Claude/Codex reviews.
 
@@ -10,7 +10,10 @@ literature discussion, and Claude/Codex reviews.
 repeat batch completed. Predicted confidence improved, but reference-pose
 recovery and binding have not been established.** Full confidence-aware gradients
 are implemented; optional pose-aware retention and a gated sequential experiment
-are now implemented and locally tested. The new workflow has not run on H200.
+are now implemented and locally tested. Two H200 diagnostic attempts stopped:
+first at the reference geometry precision check (fixed), then at the first
+full gradient with an 82.70 GiB allocation failure. An explicit wider BF16
+OpenDDE mode is now implemented; full-size H200 execution remains unverified.
 
 The next step is a pose-measurement/guidance diagnostic, followed conditionally
 by a four-arm population comparison. The new controls and sequential launcher
@@ -166,8 +169,25 @@ clipping and entropy normalization can also suppress the effect of weight scalin
 ```bash
 cd /storage/frank/mosaic
 bash examples/run_p17_pose_experiment.sh --devices 0,1,2,3,4,5,6,7 --dry-run
-bash examples/run_p17_pose_experiment.sh --devices 0,1,2,3,4,5,6,7
+bash examples/run_p17_pose_experiment.sh --devices 0,1,2,3,4,5,6,7 --opendde-dtype bf16
 ```
+
+The sequential launcher now defaults to `--opendde-dtype bf16` for all three
+stages. This extends BF16 beyond the existing attention-core patch to OpenDDE
+weights and activations. AbLang2 and pose alignment remain float32; normalization
+statistics and exported confidence reductions use float32. Run settings record
+precision. `--opendde-dtype fp32` restores the previous broader model precision
+(the attention core still follows its separate environment setting). Standalone
+search retains its old fp32 default; standalone rescoring inherits the source
+run's precision, falling back to fp32 for older archives.
+
+BF16 validation: **99 CPU tests passed** (one GPU-only skip, two checkpoint
+tests deselected), and **six GPU tests passed**, including a small real-checkpoint
+forward/gradient run on RTX 4090. Full-size P17 forward/backward shape tracing
+also passed. These checks do not establish that the H200 diagnostic fits memory.
+
+See [§17.8](p17_jn1_redesign.md#178-first-gradient-oom-and-explicit-bf16-mode)
+for validation evidence and the remaining full-size memory uncertainty.
 
 Two diagnostic workers run first (proposal-model seeds 0/1). They check
 correspondence/geometry, pose on/on-repeat/off gradients, changes in feasible

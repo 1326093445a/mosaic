@@ -182,6 +182,7 @@ def main(argv=None):
     parser.add_argument(
         "--sampling-steps", type=int, default=None, help="Default: original run setting"
     )
+    parser.add_argument("--opendde-dtype", choices=["fp32", "bf16"], default=None)
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--dry-run", action="store_true")
@@ -198,6 +199,7 @@ def main(argv=None):
     selected_ids = {c["candidate_id"] for c in candidates}
     links = [row for row in links if row["candidate_id"] in selected_ids]
     steps = args.sampling_steps or original["arguments"]["sampling_steps"]
+    precision = args.opendde_dtype or original["arguments"].get("opendde_dtype", "fp32")
     print(
         f"Shard {args.shard_index}/{args.num_shards}, candidate IDs {sorted(selected_ids)}: "
         f"{len(candidates)} sequences, seeds {args.seeds}: "
@@ -287,6 +289,7 @@ def main(argv=None):
         original_selection_seeds=original["arguments"]["selection_seeds"],
         recycling_steps=original["recycling_steps"],
         checkpoint=original["checkpoint"],
+        opendde_compute_precision=precision,
         reference_binder_chain=BINDER_CHAIN,
         reference_target_chain=TARGET_CHAIN,
         reference_sha256=hashlib.sha256(COMPLEX_PDB.read_bytes()).hexdigest(),
@@ -294,7 +297,8 @@ def main(argv=None):
         distance_cutoff=original["arguments"]["distance_cutoff"],
     )
     (args.output_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
-    model = OpenDDEModelAbag()
+    print(f"OpenDDE compute: {precision}", flush=True)
+    model = OpenDDEModelAbag(compute_precision=precision)
     features, _ = model.binder_features(len(wt), [TargetChain(target, use_msa=False)])
 
     @eqx.filter_jit

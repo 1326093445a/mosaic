@@ -1,6 +1,6 @@
 # P17 → JN.1 nanobody redesign
 
-**Current summary and next actions (2026-09-30):
+**Current summary and next actions (2026-10-01):
 [P17 status and next steps](p17_status_and_next_steps.md).**
 This document retains the detailed project history; the summary distinguishes
 implemented work, verified behavior, outstanding review fixes and the next GPU run.
@@ -16,7 +16,8 @@ the open decisions.
 sequencing recommendation, and an infra note.**
 **Current handoff: §17 records the completed search pilot and pose-validation
 review; §17.6 describes the implemented, locally tested diagnostic-first
-workflow. §§14–16 describe gradients, exports and rescoring. Historical statements
+workflow; §§17.7–17.8 record the two diagnostic failures and fixes. §§14–16
+describe gradients, exports and rescoring. Historical statements
 that the original GPU runs are pending are superseded by §17. Real-model H200
 validation of the new diagnostic/ablation controls remains pending.**
 The current P17 search is an unfinished prototype, not a validated baseline.
@@ -1774,6 +1775,66 @@ JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false .venv/bin/python -m pytes
 Then relaunch the existing shell command into a fresh, automatically named output
 directory. A later diagnostic rejection for target fit or proposal influence
 remains possible and must be assessed from that run's evidence.
+
+### 17.8 First-gradient OOM and explicit BF16 mode
+
+Run `p17_pose_experiment_20261001_065921_3249389` passed the reference audit
+and loaded OpenDDE and AbLang2, then both workers failed during the **first
+pose-on gradient**, before on-repeat/off evaluations. Logs report failed
+allocation requests of 25.89 GiB and subsequently 82.70 GiB in
+`jit_LinearCombination`. The latter is an allocation request, not a measured
+whole-process peak. Search and held-out stages were not launched. These logs
+alone do not distinguish allocator limits, fragmentation and all live buffers.
+
+The existing `patch_jopendde_bf16_dtype.py` already defaults to BF16 inside
+triangular attention. Setting only `JOPENDDE_ATTENTION_DTYPE=bf16` would therefore
+usually repeat the previous setup. The new **`--opendde-dtype bf16`** mode also
+casts OpenDDE floating weights and neural input features/activations to BF16.
+It uses explicit BF16 linear projections so float32 coordinates and distances
+do not silently promote neural activations or break scan-carry types.
+Normalization statistics are computed in float32, then returned in the
+activation dtype. Integer indices and Boolean masks are preserved.
+
+Binder geometry refresh and its stored atom templates remain float32; feature
+casting happens afterward at the model boundary. The diffusion sampler keeps
+its coordinate state in float32, while denoiser neural outputs are BF16.
+Returned coordinates, confidence logits/reductions, RMSD alignment and sequence
+input gradients are float32. Casting outputs to float32 does not restore
+precision lost inside BF16 inference. AbLang2 is not cast. The prior scoped
+float32 pose-alignment fix and both diagnostic thresholds remain in place.
+
+The sequential launcher defaults to BF16 consistently for diagnostic, search
+and held-out workers, with the selected precision in `plan.json`, worker
+commands and configs. Standalone search and the shared model factory retain
+fp32 defaults. Standalone rescoring inherits the archived precision when present
+and assumes the old fp32 mode for historical runs. A launcher override
+`--opendde-dtype fp32` restores previous broad model precision; the existing
+attention environment override remains independent.
+
+**Validation:** the targeted CPU suite passed **99 tests**, with one GPU-only
+memory test skipped and two explicit checkpoint tests deselected. Using the real
+P17 reference and cached ABAG checkpoint, shape-only tracing passed forward and
+pose-plus-ipTM backward computation at four recycles/eight sampling steps:
+trunk states were BF16; reported confidence, coordinates and input gradients
+were float32. Shape tracing does not execute the prediction or measure GPU
+memory. **Six GPU tests passed on the RTX 4090**, including real-checkpoint
+forward prediction and a finite, nonzero sequence gradient for a small synthetic
+4-residue binder/8-residue target complex, one recycle and two sampling steps.
+The other five tests cover casts, float32 normalization statistics, gradients,
+and partitioned scan modules. Ruff and diff whitespace checks passed.
+Full-size BF16 gradient peak memory, numerical repeatability and guidance
+influence must still be checked on H200. BF16 does not guarantee that the earlier
+82.70 GiB allocation or total peak will halve.
+
+After syncing **all changed source files**, including the new
+`src/mosaic/opendde_precision.py`, launch a fresh experiment:
+
+```bash
+cd /storage/frank/mosaic
+bash examples/run_p17_pose_experiment.sh --devices 0,1,2,3,4,5,6,7 --opendde-dtype bf16
+```
+
+The stage barriers still require both diagnostic reports to pass before search.
 
 ## Appendix: file map
 

@@ -219,6 +219,7 @@ def build_parser():
         help="Provisional temperature in confidence-score units; 0 is greedy.",
     )
     parser.add_argument("--sampling-steps", type=int, default=8)
+    parser.add_argument("--opendde-dtype", choices=["fp32", "bf16"], default="fp32")
     parser.add_argument(
         "--proposal-path",
         choices=["full", "distogram"],
@@ -385,6 +386,8 @@ def main(argv=None):
         epitope_positions_0idx=epitope_idx.tolist(),
         confidence_metric="mean across seeds of directional-min ipSAE d0res (mean PAE)",
         checkpoint="opendde_abag.pt",
+        opendde_compute_precision=args.opendde_dtype,
+        ablang2_compute_precision="fp32",
         recycling_steps=OPENDDE_RECYCLING_STEPS,
         proposal_objective=dict(
             path=args.proposal_path,
@@ -434,6 +437,7 @@ def main(argv=None):
             "examples/p17_hallucination_search.py",
             "examples/p17_alpha_vs_jn1_native_opendde_analysis.py",
             "src/mosaic/models/opendde.py",
+            "src/mosaic/opendde_precision.py",
             "src/mosaic/losses/opendde.py",
             "src/mosaic/losses/structure_prediction.py",
             "src/mosaic/losses/transformations.py",
@@ -487,7 +491,8 @@ def main(argv=None):
             raise
 
     print("Loading frozen OpenDDE and AbLang2...", flush=True)
-    opendde = OpenDDEModelAbag()
+    print(f"OpenDDE compute: {args.opendde_dtype}; AbLang2: fp32", flush=True)
+    opendde = OpenDDEModelAbag(compute_precision=args.opendde_dtype)
     features, _ = opendde.binder_features(
         len(wt), [TargetChain(target_seq, use_msa=False)]
     )

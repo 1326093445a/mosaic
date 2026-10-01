@@ -186,6 +186,7 @@ def test_plan_has_matched_arms_and_heldout_seeds(modules, tmp_path):
         devices=list("01234567"),
         search_seeds=[0, 1],
         sampling_steps=8,
+        opendde_dtype="bf16",
         max_score_calls=32,
         max_gradient_calls=32,
         max_proposals=320,
@@ -200,6 +201,10 @@ def test_plan_has_matched_arms_and_heldout_seeds(modules, tmp_path):
         len(plan["diagnostic"]) == 2
         and len(plan["search"]) == len(plan["heldout"]) == 8
     )
+    for jobs in plan.values():
+        for job in jobs:
+            command = job["command"]
+            assert command[command.index("--opendde-dtype") + 1] == "bf16"
     for job in plan["search"]:
         command = job["command"]
         assert command[
