@@ -10,10 +10,12 @@ literature discussion, and Claude/Codex reviews.
 repeat batch completed. Predicted confidence improved, but reference-pose
 recovery and binding have not been established.** Full confidence-aware gradients
 are implemented; optional pose-aware retention and a gated sequential experiment
-are now implemented and locally tested. Two H200 diagnostic attempts stopped:
+are now implemented and locally tested. Three H200 diagnostic attempts stopped:
 first at the reference geometry precision check (fixed), then at the first
-full gradient with an 82.70 GiB allocation failure. An explicit wider BF16
-OpenDDE mode is now implemented; full-size H200 execution remains unverified.
+full gradient with an 82.70 GiB allocation failure, then with a reduced 51.10 GiB
+request in BF16 mode. The latest allocator counters suggest pool fragmentation.
+The shell launcher now defaults to preallocation with a 90% memory fraction;
+full-size H200 execution with these allocator settings remains unverified.
 
 The next step is a pose-measurement/guidance diagnostic, followed conditionally
 by a four-arm population comparison. The new controls and sequential launcher
@@ -171,6 +173,16 @@ cd /storage/frank/mosaic
 bash examples/run_p17_pose_experiment.sh --devices 0,1,2,3,4,5,6,7 --dry-run
 bash examples/run_p17_pose_experiment.sh --devices 0,1,2,3,4,5,6,7 --opendde-dtype bf16
 ```
+
+The shell wrapper now also defaults to `XLA_PYTHON_CLIENT_PREALLOCATE=true`
+and `XLA_PYTHON_CLIENT_MEM_FRACTION=0.90` for one worker per allocated H200.
+Explicit environment overrides are preserved, including the newer
+`XLA_CLIENT_MEM_FRACTION` alias. These settings appear at startup, in
+`commands.sh`/`plan.json`, and in diagnostic/search worker configs. An immediate
+jump in GPU memory usage reflects reservation. Direct Python invocation keeps
+its previous preallocation default. See
+[§17.9](p17_jn1_redesign.md#179-bf16-oom-allocator-evidence-and-shell-defaults)
+for the evidence and the remaining validation requirement.
 
 The sequential launcher now defaults to `--opendde-dtype bf16` for all three
 stages. This extends BF16 beyond the existing attention-core patch to OpenDDE

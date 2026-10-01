@@ -16,7 +16,7 @@ the open decisions.
 sequencing recommendation, and an infra note.**
 **Current handoff: §17 records the completed search pilot and pose-validation
 review; §17.6 describes the implemented, locally tested diagnostic-first
-workflow; §§17.7–17.8 record the two diagnostic failures and fixes. §§14–16
+workflow; §§17.7–17.9 record the diagnostic failures and fixes. §§14–16
 describe gradients, exports and rescoring. Historical statements
 that the original GPU runs are pending are superseded by §17. Real-model H200
 validation of the new diagnostic/ablation controls remains pending.**
@@ -1835,6 +1835,42 @@ bash examples/run_p17_pose_experiment.sh --devices 0,1,2,3,4,5,6,7 --opendde-dty
 ```
 
 The stage barriers still require both diagnostic reports to pass before search.
+
+### 17.9 BF16 OOM: allocator evidence and shell defaults
+
+Run `p17_pose_experiment_20261001_071544_3274606` again failed on the first
+pose-on gradient. BF16 reduced the failed allocation from 82.70 to **51.10 GiB**.
+The supplied memory logs show a **104.875 GiB JAX limit**, pools of **64.002 and
+68.002 GiB**, and a **32 GiB largest free block** after the exception. Pool growth
+headroom was then only 40.873/36.873 GiB, smaller than the requested allocation.
+The successful-allocation high-water mark was about 40.45 GiB; it excludes the
+failed allocation and is not the memory requirement of a successful full run.
+Post-failure `nvidia-smi` showed otherwise idle H200s, each reporting 143771 MiB
+total. It does not establish their occupancy at the time of failure.
+
+These observations strongly suggest fragmentation of the growing allocator pool;
+they do not prove that the complete computation will fit. JAX documents that
+[disabling preallocation increases fragmentation risk](https://docs.jax.dev/en/latest/gpu_memory_allocation.html).
+The next targeted test enables preallocation and a 90% memory fraction, retaining
+BF16 and all scientific settings/gates.
+
+`examples/run_p17_pose_experiment.sh` now exports those defaults before launching
+Python. Explicit caller overrides remain effective; if the newer
+`XLA_CLIENT_MEM_FRACTION` alias is supplied, the wrapper does not introduce the
+older alias alongside it. Allocator settings are printed and recorded in the
+batch plan, command provenance and diagnostic/search configs. This default is
+for the current one-worker-per-allocated-H200 setup; direct Python invocation
+retains its previous preallocation default.
+
+```bash
+cd /storage/frank/mosaic
+bash examples/run_p17_pose_experiment.sh --devices 0,1,2,3,4,5,6,7
+```
+
+BF16 is already the sequential launcher's default. The allocator change has not
+yet been validated with the full-size H200 diagnostic. A large immediate
+`nvidia-smi` allocation with preallocation enabled is reserved pool memory,
+not a measurement of live tensors.
 
 ## Appendix: file map
 

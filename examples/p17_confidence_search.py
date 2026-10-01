@@ -416,6 +416,10 @@ def main(argv=None):
                 "JOPENDDE_ATTENTION_DTYPE",
                 "XLA_FLAGS",
                 "XLA_PYTHON_CLIENT_PREALLOCATE",
+                "XLA_PYTHON_CLIENT_MEM_FRACTION",
+                "XLA_CLIENT_MEM_FRACTION",
+                "XLA_PYTHON_CLIENT_ALLOCATOR",
+                "TF_GPU_ALLOCATOR",
             )
         },
     )

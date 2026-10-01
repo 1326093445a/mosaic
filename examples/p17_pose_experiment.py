@@ -358,6 +358,22 @@ def main(argv=None):
     plan = build_plan(args)
     print(f"Repo: {REPO}\nGPUs: {','.join(args.devices)}; output: {root}")
     print(f"OpenDDE compute: {args.opendde_dtype}; AbLang2: fp32")
+    allocator_environment = {
+        key: os.environ[key]
+        for key in (
+            "XLA_PYTHON_CLIENT_PREALLOCATE",
+            "XLA_PYTHON_CLIENT_MEM_FRACTION",
+            "XLA_CLIENT_MEM_FRACTION",
+            "XLA_PYTHON_CLIENT_ALLOCATOR",
+            "TF_GPU_ALLOCATOR",
+        )
+        if key in os.environ
+    }
+    allocator_environment.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    allocator_assignments = " ".join(
+        f"{key}={shlex.quote(value)}" for key, value in allocator_environment.items()
+    )
+    print(f"Allocator environment: {allocator_assignments}")
     commands = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
@@ -372,7 +388,7 @@ def main(argv=None):
             device = args.devices[index % len(args.devices)]
             command = (
                 f"CUDA_VISIBLE_DEVICES={shlex.quote(device)} PYTHONUNBUFFERED=1 JAX_PLATFORMS=cuda "
-                f"XLA_PYTHON_CLIENT_PREALLOCATE={shlex.quote(os.environ.get('XLA_PYTHON_CLIENT_PREALLOCATE', 'false'))} "
+                f"{allocator_assignments} "
                 + shlex.join(job["command"])
             )
             commands.append(command)
@@ -387,7 +403,10 @@ def main(argv=None):
     (root / "status.tsv").write_text("stage\tworker\tgpu\tpid\texit_code\n")
     settings = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()}
     (root / "plan.json").write_text(
-        json.dumps(dict(settings=settings, stages=plan), indent=2) + "\n"
+        json.dumps(
+            dict(settings=settings, allocator_environment=allocator_environment, stages=plan),
+            indent=2,
+        ) + "\n"
     )
     (root / "README.md").write_text(
         "# Pose experiment\n\n"
