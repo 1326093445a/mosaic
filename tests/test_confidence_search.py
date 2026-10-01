@@ -668,8 +668,9 @@ def test_export_rejects_misidentified_or_invalid_structures(
     assert not list((tmp_path / "structures").rglob("*.pdb"))
 
 
+@pytest.mark.parametrize("retention", [False, True])
 def test_runner_writes_complete_layout_without_extra_predictions(
-    runner, export_prediction, tmp_path, monkeypatch
+    runner, export_prediction, tmp_path, monkeypatch, retention
 ):
     import csv
     import json
@@ -720,6 +721,7 @@ def test_runner_writes_complete_layout_without_extra_predictions(
             "population",
             "--output-dir",
             str(out),
+            *(["--retention-pose-margin", "3"] if retention else []),
             "--width",
             "2",
             "--max-score-calls",
@@ -734,6 +736,8 @@ def test_runner_writes_complete_layout_without_extra_predictions(
         ]
     )
     summary = json.loads((out / "summary.json").read_text())
+    assert (summary["retention_pose_ceiling_A"] is not None) == retention
+    assert summary["best_constraint_violation"] == 0
     assert summary["full_prediction_calls"] == 4
     assert summary["full_gradient_calls"] == 1
     assert len(list((out / "structures").rglob("*.pdb"))) == 4
@@ -955,3 +959,100 @@ def test_merge_pose_shards_rewrites_artifact_paths_and_checks_completion(
     ]
     assert all((tmp_path / row["confidence_file"]).exists() for row in rows)
     assert json.loads((tmp_path / "summary.json").read_text())["prediction_calls"] == 2
+
+
+@pytest.mark.parametrize("policy,width", [("independent", 1), ("population", 1), ("population", 2)])
+def test_constraint_cannot_be_bypassed_by_temperature_or_duplicate_filling(policy, width):
+    config = SearchConfig(policy=policy, width=width, alphabet_size=2,
+                          max_score_calls=2, acceptance_temperature=1e9)
+    result, events = run_toy(config, wt=np.array([0]), confidence=lambda seq: ConfidenceScore(
+        float(seq[0]), constraint_violation=float(seq[0]),
+    ))
+    assert all(c.sequence == (0,) for c in result.active)
+    assert result.best.sequence == (0,)
+    assert not next(e for e in events if e["event"] == "proposal")["accepted"]
+
+
+@pytest.mark.parametrize("policy", ["independent", "population"])
+def test_lower_violation_beats_higher_confidence_in_acceptance_and_archive(policy):
+    result, _ = run_toy(
+        SearchConfig(policy=policy, width=1, alphabet_size=2, max_score_calls=2,
+                     acceptance_temperature=0), wt=np.array([0]),
+        confidence=lambda seq: ConfidenceScore(-10. * seq[0], constraint_violation=2. - seq[0]),
+    )
+    assert result.active[0].sequence == result.best.sequence == (1,)
+    assert result.best.score == -10
+
+
+@pytest.mark.parametrize("violation", [-1, float("nan"), float("inf")])
+def test_invalid_constraint_rejected_before_search(violation):
+    with pytest.raises(ValueError, match="constraint violation"):
+        run_toy(SearchConfig(), confidence=lambda seq: ConfidenceScore(1., constraint_violation=violation))
+
+
+def test_population_distance_ties_challenge_worse_constraint_first():
+    from mosaic.search import Candidate, _competitor
+    active = [Candidate(0, (1, 0), .1, {}, 0.), Candidate(1, (0, 1), .9, {}, 1.)]
+    candidate = Candidate(2, (0, 0), .5, {}, 0.)
+    assert _competitor(active, candidate, 0, "population") == 1
+
+
+def test_pose_sampling_uses_worst_seed_without_extra_calls(runner):
+    binder = np.array([[1., 0., 0.], [0., 1., 0.], [0., 0., 1.]])
+    target = binder + 5.
+    calls = []
+    def predict(seq, seed):
+        calls.append(seed)
+        return np.zeros((6, 6)), np.concatenate([binder + [seed, 0, 0], target]), .5
+    score = runner.score_prediction_samples(predict, np.zeros(3), [1, 3], 12., 12.,
+                                            references=(binder, target))
+    assert calls == [1, 3]
+    assert score.metrics["worst_pose_rmsd_A"] == pytest.approx(3.)
+    assert score.metrics["binder_pose_rmsd_A"] == pytest.approx(2.)
+    assert score.value == pytest.approx(1.)
+
+
+def test_pose_toggle_changes_real_composite_gradient_and_preserves_aux_keys(runner, monkeypatch):
+    from types import SimpleNamespace
+    import equinox as eqx
+    import jax
+    import jax.numpy as jnp
+    from mosaic.common import LossTerm
+    from mosaic.optimizers import _ranking_leaf
+    import p17_hallucination_search as original
+
+    reference = jnp.asarray(np.random.default_rng(2).normal(size=(8, 3)))
+    class ZeroLoss(LossTerm):
+        def __call__(self, sequence, key, **kwargs):
+            return jnp.sum(sequence) * 0., {"key_marker": jax.random.uniform(key)}
+    class ToyLoss(LossTerm):
+        loss: object
+        def __call__(self, sequence, key):
+            ca = reference.at[:4, 0].add(2. + .2 * sequence[0, 0])
+            output = SimpleNamespace(backbone_coordinates=jnp.repeat(ca[:, None], 4, axis=1))
+            return self.loss(sequence=sequence, output=output, key=key)
+    class Model:
+        def build_loss(self, **kwargs):
+            return ToyLoss(kwargs["loss"])
+    for name in ("BinderTargetContact", "Ablang2PseudoLikelihood"):
+        monkeypatch.setattr(original, name, lambda *a, **kw: ZeroLoss())
+    kwargs = dict(opendde=Model(), features=None, ablang2_model=None, ablang2_tokenizer=None,
+                  reference_distances=np.zeros((4, 4)), reference_binder_ca=reference[:4],
+                  reference_target_ca=reference[4:], binder_seq="AAAA", designable_idx=np.arange(4),
+                  epitope_idx=np.array([0]), edit_budget=5, stop_grad_ablang2=False,
+                  opendde_path="full", pose_tolerance=0., opendde_sampling_steps=8,
+                  opendde_num_samples=1, confidence_loss=ZeroLoss())
+    evaluations = []
+    for weight in (1., 0.):
+        loss, _ = original.build_composite_losses(**kwargs, pose_weight=weight)
+        evaluations.append(eqx.filter_value_and_grad(loss, has_aux=True)(
+            jax.nn.one_hot(jnp.zeros(4, dtype=int), 20), key=jax.random.key(0)))
+    ((value_on, aux_on), grad_on), ((value_off, aux_off), grad_off) = evaluations
+    assert float(value_on) > float(value_off)
+    assert np.linalg.norm(grad_on) > 0
+    np.testing.assert_allclose(grad_off, 0., atol=1e-7)
+    for key in ("binder_pose_rmsd", "pose_target_fit_rmsd", "key_marker"):
+        assert float(_ranking_leaf(aux_on, key)) == pytest.approx(float(_ranking_leaf(aux_off, key)))
+    # Full auxiliary trees (including downstream random-key markers) agree.
+    for a, b in zip(jax.tree.leaves(aux_on), jax.tree.leaves(aux_off)):
+        np.testing.assert_array_equal(a, b)

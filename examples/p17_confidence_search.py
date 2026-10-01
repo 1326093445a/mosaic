@@ -4,7 +4,8 @@ Starts each slot from WT. By default, proposals use full OpenDDE gradients from
 contacts, pose RMSD, ipTM, bidirectional interface PAE and pTMEnergy, plus AbLang2
 and the edit penalty. --proposal-path distogram retains the earlier cheap path.
 Every new proposal separately receives forward-only full OpenDDE scoring.
-Selection maximizes mean ipSAE-min across a fixed list of structural seeds.
+Selection maximizes mean ipSAE-min across fixed structural seeds, optionally
+prioritizing a worst-seed, WT-relative pose constraint.
 This is a pilot harness, not a validated binding-optimization pipeline.
 
 Run on a suitably provisioned GPU through run_p17_confidence_search.sh. Use the
@@ -26,6 +27,7 @@ import hashlib
 from importlib.metadata import PackageNotFoundError, version
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import time
@@ -33,7 +35,7 @@ import time
 import numpy as np
 
 from mosaic.search import ConfidenceScore, SearchConfig, run_gradient_search
-from p17_search_outputs import SearchOutputs, compact_prediction
+from p17_search_outputs import SearchOutputs, compact_prediction, pose_metrics
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -149,7 +151,9 @@ def confidence_metrics(pae, ca, binder_length, pae_cutoff, distance_cutoff):
     )
 
 
-def score_prediction_samples(predict, sequence, seeds, pae_cutoff, distance_cutoff):
+def score_prediction_samples(
+    predict, sequence, seeds, pae_cutoff, distance_cutoff, *, references=None
+):
     """Score every fixed seed, then average per-seed directional minima.
 
     ``predict(sequence, seed)`` returns (PAE, CA coordinates, ipTM). It runs a
@@ -162,6 +166,8 @@ def score_prediction_samples(predict, sequence, seeds, pae_cutoff, distance_cuto
             np.asarray(pae), np.asarray(ca), len(sequence), pae_cutoff, distance_cutoff
         )
         values["iptm"] = float(iptm)
+        if references is not None:
+            values.update(pose_metrics(ca, *references))
         samples.append(values)
         metrics.update({f"seed_{seed}_{name}": value for name, value in values.items()})
     metrics.update(
@@ -170,6 +176,8 @@ def score_prediction_samples(predict, sequence, seeds, pae_cutoff, distance_cuto
             for name in samples[0]
         }
     )
+    if references is not None:
+        metrics["worst_pose_rmsd_A"] = max(v["binder_pose_rmsd_A"] for v in samples)
     return ConfidenceScore(metrics["ipsae_min"], metrics)
 
 
@@ -217,6 +225,17 @@ def build_parser():
         default="full",
         help="full includes confidence and coordinate-RMSD gradients; distogram is the earlier proxy objective.",
     )
+    parser.add_argument("--weight-pose", type=float, default=1.0)
+    parser.add_argument(
+        "--retention-pose-margin",
+        type=float,
+        default=None,
+        help="Optional worst-seed RMSD ceiling: measured WT plus this margin (angstroms).",
+    )
+    parser.add_argument("--pose-diagnostic", action="store_true")
+    parser.add_argument("--diagnostic-max-target-rmsd", type=float, default=3.0)
+    parser.add_argument("--diagnostic-min-proposal-tv", type=float, default=1e-4)
+    parser.add_argument("--diagnostic-repeat-factor", type=float, default=3.0)
     parser.add_argument("--weight-iptm", type=float, default=0.025)
     parser.add_argument(
         "--weight-interface-pae",
@@ -272,6 +291,7 @@ def main(argv=None):
         if any(
             not np.isfinite(v) or v < 0
             for v in (
+                args.weight_pose,
                 args.weight_iptm,
                 args.weight_interface_pae,
                 args.weight_ptm_energy,
@@ -279,13 +299,39 @@ def main(argv=None):
             )
         ):
             raise ValueError(
-                "confidence weights and RMSD tolerance must be finite and nonnegative"
+                "proposal weights and RMSD tolerance must be finite and nonnegative"
             )
         if any(
             not np.isfinite(v) or v <= 0
             for v in (args.pae_cutoff, args.distance_cutoff)
         ):
             raise ValueError("cutoffs must be positive and finite")
+        if args.retention_pose_margin is not None and (
+            not np.isfinite(args.retention_pose_margin)
+            or args.retention_pose_margin < 0
+        ):
+            raise ValueError("retention pose margin must be finite and nonnegative")
+        if (
+            any(
+                not np.isfinite(v) or v <= 0
+                for v in (
+                    args.diagnostic_max_target_rmsd,
+                    args.diagnostic_min_proposal_tv,
+                    args.diagnostic_repeat_factor,
+                )
+            )
+            or args.diagnostic_min_proposal_tv > 1
+        ):
+            raise ValueError("invalid diagnostic thresholds")
+        if args.pose_diagnostic and (
+            args.proposal_path != "full"
+            or args.weight_pose <= 0
+            or args.retention_pose_margin is not None
+            or args.edit_budget == 0
+        ):
+            raise ValueError(
+                "diagnostic requires full path, positive pose weight/edit budget, no retention"
+            )
     except ValueError as exc:
         parser.error(str(exc))
     # Prevent accidentally replacing an earlier experiment's evidence.
@@ -344,7 +390,7 @@ def main(argv=None):
             path=args.proposal_path,
             weights=dict(
                 contact=WEIGHT_OPENDDE_CONTACT,
-                pose=1.0,
+                pose=args.weight_pose,
                 ablang2=WEIGHT_ABLANG2,
                 edit_budget=WEIGHT_EDIT_BUDGET,
                 iptm=args.weight_iptm if args.proposal_path == "full" else 0.0,
@@ -384,6 +430,7 @@ def main(argv=None):
             "src/mosaic/search.py",
             "examples/p17_confidence_search.py",
             "examples/p17_search_outputs.py",
+            "examples/p17_pose_diagnostics.py",
             "examples/p17_hallucination_search.py",
             "examples/p17_alpha_vs_jn1_native_opendde_analysis.py",
             "src/mosaic/models/opendde.py",
@@ -401,6 +448,43 @@ def main(argv=None):
             metadata["versions"][package] = None
     metadata_path = args.output_dir / "config.json"
     metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+
+    reference_audit = None
+    if args.pose_diagnostic:
+        from p17_pose_diagnostics import audit_reference, geometry_checks, write_report
+        from p17_hallucination_search import BINDER_CHAIN, TARGET_CHAIN, COMPLEX_PDB
+
+        try:
+            reference_audit = audit_reference(
+                model,
+                (BINDER_CHAIN, TARGET_CHAIN),
+                (binder_seq, target_seq),
+                (binder_ca, target_ca),
+            )
+            reference_audit["source_sha256"] = hashlib.sha256(
+                COMPLEX_PDB.read_bytes()
+            ).hexdigest()
+            reference_audit["geometry"] = geometry_checks(binder_ca, target_ca)
+            shutil.copyfile(COMPLEX_PDB, args.output_dir / "reference.pdb")
+            np.savez_compressed(
+                args.output_dir / "confidence/reference_ca.npz",
+                binder_ca=binder_ca,
+                target_ca=target_ca,
+                designable_mask=mask,
+            )
+            metadata["reference_audit"] = reference_audit
+            metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+        except Exception as exc:
+            write_report(
+                args.output_dir,
+                dict(
+                    schema_version=1,
+                    passed=False,
+                    checks={"reference_geometry": False},
+                    error=f"{type(exc).__name__}: {exc}",
+                ),
+            )
+            raise
 
     print("Loading frozen OpenDDE and AbLang2...", flush=True)
     opendde = OpenDDEModelAbag()
@@ -427,7 +511,7 @@ def main(argv=None):
             args.weight_interface_pae,
             args.weight_ptm_energy,
         )
-    proposal_loss, _ = build_composite_losses(
+    proposal_kwargs = dict(
         opendde=opendde,
         features=features,
         ablang2_model=ablang_model,
@@ -446,9 +530,12 @@ def main(argv=None):
         opendde_num_samples=1,
         confidence_loss=confidence_loss,
     )
-    gradient_eval = eqx.filter_jit(
-        eqx.filter_value_and_grad(proposal_loss, has_aux=True)
-    )
+
+    def make_gradient(weight):
+        proposal_loss, _ = build_composite_losses(**proposal_kwargs, pose_weight=weight)
+        return eqx.filter_jit(eqx.filter_value_and_grad(proposal_loss, has_aux=True))
+
+    gradient_eval = make_gradient(args.weight_pose)
 
     # Bound to a real file handle just before run_gradient_search executes (see
     # below). gradient_fn/predict_sequence close over this name; reassigning it
@@ -474,22 +561,24 @@ def main(argv=None):
         memory_log.write(json.dumps(record, allow_nan=False) + "\n")
         memory_log.flush()
 
-    def gradient_fn(sequence):
+    def gradient_details(sequence, evaluator, weight):
         with record_memory_call(
             log_memory,
             "gradient",
             sequence,
             proposal_path=args.proposal_path,
             seed=args.proposal_model_seed,
+            pose_weight=weight,
         ):
             x = jax.nn.one_hot(jnp.asarray(sequence), len(TOKENS))
-            (value, aux), gradient = gradient_eval(x, key=model_key)
+            (value, aux), gradient = evaluator(x, key=model_key)
             value = float(value)
             gradient = np.asarray(gradient)
             metrics = {}
             for name in (
                 "target_contact",
                 "binder_pose_rmsd",
+                "pose_target_fit_rmsd",
                 "binder_target_distogram_drift",
                 "iptm",
                 "bt_pae",
@@ -506,10 +595,14 @@ def main(argv=None):
                     sequence=sequence.tolist(),
                     proposal_path=args.proposal_path,
                     proposal_loss=value,
+                    pose_weight=weight,
                     metrics=metrics,
                 )
             )
-        return value, gradient
+        return value, gradient, metrics
+
+    def gradient_fn(sequence):
+        return gradient_details(sequence, gradient_eval, args.weight_pose)[:2]
 
     @eqx.filter_jit
     def prediction(model, features, x, key):
@@ -528,7 +621,8 @@ def main(argv=None):
         # Keep exact scored atoms for export, without transferring large logits.
         return compact_prediction(output), iptm
 
-    def predict_sequence(sequence, seed):
+    def predict_sequence(sequence, seed, *, store=None):
+        store = outputs if store is None else store
         with record_memory_call(log_memory, "confidence", sequence, seed=seed):
             x = jax.nn.one_hot(jnp.asarray(sequence), len(TOKENS))
             output, iptm = prediction(opendde, features, x, jax.random.key(seed))
@@ -537,8 +631,8 @@ def main(argv=None):
             metrics = confidence_metrics(
                 pae, ca, len(sequence), args.pae_cutoff, args.distance_cutoff
             )
-            outputs.save_prediction(
-                outputs.candidate_id(sequence),
+            store.save_prediction(
+                store.candidate_id(sequence),
                 seed,
                 "".join(TOKENS[i] for i in sequence),
                 target_seq,
@@ -547,13 +641,42 @@ def main(argv=None):
             )
         return pae, ca, iptm
 
+    retention_ceiling = None
+
     def confidence_fn(sequence):
-        return score_prediction_samples(
+        nonlocal retention_ceiling
+        score = score_prediction_samples(
             predict_sequence,
             sequence,
             args.selection_seeds,
             args.pae_cutoff,
             args.distance_cutoff,
+            references=(binder_ca, target_ca),
+        )
+        if args.retention_pose_margin is None:
+            return score
+        if retention_ceiling is None:
+            if not np.array_equal(sequence, wt):
+                raise ValueError("WT must be scored first to calibrate retention")
+            retention_ceiling = (
+                score.metrics["worst_pose_rmsd_A"] + args.retention_pose_margin
+            )
+            metadata["retention"] = dict(
+                kind="worst_seed_WT_relative",
+                ceiling_A=retention_ceiling,
+                margin_A=args.retention_pose_margin,
+                interpretation="baseline preservation, not a correct-pose claim",
+            )
+            metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
+        violation = max(0.0, score.metrics["worst_pose_rmsd_A"] - retention_ceiling)
+        return ConfidenceScore(
+            score.value,
+            dict(
+                score.metrics,
+                pose_ceiling_A=retention_ceiling,
+                pose_feasible=float(violation == 0),
+            ),
+            violation,
         )
 
     metadata.update(
@@ -586,6 +709,53 @@ def main(argv=None):
                     flush=True,
                 )
 
+        if args.pose_diagnostic:
+            from p17_pose_diagnostics import run_diagnostic, write_report
+
+            try:
+                off_eval = make_gradient(0.0)
+                repeat_root = args.output_dir / "repeat"
+                repeat_root.mkdir()
+                repeat_outputs = SearchOutputs(repeat_root, binder_ca, target_ca)
+                report = run_diagnostic(
+                    root=args.output_dir,
+                    wt=wt,
+                    mask=mask,
+                    config=config,
+                    gradient_on=lambda seq: gradient_details(
+                        seq, gradient_eval, args.weight_pose
+                    ),
+                    gradient_off=lambda seq: gradient_details(seq, off_eval, 0.0),
+                    predict=predict_sequence,
+                    repeat_predict=lambda seq, seed: predict_sequence(
+                        seq, seed, store=repeat_outputs
+                    ),
+                    references=(binder_ca, target_ca),
+                    seeds=args.selection_seeds,
+                    pae_cutoff=args.pae_cutoff,
+                    distance_cutoff=args.distance_cutoff,
+                    max_target_rmsd=args.diagnostic_max_target_rmsd,
+                    min_proposal_tv=args.diagnostic_min_proposal_tv,
+                    repeat_factor=args.diagnostic_repeat_factor,
+                )
+                report["reference_audit"] = reference_audit
+                report["memory_at_completion"] = device_memory_stats()
+                write_report(args.output_dir, report)
+            except Exception as exc:
+                write_report(
+                    args.output_dir,
+                    dict(
+                        schema_version=1,
+                        passed=False,
+                        checks={"completed": False},
+                        error=f"{type(exc).__name__}: {exc}",
+                    ),
+                )
+                raise
+            if not report["passed"]:
+                raise SystemExit("Pose diagnostic failed; see diagnostic.json")
+            return
+
         result = run_gradient_search(
             wt=wt,
             designable_mask=mask,
@@ -597,7 +767,11 @@ def main(argv=None):
     active_ids = {candidate.id for candidate in result.active}
     ranking = {
         c.id: i + 1
-        for i, c in enumerate(sorted(result.evaluated, key=lambda c: (-c.score, c.id)))
+        for i, c in enumerate(
+            sorted(
+                result.evaluated, key=lambda c: (c.constraint_violation, -c.score, c.id)
+            )
+        )
     }
     with (args.output_dir / "tables/candidates.csv").open("x", newline="") as handle:
         writer = csv.DictWriter(
@@ -610,6 +784,8 @@ def main(argv=None):
                 "sequence",
                 "edits",
                 "score",
+                "constraint_violation",
+                "worst_pose_rmsd_A",
                 "proposal_loss",
                 "active",
                 "best",
@@ -626,6 +802,8 @@ def main(argv=None):
                     sequence="".join(TOKENS[i] for i in candidate.sequence),
                     edits=int(np.count_nonzero(wt != candidate.sequence)),
                     score=candidate.score,
+                    constraint_violation=candidate.constraint_violation,
+                    worst_pose_rmsd_A=candidate.metrics["worst_pose_rmsd_A"],
                     proposal_loss=result.cheap_losses.get(candidate.id, ""),
                     active=candidate.id in active_ids,
                     best=candidate.id == result.best.id,
@@ -641,6 +819,8 @@ def main(argv=None):
         stop_reason=result.stop_reason,
         best_id=result.best.id,
         best_score=result.best.score,
+        best_constraint_violation=result.best.constraint_violation,
+        retention_pose_ceiling_A=retention_ceiling,
         best_sequence="".join(TOKENS[i] for i in result.best.sequence),
         active_ids=[candidate.id for candidate in result.active],
         full_prediction_calls=result.stats["score_calls"] * len(args.selection_seeds),

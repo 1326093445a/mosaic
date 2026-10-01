@@ -1,6 +1,6 @@
 # P17 → JN.1 nanobody redesign
 
-**Current summary and next actions (2026-09-23):
+**Current summary and next actions (2026-09-30):
 [P17 status and next steps](p17_status_and_next_steps.md).**
 This document retains the detailed project history; the summary distinguishes
 implemented work, verified behavior, outstanding review fixes and the next GPU run.
@@ -10,12 +10,15 @@ Covers the goal, the biology, the predictor controls,
 the infrastructure work that made it runnable, the current design pipeline, and
 the open decisions.
 
-**For Claude: read §10 first for the latest discussion and policy shortlist.**
+**For Claude: read §17 first for the completed cluster results and next two tests;
+§10 retains the policy shortlist.**
 **For Codex: read §11 for Claude's response — two literature additions, a
 sequencing recommendation, and an infra note.**
-**Latest implementation: §14 enables full OpenDDE confidence/RMSD gradients
-for both policies and fixes the reviewed memory logging. GPU validation remains
-pending. §§12–13 retain the initial implementation history.**
+**Current handoff: §17 records the completed search pilot and pose-validation
+review; §17.6 describes the implemented, locally tested diagnostic-first
+workflow. §§14–16 describe gradients, exports and rescoring. Historical statements
+that the original GPU runs are pending are superseded by §17. Real-model H200
+validation of the new diagnostic/ablation controls remains pending.**
 The current P17 search is an unfinished prototype, not a validated baseline.
 The agreed direction retains mosaic's OpenDDE + AbLang2 gradient guidance,
 keeps the framework fixed, and brings full interface-confidence evaluation into
@@ -1428,6 +1431,310 @@ and a toy rescoring workflow. Real-model rescoring is pending on the cluster.
 
 ---
 
+## 17. Completed cluster review and next two tests — 2026-09-30
+
+**Decision:** keep population search as the provisional policy for the next
+controlled experiment. First verify that the pose measurement is interpretable
+and that pose guidance changes feasible proposals. Then separate proposal
+guidance from pose-aware retention in a four-arm comparison. Increasing RMSD or
+confidence weights alone is not yet justified by the available results.
+
+**Implementation status:** the controls, diagnostic report gate, optional
+pose-aware retention and sequential launcher are now implemented and tested
+locally. See §17.6 for exact defaults and commands. The new workflow has **not**
+been run with real OpenDDE/AbLang2 checkpoints or on the H200 cluster. Sections
+17.3–17.5 preserve the rationale and requirements behind this implementation.
+
+### 17.1 Evidence from the completed runs
+
+The user supplied successful cluster logs for:
+
+- `p17_confidence_pilot_20260929_194857_1770469`: four independent and four
+  population search runs, all eight workers exiting 0.
+- `p17_pose_validation_20260930_022801_2099838`: WT plus eight distinct winners,
+  structural seeds 0/1/2 (27 predictions), followed by seed 0 in fresh processes
+  (nine predictions). All workers in both stages exited 0.
+
+The numbers below come from the saved local review products,
+[`p17_pilot_review/review.json`](../results/p17_pilot_review/review.json),
+[`p17_pose_review/review.json`](../results/p17_pose_review/review.json), and
+[`candidate_summary.csv`](../results/p17_pose_review/candidate_summary.csv).
+They were reread for this handoff; this update did not rerun the archive analysis
+or the models. These result files are local evidence and may not accompany a
+fresh checkout. The pose review's artifact-presence loop checks the seed-0
+validation/repeat files; its `all_expected_artifacts_present` flag alone is not
+an audit of every seed-1/2 artifact.
+
+| Observation | Saved result | Interpretation |
+|---|---|---|
+| Original pilot mean best selection ipSAE | Independent 0.0304; population 0.1351 | Encourages a population follow-up, but four search seeds per arm do not establish superiority |
+| Original pilot compute | 256 score calls; 202 gradient calls across eight runs | Execution worked; equal configured ceilings did not imply equal realized work |
+| Rescored WT mean ipSAE, seeds 0/1/2 | 0.0000 | Baseline for this particular predictor/setup |
+| Best rescored mean and worst-seed ipSAE | Candidate 8 (`population_seed3`): mean 0.2539, minimum 0.2060 | Confidence gain persists across these three predictions; seed 0 was used for original selection |
+| Candidate 8 mean pose/target-fit/binder-internal RMSD | 33.71 / 16.24 / 16.66 Å | Does not demonstrate restoration of the reference pose or binder shape |
+| WT mean pose/target-fit/binder-internal RMSD | 48.19 / 16.04 / 16.12 Å | Large discrepancies already exist in the baseline |
+| Candidate 7 (`population_seed2`) ipSAE range | 0.0228–0.2573 | Substantial structural-seed dependence |
+| Largest seed-0 repeat differences | ipSAE 0.0262; reported pose RMSD 1.295 Å | Same nominal seed did not reproduce identical outputs across these fresh processes |
+| Rescoring JAX running peak | About 28.77 GiB | Forward-only allocator high-water mark; not the full-gradient memory requirement |
+
+All eight winners exceed WT ipSAE on each of the three rescoring seeds in the
+saved table. This supports a limited claim of improved predicted interface
+confidence. It does not establish binding affinity, neutralization, correct
+pose, or an effective causal contribution from the RMSD gradient. The original
+pilot did not save structures; the validation structures are new predictions
+of its archived sequences.
+
+### 17.2 Behavior of the completed pilot and unchanged pose calculation
+
+`BinderPoseRMSD` fits the predicted target CA atoms to the reference target,
+applies that transform to the predicted binder, and measures binder CA RMSD.
+Independently aligning the binder measures internal shape and would remove the
+rigid-body displacement that the pose metric needs to retain. Report both,
+alongside target-fit RMSD; a poorly fitting target makes the pose interpretation
+uncertain even when the numerical calculation completes.
+
+The full proposal objective includes coordinate pose RMSD, contact guidance,
+ipTM, bidirectional interface PAE, pTMEnergy, AbLang2 and the edit penalty. The
+coordinate pathway is differentiable. The separately evaluated ipSAE score
+controlled retention and therefore future parents in the completed pilot; RMSD did not.
+Consequently, the search can retain a higher-confidence candidate with worse
+reference-pose agreement.
+
+Clipping and entropy normalization matter. `ClippedGradient` uses a custom
+backward rule, and the proposal distribution adapts its temperature to a target
+entropy. Multiplying a loss coefficient can be absorbed by clipping or by a
+change in temperature. A logged nonzero RMSD scalar therefore does not prove
+useful sequence guidance, and a nonzero sequence gradient does not prove an
+improving discrete mutation. The hinge has no upper bound on its loss value.
+Neither the hinge nor clipping establishes an optimal balance between terms.
+
+The runner constructs the target from sequence without a structural
+template. This may contribute to reference disagreement, but it is an untested
+explanation. A template is conditioning, not a guarantee of fixed coordinates.
+Check residue mapping, CA extraction, units and alignment conventions before
+attributing the roughly 16 Å target/internal discrepancies to the model.
+
+### 17.3 Test 1: pose measurement and guidance influence
+
+Keep this a diagnostic experiment, before another optimization campaign:
+
+1. **Verify correspondence.** Check chain identity, sequence order, residue
+   numbering/insertion codes, missing CA atoms and coordinate units against
+   `P17_JN1.pdb`. Fail explicitly on an ambiguous mapping or degenerate target
+   alignment. Any residue mask must be recorded and shared between loss and
+   reporting; do not silently omit missing residues.
+2. **Verify geometry.** Identity and a rigid transform of the entire complex
+   must produce approximately zero pose error. Moving only the binder must
+   preserve its independently aligned internal RMSD while changing pose RMSD.
+   Cross-check the differentiable loss against the independent reporting
+   calculation on identical coordinates and residue correspondence.
+3. **Measure actual guidance influence.** For the same sequence, model seed,
+   settings and random-key schedule, compare the composite gradient with pose
+   enabled against pose weight zero. Keep the loss structure/key schedule fixed.
+   Report CDR-restricted gradient norms, gradient difference/direction, mutation
+   deltas, and change in the normalized feasible-proposal probabilities. The
+   difference is a change in the composite clipped gradient, not necessarily
+   the isolated raw RMSD gradient.
+4. **Connect gradients to discrete predictions.** Check a small, prespecified
+   set of feasible proposed edits with full forward predictions under matched
+   structural seeds. Record predicted first-order changes and observed pose,
+   target-fit and confidence changes. A diagnostic effect on proposals is not
+   itself evidence of improved predicted poses.
+5. **Record variability and artifacts.** Save reference/proposal/forward
+   provenance, model and search seeds, CIF/PDB/NPZ, per-term diagnostics, timing
+   and memory. Include a repeated baseline because the completed run was not
+   exactly repeatable. Distinguish structures used for proposal gradients from
+   the separate retention predictions.
+
+The stage must produce a machine-readable pass/fail report with reasons.
+Finite tensors and exit code 0 are necessary but insufficient. The report must
+cover correspondence/geometry checks, meaningful proposal influence relative
+to repeat variability, and whether the reference alignment is interpretable.
+Numerical tolerances and any target-fit threshold must be specified before the
+comparison and recorded as provisional; no scientifically validated cutoff has
+been established here. If any prerequisite is unresolved, stop before Test 2
+and retain the diagnostic evidence. In particular, unexplained target-fit RMSD
+near 16 Å must not be waved through merely because gradients are finite.
+
+### 17.4 Test 2: four-arm population ablation
+
+Once Test 1 supports an interpretable pose objective, fix the search policy to
+population and vary only these two factors:
+
+| Arm | Pose in proposal gradient | Pose-aware retention |
+|---|---|---|
+| A: ablation baseline | Off | Off |
+| B: guidance only | On | Off |
+| C: retention only | Off | On |
+| D: both | On | On |
+
+Arm B corresponds to the current conceptual combination. All arms retain the
+same contact, confidence, AbLang2 and edit objectives, CDR mask, edit cap, width,
+proposal entropy, sampling settings and configured evaluation ceilings. Record
+actual forward/backward calls and elapsed time: constraints and cache hits can
+change realized cost. Avoid simultaneously tuning confidence weights or changing
+templates, since that would confound the two factors.
+
+**Proposed retention behavior:** retain raw mean ipSAE as the confidence score
+and report pose feasibility separately. Prefer feasible candidates; if none are
+feasible, rank first by a declared nonnegative pose violation, then by ipSAE.
+Apply the same rule to competition, duplicate-slot filling, elite protection,
+archive winner selection and exported ranks. Stochastic confidence acceptance
+must not bypass the pose rule. Avoid silently adding Å to a dimensionless score.
+
+The pose threshold, aggregation over selection seeds (mean versus worst seed),
+and behavior when WT is infeasible remain explicit design choices to settle
+from Test 1 before launch. A WT-relative ceiling would mean "no worse than this
+baseline plus a margin"; it would not establish a correct pose, especially with
+the present poor baseline. Save feasibility as well as raw scores for all arms
+so they can be evaluated under one common definition afterward.
+
+For an initial eight-GPU diagnostic comparison, use **two search seeds per arm**
+(eight workers, one per GPU). This is a proposed exploratory allocation, not a
+powered study; expand search-seed replication only after the checks succeed.
+Reserve structural seeds not used to tune guidance, thresholds or retention
+for a separate winner evaluation. Report mean/worst-seed ipSAE, all three RMSDs,
+feasible fraction and compute cost. Include WT, and do not select a final winner
+solely because it has the highest confidence. Biological binding remains a
+separate validation question.
+
+### 17.5 Code handoff and sequential cluster execution
+
+Implementation checklist (now addressed by §17.6):
+
+- Expose a validated pose coefficient without changing legacy defaults; preserve
+  the paired diagnostic's random-key schedule when setting it to zero.
+- Add correspondence/alignment checks and gradient/proposal-influence reporting.
+  Correct the existing loss docstring's claims about fixed template coordinates
+  and a bounded hinge loss.
+- Add optional pose-aware retention without coupling the shared harness to
+  OpenDDE; keep score, violation, winner selection and exported ranks consistent.
+- Add a portable shell entry point for Test 1 → report gate → Test 2 → held-out
+  rescoring. Resolve the repo/environment from the checkout so
+  `/storage/frank/mosaic` works; use bounded parallel workers across the allocated
+  GPUs inside each stage, with no overlap between stages.
+- Preserve fresh output directories, exact commands/configuration, worker exit
+  codes, logs, tables and structure provenance. A failed worker or diagnostic
+  gate must prevent dependent stages. Provide a dry-run preview.
+- Test the geometry, pose toggle, constrained acceptance/elite/archive behavior,
+  seed separation and launcher failure propagation before a real-model run.
+
+The existing `run_p17_pose_validation.sh` still only rescores archived winners
+and repeats seed 0. Use the separate launcher below for the new protocol.
+
+### 17.6 Implemented workflow and launch commands
+
+New entry point: `examples/run_p17_pose_experiment.sh`, backed by
+`p17_pose_experiment.py`. Paths follow the checkout, including
+`/storage/frank/mosaic`; the interpreter is that checkout's `.venv/bin/python`.
+No changes were made to the nested `OpenDDE/` repository.
+
+```bash
+cd /storage/frank/mosaic
+bash examples/run_p17_pose_experiment.sh --devices 0,1,2,3,4,5,6,7 --dry-run
+bash examples/run_p17_pose_experiment.sh --devices 0,1,2,3,4,5,6,7
+```
+
+The dry-run creates no output directories, applies no patches, and loads no
+models. The real launch applies the existing three dependency patches once,
+records the plan and exact worker commands, then executes sequential stages:
+
+| Stage | Default work | Barrier |
+|---|---|---|
+| `diagnostic/` | Two workers with proposal-model seeds 0 and 1; each evaluates pose on, on-repeat, off; forward WT and the top on/off proposed edits under structural seeds 0/1, plus WT repeats | Both workers must exit 0 and both reports must pass every required check |
+| `search/` | A neither, B guidance, C retention, D both; search seeds 0/1 per arm, eight workers total | Every search worker must succeed |
+| `heldout/` | WT plus distinct archived winners; structural seeds 101/102/103, sharded across allocated GPUs | Every shard must finish and merged CIF/PDB/NPZ paths must exist |
+
+Two GPUs are used during diagnostics; the eight search workers use all eight
+allocated GPUs. Fewer GPUs run bounded batches. Each worker must fit on one GPU;
+memory is not pooled. Workers explicitly select the CUDA backend. The diagnostic
+has six full gradient calls total and 12–16 forward calls total, depending on
+whether the top on/off edit is identical. Search defaults remain width 4,
+CDR-only, five edits, proposal entropy 0.6 and confidence temperature 0.02;
+ceilings are 32 unique scored sequences, 32 unique parent gradients and 320
+proposals per worker. Selection uses structural seeds 0/1, so 32 score calls
+mean 64 standalone full predictions. Search gradients use proposal-model seed 0.
+Held-out predictions are not fed back into selection.
+
+**Diagnostic checks and provisional thresholds.** Reference chain/residue/CA
+correspondence is explicit, including insertion codes, sequence order and all
+CA indices. Missing/ambiguous CA atoms, coincident/collinear alignment points,
+or adjacent CA spacing outside 2.5–4.5 Å fail the audit. Spacing is a unit/gap
+sanity check, not proof of physical validity. The reference PDB, CA arrays and
+CDR mask are saved. Identity, global-rigid and binder-only translation controls
+cross-check the independent NumPy reporter against the actual JAX loss, with
+1e-3 Å tolerance; every diagnostic forward prediction receives the same
+cross-check on identical coordinates.
+
+The full composite loss keeps its pose term present at weight zero, preserving
+random-key scheduling and scalar auxiliaries. The diagnostic measures CDR
+norms, direction, gradient differences, feasible mutation deltas and normalized
+proposal probabilities. The total-variation distance between on/off proposals
+must exceed both 1e-4 and three times the on/on-repeat variation. Paired pose
+scalars must agree within max(1e-3 Å, three times the repeat difference). Target
+fit must be at most **3 Å** in all diagnostic forward and gradient evaluations.
+These are configurable, provisional checks, recorded before execution; they are
+not validated biological cutoffs. The previously observed roughly 16 Å target
+fit would stop automatic continuation. A gate pass establishes interpretable
+measurement and detectable proposal influence, not improvement or affinity.
+
+The probe rule is fixed before seeing outcomes: evaluate WT and the highest
+probability feasible edit under each objective, deduplicated. Predicted
+first-order **composite-loss** deltas are saved alongside observed pose,
+target-fit and confidence changes; they are not labeled isolated RMSD-gradient
+predictions. Repeats are within each worker process; they do not characterize
+fresh-process or cross-GPU variability exposed by the earlier validation run.
+Gradient-path coordinates are not exported: saved CIF/PDB/NPZ files are the
+separate forward predictions, with proposal scalar diagnostics recorded in logs.
+
+**Retention semantics.** `--weight-pose` defaults to 1.0; the ablation toggles
+1.0 versus 0.0 without changing other losses. `--retention-pose-margin` is absent
+by default, preserving confidence-only retention. Arms C/D set it to 3 Å:
+ceiling = worst selection-seed WT pose RMSD + margin. WT is evaluated once as
+part of the normal budget and is feasible by construction. The ceiling is
+fixed thereafter for that run. Violation is max(0, worst-seed candidate pose
+RMSD − ceiling). Lower violation wins before raw mean ipSAE. Competition ties,
+duplicate filling, elite protection, archived winner and CSV ranks obey this
+ordering; stochastic acceptance cannot increase an incumbent's violation.
+WT-relative feasibility means baseline preservation, not a correct reference pose.
+
+Each worker calibrates from its own WT predictions, so predictor variability
+can produce different ceilings across arms; these are saved explicitly. For
+comparison only, `tables/search_runs.csv` applies one common reporting ceiling:
+median of all search-run worst-seed WT RMSDs + margin, and reports the evaluated
+feasible fraction (including WT), raw best score and actual compute counts.
+`tables/heldout_candidates.csv` reports mean/worst confidence and all three
+RMSDs, using the held-out WT worst-seed RMSD + margin as a common reporting
+ceiling for every winner. This reporting does not alter the archived winners.
+Source-run mappings preserve shared winners rather than counting them as
+independent predictions.
+
+Outputs contain `plan.json`, `experiment.json`, `status.tsv`, `commands.sh`,
+`logs/`, `tables/`, `diagnostic/`, `search/` and `heldout/` as reached. Each
+worker retains organized CSVs, logs, CIF/PDB and confidence arrays. Diagnostics
+add `diagnostic.json`, `tables/diagnostic_proposals.csv`, gradient NPZs, reference
+audit and a separate `repeat/` output tree. A failed worker or report stops later
+stages; completed evidence remains on disk. Fresh output directories are
+required; this launcher does not resume failed runs.
+
+**Local validation:** the targeted suite passed **83 tests**, with **one GPU-only
+memory test skipped** on CPU. Shell syntax, the eight-GPU launcher dry-run and
+`git diff --check` passed. Ruff passed for the changed examples, search harness
+and tests; the losses module retains its pre-existing E741 field-name warning
+(`PredictedAlignedErrorLoss.l`) and passes with that rule excluded.
+CPU tests cover geometry, genuine JAX composite-gradient
+pose toggling and key preservation, constrained retention/elite/archive rules,
+scoring/export without extra predictions, diagnostic failure conditions,
+held-out seed separation, common reporting thresholds and launcher failure
+propagation. The actual local `P17_JN1.pdb` passed correspondence and geometry
+checks (123 binder residues, 184 target residues); maximum NumPy/JAX difference
+across rigid-transform controls was approximately 1.3e-5 Å. This rules out a
+basic reference-extraction/alignment-formula discrepancy in those controls,
+not a prediction-side correspondence or model problem. No real-model or H200
+run of this new workflow is claimed.
+
+---
+
 ## Appendix: file map
 
 | Path | Purpose |
@@ -1435,6 +1742,10 @@ and a toy rescoring workflow. Real-model rescoring is pending on the cluster.
 | `examples/p17_hallucination_search.py` | Main design pipeline |
 | `src/mosaic/search.py` | Shared confidence-driven independent/population harness |
 | `examples/p17_confidence_search.py` | P17 adapter and reproducible event logging |
+| `examples/p17_pose_diagnostics.py` | Pose correspondence, geometry and proposal-influence checks |
+| `examples/run_p17_pose_experiment.sh` | Gated sequential diagnostic/ablation/held-out workflow |
+| `examples/p17_pose_experiment.py` | Bounded GPU workers, stage barriers and comparison summaries |
+| `tests/test_pose_experiment.py` | Diagnostic and launcher behavioral tests |
 | `examples/p17_search_outputs.py` | Scored PDB/confidence export and output index |
 | `examples/run_p17_confidence_search_multi_gpu.sh` | Portable multi-GPU smoke/pilot launcher |
 | `examples/run_p17_confidence_search.sh` | New harness launcher with all three OpenDDE patches |

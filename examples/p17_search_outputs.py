@@ -93,7 +93,7 @@ class SearchOutputs:
             "Pose columns in predictions.csv are in angstroms: binder_pose_rmsd_A "
             "aligns the target first; binder_internal_rmsd_A independently aligns "
             "the binder; target_aligned_rmsd_A measures target fit. They are "
-            "diagnostics, not acceptance gates.\n\n"
+            "diagnostics; see config.json for optional pose-retention settings.\n\n"
             "- `best/`: copies of the winning candidate's PDBs for every selection "
             "seed, available after successful completion.\n"
             "- `logs/events.jsonl`, `logs/memory.jsonl`: search and memory records.\n\n"

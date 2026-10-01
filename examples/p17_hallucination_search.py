@@ -292,7 +292,11 @@ def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenize
                            epitope_idx, edit_budget: int, stop_grad_ablang2: bool,
                            opendde_path: str, pose_tolerance: float,
                            opendde_sampling_steps: int | None,
-                           opendde_num_samples: int, confidence_loss=None):
+                           opendde_num_samples: int, confidence_loss=None,
+                           pose_weight: float = 1.0):
+    if not np.isfinite(pose_weight) or pose_weight < 0:
+        raise ValueError("pose_weight must be finite and nonnegative")
+    # Keep the zero-weight term so paired runs preserve the random-key schedule.
     # Existing callers retain their original objective unless explicitly enabled.
     if confidence_loss is not None and opendde_path != "full":
         raise ValueError("confidence_loss requires opendde_path='full'")
@@ -313,7 +317,7 @@ def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenize
         )
         opendde_loss = ClippedGradient(
             opendde.build_distogram_only_loss(
-                loss=contact_loss + pose_loss,
+                loss=contact_loss + pose_weight * pose_loss,
                 features=features,
                 recycling_steps=OPENDDE_RECYCLING_STEPS,
             ),
@@ -328,7 +332,7 @@ def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenize
             ),
             CLIP_GRADIENT_NORM,
         )
-        full_opendde_loss = contact_loss + pose_loss
+        full_opendde_loss = contact_loss + pose_weight * pose_loss
         if confidence_loss is not None:
             full_opendde_loss = full_opendde_loss + confidence_loss
         if opendde_num_samples == 1:

@@ -341,42 +341,14 @@ class BinderTargetContact(LossTerm):
 
 
 class BinderPoseRMSD(LossTerm):
-    """Penalize the binder's predicted pose drifting from a reference (e.g.
-    real WT-bound) pose -- for hallucination-style design against a fixed
-    target template, to stop pure binding-confidence optimization from
-    finding a different docking mode OpenDDE/Boltz also happens to score
-    well, rather than refining the known real interface.
+    """Target-aligned binder CA RMSD with an optional tolerance in angstroms.
 
-    Aligned on the TARGET, not the whole complex: Kabsch-align the
-    predicted target Calphas onto `reference_target_ca`, apply that same
-    rigid transform to the predicted binder Calphas, then measure RMSD
-    against `reference_binder_ca`. This is deliberately NOT a whole-complex
-    superposition -- aligning on everything would let the binder and target
-    drift together and hide exactly the relative pose drift this is meant
-    to catch. Invariant to any rigid transform of the whole predicted
-    complex (a real property, not assumed -- see
-    tests/test_binder_pose_rmsd.py), since only the target-relative pose is
-    ever measured.
-
-    Soft hinge, the same pattern `EditBudget` already uses for edit
-    distance: zero value AND zero gradient while the pose stays within
-    `rmsd_tolerance` (Angstroms), growing linearly beyond it. This is the
-    concrete answer to "if RMSD is too big, the loss can dominate" --
-    an un-hinged raw RMSD contributes its full magnitude regardless of
-    whether the pose is already fine; this contributes nothing until there
-    is an actual problem. Still wrap in `ClippedGradient` (the same
-    `clip_gradient_norm` every other guidance term already uses) so that
-    once the hinge is active, its gradient can't dominate the merge either
-    -- the hinge bounds the VALUE, ClippedGradient bounds the GRADIENT;
-    together they cover both halves of the dominance concern.
-
-    Assumes `sequence`'s first `sequence.shape[0]` tokens in `output` are
-    the binder and the rest are the target -- the same convention every
-    other structure loss here follows (e.g. `BinderTargetContact` above).
-    `reference_target_ca` must be the same fixed target template's Calpha
-    coordinates, same count and residue order as the target region of
-    `output.backbone_coordinates` (true by construction when the target is
-    a fixed structure-input template, not itself being predicted/redesigned).
+    Fits the predicted target to the reference and applies that transform to
+    the binder. Reference and prediction must have identical residue order and
+    CA correspondence. A target template does not guarantee fixed coordinates.
+    The hinge is zero below tolerance and grows without an upper bound above it.
+    Gradient clipping does not establish useful influence on discrete proposals.
+    Target-fit RMSD is reported separately to assess alignment interpretability.
     """
     reference_binder_ca: Float[Array, "Nb 3"] = eqx.field(converter=jnp.array)
     reference_target_ca: Float[Array, "Nt 3"] = eqx.field(converter=jnp.array)
@@ -400,7 +372,13 @@ class BinderPoseRMSD(LossTerm):
 
         rmsd = unaligned_rmsd(aligned_binder_ca, self.reference_binder_ca)
         violation = jax.nn.relu(rmsd - self.rmsd_tolerance)
-        return violation, {"binder_pose_rmsd": rmsd, "binder_pose_rmsd_violation": violation}
+        return violation, {
+            "binder_pose_rmsd": rmsd,
+            "binder_pose_rmsd_violation": violation,
+            "pose_target_fit_rmsd": unaligned_rmsd(
+                pred_target_ca @ R + t, self.reference_target_ca
+            ),
+        }
 
 
 class BinderPoseDistogramDrift(LossTerm):

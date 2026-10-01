@@ -54,6 +54,7 @@ class SearchConfig:
 class ConfidenceScore:
     value: float
     metrics: dict[str, float] = field(default_factory=dict)
+    constraint_violation: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,12 @@ class Candidate:
     sequence: tuple[int, ...]
     score: float
     metrics: dict[str, float]
+    constraint_violation: float = 0.0
+
+    @property
+    def retention_key(self):
+        """Lower violation first, then higher confidence; larger is better."""
+        return (-self.constraint_violation, self.score)
 
 
 @dataclass
@@ -165,7 +172,9 @@ def _competitor(active, candidate, parent_slot, policy):
         sum(a != b for a, b in zip(c.sequence, candidate.sequence)) for c in active
     ]
     # At equal distance, challenge the worse incumbent first.
-    return min(range(len(active)), key=lambda i: (distances[i], active[i].score, i))
+    return min(
+        range(len(active)), key=lambda i: (distances[i], active[i].retention_key, i)
+    )
 
 
 def run_gradient_search(
@@ -185,6 +194,11 @@ def run_gradient_search(
     and the highest-scoring active candidate cannot be replaced by a worse one.
     Both policies otherwise use the same confidence-based stochastic acceptance.
     The best evaluated candidate is also retained in the result archive.
+
+    Optional nonnegative constraint violations take priority over confidence.
+    Neither duplicate-slot filling nor stochastic acceptance can increase the
+    challenged incumbent's violation. All-zero violations preserve the original
+    confidence-only behavior.
 
     Unique confidence evaluations and unique parent gradient calls have separate
     ceilings. A proposal limit bounds duplicate revisits. Equal ceilings do not
@@ -259,18 +273,22 @@ def run_gradient_search(
         before = perf_counter()
         score = confidence_fn(np.array(sequence, dtype=np.int32))
         value = float(score.value)
+        violation = float(score.constraint_violation)
+        if not np.isfinite(violation) or violation < 0:
+            raise ValueError("constraint violation must be finite and nonnegative")
         metrics = {name: float(value) for name, value in score.metrics.items()}
         if not np.isfinite(value) or not all(np.isfinite(v) for v in metrics.values()):
             raise ValueError("confidence callback returned a nonfinite score or metric")
         stats["score_seconds"] += perf_counter() - before
         stats["score_calls"] += 1
-        candidate = Candidate(len(archive), sequence, value, metrics)
+        candidate = Candidate(len(archive), sequence, value, metrics, violation)
         archive[sequence] = candidate
         emit(
             "evaluation",
             candidate_id=candidate.id,
             sequence=list(sequence),
             score=value,
+            constraint_violation=violation,
             metrics=metrics,
             edit_count=int(np.count_nonzero(wt != sequence)),
             score_calls=stats["score_calls"],
@@ -330,6 +348,9 @@ def run_gradient_search(
         slot = _competitor(active, candidate, parent_slot, config.policy)
         incumbent = active[slot]
         improvement = candidate.score - incumbent.score
+        constraint_change = (
+            candidate.constraint_violation - incumbent.constraint_violation
+        )
         duplicate = config.policy == "population" and any(
             c.sequence == candidate.sequence for c in active
         )
@@ -340,12 +361,12 @@ def run_gradient_search(
         protected = (
             config.policy == "population"
             and not filling
-            and improvement < 0
-            and incumbent.score == max(c.score for c in active)
+            and candidate.retention_key < incumbent.retention_key
+            and incumbent.retention_key == max(c.retention_key for c in active)
         )
         accept = False
-        if not duplicate and not protected:
-            accept = filling or improvement >= 0
+        if not duplicate and not protected and constraint_change <= 0:
+            accept = constraint_change < 0 or filling or improvement >= 0
             if not accept and config.acceptance_temperature > 0:
                 accept = rng.random() < np.exp(
                     improvement / config.acceptance_temperature
@@ -362,6 +383,7 @@ def run_gradient_search(
             competitor_id=incumbent.id,
             competitor_slot=slot,
             accepted=bool(accept),
+            constraint_change=constraint_change,
             cache_hit=cache_hit,
             elite_protected=bool(protected),
             duplicate=duplicate,
@@ -379,7 +401,7 @@ def run_gradient_search(
         if stats["score_calls"] >= config.max_score_calls:
             stop_reason = "score_budget"
     stats["elapsed_seconds"] = perf_counter() - started
-    best = max(archive.values(), key=lambda c: c.score)
+    best = max(archive.values(), key=lambda c: c.retention_key)
     emit(
         "complete",
         stop_reason=stop_reason,
