@@ -8,18 +8,16 @@ implemented work, verified behavior, outstanding review fixes and the next GPU r
 Project snapshot from 2026-09-21; search-policy handoff updated 2026-09-22.
 Covers the goal, the biology, the predictor controls,
 the infrastructure work that made it runnable, the current design pipeline, and
-the open decisions.
+the open decisions. Earlier OpenDDE empirical findings are summarized in
+[OpenDDE validation history](opendde_validation_history.md).
 
-**For Claude: read §17 first for the completed cluster results and next two tests;
-§10 retains the policy shortlist.**
-**For Codex: read §11 for Claude's response — two literature additions, a
-sequencing recommendation, and an infra note.**
-**Current handoff: §17 records the completed search pilot and pose-validation
-review; §17.6 describes the implemented, locally tested diagnostic-first
-workflow; §§17.7–17.10 record diagnostic failures, fixes and the saved-structure audit. §§14–16
-describe gradients, exports and rescoring. Historical statements
-that the original GPU runs are pending are superseded by §17. Real-model H200
-validation of the new diagnostic/ablation controls remains pending.**
+**Current handoff: read §§17.12–17.13 for the completed WT controls, local
+numerical fixes and pending full-model validation.** The next run is the
+forward-only numerical comparison described in the current summary. The earlier
+diagnostic completed but failed its gates; subsequent search comparisons remain
+pending. §§14–16 describe implementation, and the earlier sections preserve dated
+plans and results rather than current launch instructions.
+
 The current P17 search is an unfinished prototype, not a validated baseline.
 The agreed direction retains mosaic's OpenDDE + AbLang2 gradient guidance,
 keeps the framework fixed, and brings full interface-confidence evaluation into
@@ -632,7 +630,11 @@ its lighter/abstract-only entries. No paper's experiments were reproduced here.
 
 ---
 
-## 9. Pending work
+## 9. Historical pending-work list (2026-09-21)
+
+This snapshot is retained for context. Several items were completed later; use
+[the current handoff](p17_status_and_next_steps.md) for outstanding work. The
+validation and main pose/search launchers now apply five OpenDDE patches (§17.13).
 
 - [ ] **Wire `patch_jopendde_bf16_dtype.py` into the `run_*.sh` scripts** — they
       previously applied only the outer-product-mean and structural-token patches.
@@ -1927,9 +1929,12 @@ Reproducible offline evidence is saved in
 `results/p17_pose_experiment_review_072622/analyze_archive.py`, `review.json` and
 `structure_audit.csv`. No new model predictions or search runs were launched.
 
-### 17.11 WT-only coordinate validation runner (implemented; cluster run pending)
+### 17.11 WT-only coordinate validation runner (historical launch plan)
 
-Run this before another optimization experiment:
+The cluster run described here has completed; its results are in §17.12.
+The follow-up numerical validation in §17.13 remains pending.
+
+Command used for the completed WT control batch:
 
 ```bash
 bash examples/run_p17_wt_validation.sh --devices 0,1,2,3,4,5,6,7
@@ -2147,6 +2152,7 @@ or successful worker exit does not establish a correct fold, pose or affinity.
 | `examples/p17_hallucination_search.py` | Main design pipeline |
 | `src/mosaic/search.py` | Shared confidence-driven independent/population harness |
 | `examples/p17_confidence_search.py` | P17 adapter and reproducible event logging |
+| `examples/run_p17_numerical_validation.sh` | Current forward-only numerical comparison preset |
 | `examples/run_p17_wt_validation.sh` | WT-only coordinate comparison on allocated GPUs |
 | `examples/p17_wt_validation.py` | Matched budgets, raw/mapped arrays, native control and repeat evidence |
 | `examples/p17_structure_audit.py` | Independent named-backbone mapping and broad geometry checks |
@@ -2157,11 +2163,15 @@ or successful worker exit does not establish a correct fold, pose or affinity.
 | `tests/test_pose_experiment.py` | Diagnostic and launcher behavioral tests |
 | `examples/p17_search_outputs.py` | Scored PDB/confidence export and output index |
 | `examples/run_p17_confidence_search_multi_gpu.sh` | Portable multi-GPU smoke/pilot launcher |
-| `examples/run_p17_confidence_search.sh` | New harness launcher with all three OpenDDE patches |
+| `examples/run_p17_confidence_search.sh` | Harness launcher with all five OpenDDE patches |
 | `tests/test_confidence_search.py` | CPU policy and scoring checks |
 | `examples/p17_hallucination_mcmc_with_full_opendde_rescoring.py` | Search + full-path rescoring |
 | `examples/p17_alpha_vs_jn1_native_opendde_analysis.py` | RMSD + ipSAE(12,12) analysis |
 | `examples/opendde_inputs/` | `p17_alpha.json`, `p17_jn1.json` |
+| `src/mosaic/opendde_numerics.py` | Stable and original aggregation controls |
+| `src/mosaic/opendde_padding.py` | Atom and structural-token masking helpers |
+| `patches/patch_jopendde_aggregation.py` | Aggregation dependency patch |
+| `patches/patch_jopendde_padding.py` | Attention and diffusion padding dependency patch |
 | `patches/patch_jopendde_bf16_dtype.py` | bf16 attention (default) |
 | `patches/patch_jopendde_structural_token_expander.py` | scan-based role-pair projection |
 | `patches/patch_jopendde_outer_product_mean.py` | trunk OuterProductMean |

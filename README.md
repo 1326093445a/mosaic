@@ -1,5 +1,7 @@
 ## Functional, multi-objective protein design using continuous relaxation.
 
+For the OpenDDE work in this checkout, start with [current status and next steps](docs/p17_status_and_next_steps.md), [setup](SETUP.md), and the [detailed project record](docs/p17_jn1_redesign.md). Full-model validation of the latest numerical fixes is pending. The general Mosaic reference follows.
+
 
 > **WARNING**: Unlike [BindCraft](https://www.nature.com/articles/s41586-025-09429-6) (which is a well-tested and well-tuned method for generic binder design), `mosaic` may require substantial hand-holding (tuning learning rates, etc), often produces proteins that fail simple in-silico tests, should be combined with standard filtering methods, etc. This is not for the faint of heart: the intent is to provide a framework in which to implement custom objective functions and optimization algorithms for your application. You can read about some applications in [our blog](https://blog.escalante.bio).
 
@@ -24,7 +26,6 @@ There has been a recent explosion in the application of machine learning to prot
 | :--- | :--- |
 | Boltz-1 | [Boltz-1: Democratizing Biomolecular Interaction Modeling](https://www.biorxiv.org/content/10.1101/2024.11.19.624167) |
 | Boltz-2 | [Boltz-2: Towards Accurate and Efficient Binding Affinity Prediction](https://www.biorxiv.org/content/10.1101/2025.06.14.659707) |
-| BoltzGen (design) | [BoltzGen: Toward Universal Binder Design](https://www.biorxiv.org/content/10.1101/2025.11.20.689494) |
 | AlphaFold2 | [Highly accurate protein structure prediction with AlphaFold](https://www.nature.com/articles/s41586-021-03819-2); [Protein complex prediction with AlphaFold-Multimer](https://www.biorxiv.org/content/10.1101/2021.10.04.463034) |
 | OpenFold3 | [OpenFold3 (preview release)](https://github.com/aqlaboratory/openfold-3) |
 | OpenDDE (v1, ABAG) | [OpenDDE](https://github.com/aurekaresearch/OpenDDE) (AF3-style all-atom co-folding model) |
@@ -43,7 +44,6 @@ There has been a recent explosion in the application of machine learning to prot
 ### Applications & case studies
 - [**Minibinder design is just not that hard**](https://blog.escalante.bio/minibinder-design-is-just-not-that-hard/) — end-to-end walkthrough with experimentally validated binders against PD-L1 (8/10) and IL7Ra (7/10). Optimizing a complex objective leads to higher hitrates and affinities. 
 - [**~180 lines of code to win the in silico portion of the Adaptyv Nipah binding competition**](https://blog.escalante.bio/180-lines-of-code-to-win-the-in-silico-portion-of-the-adaptyv-nipah-binding-competition/) + [**Winning the de novo portion of the Adaptyv Nipah binder competition**](https://blog.escalante.bio/winning-the-de-novo-portion-of-the-adaptyv-nipah-binder-competition/) — a minimal, self-contained design script (Boltz-2 + soluble ProteinMPNN + `simplex_APGM`) wins a design competition against a novel target with single digit nanomolar binders and a 90% wet-lab success rate.
-- [**Teaching generative models to hallucinate**](https://blog.escalante.bio/teaching-generative-models-to-hallucinate/) — using a `mosaic` loss functional as the reward to finetune and RL-align a generative model (BoltzGen).
 - [**Mosaic multispecifics**](https://proteinbase.com/collections/mosaic-multispecifics) — mosaic-designed designing bispecific IL7Ra and PD-L1 minibinders
 - [**Adaptyv × Muni "AI agents vs humans" (TREM2)**](https://www.adaptyvbio.com/blog/agents-vs-humans) — a `mosaic` design produced the top-affinity binder overall (1.11 nM), ahead of six autonomous LLM design agents ([results on Proteinbase](https://proteinbase.com/collections/adaptyv-x-muni-hackathon-ai-agents-vs-humans)). *Note*: Claude is very good at writing `mosaic` scripts and HPO.
 - [**GEM × Adaptyv RBX1 binder design competition**](https://proteinbase.com/collections/gem-x-adaptyv-rbx1-binder-design-competition-results) — won by [ORBIT](https://research.mandrake.bio/p/we-dont-even-design-binders), a hallucination-based method built on `mosaic`.
@@ -481,7 +481,7 @@ By default we use a generalized proximal gradient method (mirror descent with en
 
 Typically $\ell$ is formed by a single neural network (or an ensemble of the same architecture), but in practice we're interested in simultaneously optimizing different properties predicted by different neural networks. This has the added benefit of reducing the chance of finding so-called adversarial sequences. 
 
-This kind of modular implementation of loss terms is also useful with modern RL-based alignment of generative models approaches: these forms of alignment can often be seen as _amortized optimization_. Typically, they train a generative model to minimize some combination of KL divergence minus a loss function, which can be a combination of in-silico predictors. We demonstrate exactly this — finetuning and RL-aligning a generative model (BoltzGen) against a `mosaic` loss functional — in [Teaching generative models to hallucinate](https://blog.escalante.bio/teaching-generative-models-to-hallucinate/). Another use case is to provide guidance to discrete diffusion or flow models. 
+This kind of modular implementation of loss terms is also useful with modern RL-based alignment of generative models approaches: these forms of alignment can often be seen as _amortized optimization_. Typically, they train a generative model to minimize some combination of KL divergence minus a loss function, which can be a combination of in-silico predictors. Another use case is to provide guidance to discrete diffusion or flow models.
 
 [^1]: This requires us to treat neural networks as _simple parametric functions_ that can be combined programmatically; **not** as complicated software packages that require large libraries (e.g. PyTorch lightning), bash scripts, or containers as is common practice in BioML. 
 
