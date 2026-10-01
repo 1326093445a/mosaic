@@ -190,13 +190,19 @@ A failed stage preserves its evidence and prevents dependent stages. Use a
 fresh output directory on every launch. The checkout path is detected by the
 shell wrapper; no `/home/yfeng17` path is hardcoded.
 
-The actual reference PDB passed the new local audit (123 binder/184 target
-residues). NumPy and JAX geometry controls agree within approximately 1.3e-5 Å.
-The targeted CPU suite passed **83 tests**, with **one GPU-only memory test
-skipped**. Shell syntax, the eight-GPU dry-run and diff whitespace checks passed.
-Ruff passed for changed examples, the search harness and tests; the losses module
-retains its pre-existing E741 field-name warning. The real predicted structures
-and model gradients still need the cluster test.
+The first H200 attempt stopped before model assessment: the reference audit
+reported a 0.010634 Å NumPy/JAX mismatch. This was reproduced locally on an RTX
+4090 and corrected by scoping float32 matmul precision to `BinderPoseRMSD`.
+The actual reference controls now agree within approximately 1.3e-5 Å; the
+0.001 Å agreement threshold and 3 Å target-fit gate remain unchanged.
+
+After this fix, **87 CPU tests passed**, with **one GPU-only memory test skipped**,
+and **four new geometry/gradient cases passed on the RTX 4090**, including JIT
+execution and reduced-precision outer settings. H200 verification and real-model
+guidance assessment are still pending. Sync the updated checkout and relaunch
+with the command above; the launcher creates a fresh result directory. See
+[§17.7](p17_jn1_redesign.md#177-cluster-geometry-failure-and-scoped-precision-fix)
+for the failure evidence and optional checkpoint-free GPU regression command.
 See [§17.6](p17_jn1_redesign.md#176-implemented-workflow-and-launch-commands)
 for exact semantics, settings, reporting definitions and limitations.
 

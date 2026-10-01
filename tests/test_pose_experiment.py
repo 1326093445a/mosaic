@@ -36,6 +36,61 @@ def test_geometry_and_degeneracy(modules):
         diag.geometry_checks(np.zeros((4, 3)), references()[1])
 
 
+@pytest.mark.parametrize("precision", ["tensorfloat32", "float32"])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_real_reference_pose_precision_and_gradient(modules, precision, compiled):
+    """Exercise realistic coordinate scales on whichever JAX backend is selected.
+
+    Run with JAX_PLATFORMS=cuda to catch reduced-precision GPU regressions;
+    small synthetic point sets alone did not catch the original failure.
+    """
+    import gemmi
+    import jax
+    import jax.numpy as jnp
+    from mosaic.losses.structure_prediction import BinderPoseRMSD
+
+    diag, _ = modules
+    model = gemmi.read_structure(
+        str(Path(__file__).resolve().parents[1] / "P17_JN1.pdb")
+    )[0]
+    binder, target = [
+        np.array([list(residue["CA"][0].pos) for residue in model[chain]])
+        for chain in ("B", "T")
+    ]
+    loss_fn = BinderPoseRMSD(binder, target, rmsd_tolerance=0.0)
+    rotation = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    reference = np.concatenate([binder, target])
+
+    def evaluate(shift):
+        # Translate binder in the reference frame, then rotate the entire
+        # complex. Target alignment must recover the imposed shift exactly.
+        coords = jnp.asarray(reference).at[: len(binder), 0].add(shift)
+        coords = (
+            jnp.matmul(coords, jnp.asarray(rotation), precision=jax.lax.Precision.HIGHEST)
+            + 7.0
+        )
+        return loss_fn(
+            jnp.zeros((len(binder), 20)),
+            SimpleNamespace(
+                backbone_coordinates=jnp.repeat(coords[:, None], 4, axis=1)
+            ),
+            key=None,
+        )
+
+    with jax.default_matmul_precision(precision):
+        controls = diag.geometry_checks(binder, target)
+        fn = jax.value_and_grad(evaluate, has_aux=True)
+        if compiled:
+            fn = jax.jit(fn)
+        (value, aux), gradient = fn(4.0)
+        # The local precision scope must not leak into the surrounding model.
+        assert jax.config.jax_default_matmul_precision == precision
+    assert max(c["numpy_jax_max_error_A"] for c in controls.values()) < 1e-3
+    assert float(value) == pytest.approx(4.0, abs=1e-3)
+    assert float(aux["pose_target_fit_rmsd"]) < 1e-3
+    assert float(gradient) == pytest.approx(1.0, abs=1e-3)
+
+
 def test_reference_audit_records_insertions_and_rejects_missing_ca(modules):
     import gemmi
 

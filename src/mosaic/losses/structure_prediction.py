@@ -367,18 +367,23 @@ class BinderPoseRMSD(LossTerm):
         pred_target_ca = output.backbone_coordinates[binder_len:, 1]
         pred_binder_ca = output.backbone_coordinates[:binder_len, 1]
 
-        R, t = kabsch(pred_target_ca, self.reference_target_ca)
-        aligned_binder_ca = pred_binder_ca @ R + t
+        # Reduced-precision GPU matmuls can introduce ~0.01 A of apparent
+        # pose drift even for identical coordinates. Keep the entire alignment
+        # (including Kabsch covariance/rotation and coordinate application) at
+        # float32 matmul precision without changing model inference precision.
+        with jax.default_matmul_precision("float32"):
+            R, t = kabsch(pred_target_ca, self.reference_target_ca)
+            aligned_binder_ca = pred_binder_ca @ R + t
 
-        rmsd = unaligned_rmsd(aligned_binder_ca, self.reference_binder_ca)
-        violation = jax.nn.relu(rmsd - self.rmsd_tolerance)
-        return violation, {
-            "binder_pose_rmsd": rmsd,
-            "binder_pose_rmsd_violation": violation,
-            "pose_target_fit_rmsd": unaligned_rmsd(
-                pred_target_ca @ R + t, self.reference_target_ca
-            ),
-        }
+            rmsd = unaligned_rmsd(aligned_binder_ca, self.reference_binder_ca)
+            violation = jax.nn.relu(rmsd - self.rmsd_tolerance)
+            return violation, {
+                "binder_pose_rmsd": rmsd,
+                "binder_pose_rmsd_violation": violation,
+                "pose_target_fit_rmsd": unaligned_rmsd(
+                    pred_target_ca @ R + t, self.reference_target_ca
+                ),
+            }
 
 
 class BinderPoseDistogramDrift(LossTerm):

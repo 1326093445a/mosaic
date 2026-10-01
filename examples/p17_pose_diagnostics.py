@@ -109,7 +109,13 @@ def crosscheck_pose(ca, binder, target):
         abs(float(aux["pose_target_fit_rmsd"]) - values["target_aligned_rmsd_A"]),
     )
     if not np.isfinite(error) or error > 1e-3:
-        raise ValueError(f"NumPy/JAX pose mismatch: {error} A")
+        raise ValueError(
+            f"NumPy/JAX pose mismatch: {error} A (limit 0.001 A); "
+            f"binder NumPy={values['binder_pose_rmsd_A']}, "
+            f"JAX={float(aux['binder_pose_rmsd'])}; "
+            f"target NumPy={values['target_aligned_rmsd_A']}, "
+            f"JAX={float(aux['pose_target_fit_rmsd'])}"
+        )
     return values, error
 
 
@@ -127,7 +133,10 @@ def geometry_checks(binder, target):
     )
     results = {}
     for name, coords in cases.items():
-        values, error = crosscheck_pose(coords, binder, target)
+        try:
+            values, error = crosscheck_pose(coords, binder, target)
+        except ValueError as exc:
+            raise ValueError(f"geometry control {name}: {exc}") from exc
         expected = 4.0 if name == "binder_shift" else 0.0
         if abs(values["binder_pose_rmsd_A"] - expected) > 1e-3:
             raise ValueError(f"failed {name} pose control")

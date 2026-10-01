@@ -1735,6 +1735,46 @@ run of this new workflow is claimed.
 
 ---
 
+### 17.7 Cluster geometry failure and scoped precision fix
+
+The cluster run `p17_pose_experiment_20261001_064858_3240337` stopped in
+both diagnostic workers during the reference geometry audit, before model
+assessment. Both reported a NumPy/JAX discrepancy of **0.0106342537 Å** against
+an unchanged **0.001 Å** agreement threshold. Search and held-out stages were
+correctly blocked. This failure provides no new evidence about guidance influence
+or predicted target fit.
+
+The failure was reproduced locally on an **RTX 4090** using the actual
+`P17_JN1.pdb`: default JAX matmul precision produced **0.0106333625 Å** error.
+Running the geometry calculation with float32 matmul precision reduced the
+maximum discrepancy across identity, global rigid transform and binder-only
+translation controls to approximately **1.3e-5 Å**. This isolates GPU matmul
+precision as a reproducible cause; the H200 still requires verification.
+
+`BinderPoseRMSD` now scopes `jax.default_matmul_precision("float32")` around
+Kabsch alignment and application of the resulting transform. The surrounding
+model precision setting is preserved, and neither the 0.001 Å numerical
+threshold nor the provisional 3 Å target-fit gate was relaxed. Audit errors
+now identify the geometry control and both reporters' binder/target values.
+
+Validation after the fix: **87 CPU tests passed, one GPU-only memory test
+skipped**; **four new precision/gradient cases passed on the RTX 4090**. Those
+cases use the actual reference under both tensorfloat32 and float32 outer
+settings, eager and JIT execution, and verify the known gradient for a controlled
+binder translation. They do not test real-model gradients or H200 execution.
+
+After syncing the updated checkout, the small GPU regression can be run without
+loading model checkpoints:
+
+```bash
+JAX_PLATFORMS=cuda XLA_PYTHON_CLIENT_PREALLOCATE=false .venv/bin/python -m pytest \
+  tests/test_pose_experiment.py -k real_reference_pose_precision_and_gradient -q
+```
+
+Then relaunch the existing shell command into a fresh, automatically named output
+directory. A later diagnostic rejection for target fit or proposal influence
+remains possible and must be assessed from that run's evidence.
+
 ## Appendix: file map
 
 | Path | Purpose |
