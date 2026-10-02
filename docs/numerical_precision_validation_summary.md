@@ -217,7 +217,7 @@ Recorded JAX allocation high-water marks were approximately **128–130 MiB per 
 
 The evidence does **not** establish that all-BF16 execution is the right solution, that JAX must be replaced, or that a precision setting which passes the synthetic checks is sufficient for an end-to-end model workflow.
 
-## 9. Fixed-device synthetic validation — implemented, cluster run pending
+## 9. Fixed-device synthetic validation — implemented and reviewed on H200
 
 The new launcher implements a **same-GPU, same-version fresh-process repeatability study**, with separate numerical and synthetic pipeline audits:
 
@@ -263,11 +263,28 @@ Audit review exposed two defects in the initial audit (schema 1): a saved repeat
 
 The corrected audit (schema 2) validates repeats independently and rejects wrong shapes, wrong dtypes, NaNs, and infinities before comparisons. Tests also cover missing/incorrect forward-only outputs. Real child-process failure tests verify nonzero runner results and preserved records for bad repeat gradients, worker timeouts, and corrupted archives; a shell test verifies exit-code forwarding. New worker outputs are required for schema 2 because older captures omit the forward-only arrays and use a different Torch scalar storage dtype.
 
-Local validation after these corrections: **50 focused tests passed**, plus lint and shell syntax checks. A real **18-worker CPU run** covered all three seeds and sizes, two fresh processes per seed/size, all three variants, and five gradient-enabled evaluations per configuration. All **738 numerical checks** passed; the audit recorded **216 forward-only versus gradient-path comparisons**. All **1,296 within-process** and **243 same-device fresh-process** comparisons were identical. All **260 archived files**, including the manifest, verified; the final completion record reports exit 0. The 360-worker eight-GPU dry run was checked for complete fixed-device/seed/size groups. **This corrected suite has not yet run on H200.**
+Local validation after these corrections: **50 focused tests passed**, plus lint and shell syntax checks. A real **18-worker CPU run** covered all three seeds and sizes, two fresh processes per seed/size, all three variants, and five gradient-enabled evaluations per configuration. All **738 numerical checks** passed; the audit recorded **216 forward-only versus gradient-path comparisons**. All **1,296 within-process** and **243 same-device fresh-process** comparisons were identical. All **260 archived files**, including the manifest, verified; the final completion record reports exit 0. The 360-worker eight-GPU dry run was checked for complete fixed-device/seed/size groups. The later H200 result is reviewed below; these CPU results remain a separate validation record.
 
 Fresh compilation versus reused compilation remains a separate future experiment, not an automatic part of this run. Recorded compilation-cache settings aid interpretation without attributing variation to a specific compiler choice.
 
 This check can characterize numerical variation. It cannot, by itself, finish full-model validation. Further claims about integration, forward-output quality, or backward resource usage require separate evidence at that level. More generic toy repetitions alone do not close that gap.
+
+### 9.1 Corrected H200 suite: verified result
+
+Archive: `synthetic_end_to_end_20261002_220213_1118482.tar.gz`. The independent [review](../results/synthetic_end_to_end_review_20261002_220213/REVIEW.md) and [machine-readable evidence](../results/synthetic_end_to_end_review_20261002_220213/review.json) record these findings:
+
+- **360/360 workers completed** in approximately 15.3 minutes on eight H200 GPUs.
+- All **4,713 manifest-listed hashes** matched, with exact file coverage. All six archived synthetic source files match the local scripts. No archived code was executed.
+- Independent recomputation confirmed **14,760/14,760 FP32 numerical checks passed**, including every repeat and forward-only output. All recomputed comparison rows matched the archived audit.
+- **25,920/25,920 within-process comparisons were identical.**
+- **535/7,776 same-GPU fresh-process comparisons differed.** The maximum relative L2 difference was **0.006663%**, for the eager Q/K/V-rounding gradient. Strict FP32 input-gradient restart differences were at most **0.00000955%**.
+- **182/1,701 cross-device first-round comparisons differed**; the maximum relative L2 difference was also approximately 0.006663%.
+- Of 4,320 separate forward-only versus gradient-path comparisons, 280 were not bitwise identical. Every FP32 forward-path control passed; the largest FP32 relative difference was approximately **0.0000108%**.
+- A separate eager/JIT comparison reached **0.195083%** for the Q/K/V-rounding input gradient. This is a descriptive BF16 comparison, not a failed strict FP32 control, and is distinct from restart variation.
+
+Thus the corrected synthetic numerical and pipeline checks passed, while fresh-process bitwise reproducibility remains incomplete. The fixed-device results show that GPU reassignment is not necessary for variation; they do not identify its cause. These results do not close the full-model correctness or realistic memory gap.
+
+Recorded software remained JAX/JAXLIB 0.11.0 and PyTorch 2.7.1+cpu; the prior dependency-range caveat and CPU/GPU comparison caveat still apply. The cluster completion sidecar was not supplied, but archive integrity was independently verified here.
 
 ## 10. Existing scripts and review artifacts
 
