@@ -87,6 +87,33 @@ def make_plan(args):
     return devices, jobs
 
 
+def effective_torch_backend(cpu, selection):
+    return "cpu" if cpu or selection == "cpu" else "cuda"
+
+
+def preflight_source(cpu, selection):
+    expected = "cpu" if cpu else "gpu"
+    torch_backend = effective_torch_backend(cpu, selection)
+    return (
+        "import json,jax,torch\n"
+        "d=jax.devices()\n"
+        "print(json.dumps({'jax':jax.__version__,'torch':torch.__version__,"
+        "'jax_devices':[str(x) for x in d],'torch_cuda':torch.version.cuda,"
+        "'torch_cuda_available':torch.cuda.is_available(),'requested_torch_backend':"
+        + repr(torch_backend)
+        + "}),flush=True)\n"
+        + f"if len(d)!=1 or d[0].platform!={expected!r}:\n"
+        + f"    raise RuntimeError('Expected one {expected} JAX device')\n"
+        + (
+            "if not torch.cuda.is_available():\n"
+            "    raise RuntimeError('CUDA-enabled PyTorch required for same-GPU comparison; "
+            "use --torch-backend cpu explicitly for a CPU reference')\n"
+            if torch_backend == "cuda"
+            else ""
+        )
+    )
+
+
 def command(job, root, device, args):
     return [
         sys.executable,
@@ -96,6 +123,8 @@ def command(job, root, device, args):
         str(root / "workers" / job["name"]),
         "--backend",
         "cpu" if args.cpu else "cuda",
+        "--torch-backend",
+        args.torch_backend,
         "--device",
         str(device),
         "--seed",
@@ -151,7 +180,14 @@ def collect(root, statuses):
                 {**identity, "check": check["name"], "passed": check["passed"]}
             )
         for row in summary.get("observations", []):
-            base = {**identity, "variant": row["variant"], "mode": row["mode"]}
+            base = {
+                **identity,
+                "variant": row["variant"],
+                "mode": row["mode"],
+                "jax_backend": row.get("jax_backend"),
+                "torch_backend": row.get("torch_backend"),
+                "comparison_hardware": row.get("comparison_hardware"),
+            }
             compilation = row.get("original_jit_vs_eager", {}).get("input_gradient", {})
             comparisons.append(
                 {
@@ -273,6 +309,10 @@ def run(args, devices, jobs):
                     "scope": "synthetic numerical tests only",
                     "output": str(root),
                     "devices": devices,
+                    "jax_backend": "cpu" if args.cpu else "cuda",
+                    "torch_backend": effective_torch_backend(
+                        args.cpu, args.torch_backend
+                    ),
                     "workers": len(jobs),
                     "variant_mode_cases": len(jobs) * 12,
                     "jobs": jobs,
@@ -302,6 +342,8 @@ def run(args, devices, jobs):
         "Strict precision requests highest FP32 matmul precision and disables Torch\n"
         "TF32; native leaves framework defaults/settings intact and records them.\n"
         "Neither setting guarantees that different frameworks execute identical kernels.\n"
+        "--torch-backend cpu keeps JAX on the selected device and uses PyTorch on CPU.\n"
+        "Those cross-hardware differences cannot be attributed solely to framework behavior.\n"
         "BF16 differences are descriptive. Exposing intermediates may alter compilation.\n"
         "Synthetic sizes are small=(4,5,3,2), medium=(64,32,16,16), and\n"
         "large=(256,64,32,32): rows, input width, query/key width, value width.\n\n"
@@ -334,6 +376,8 @@ def run(args, devices, jobs):
         root / "plan.json",
         {
             "scope": "synthetic only",
+            "jax_backend": "cpu" if args.cpu else "cuda",
+            "torch_backend": effective_torch_backend(args.cpu, args.torch_backend),
             "devices": devices,
             "jobs": jobs,
             "repeats": args.repeats,
@@ -381,23 +425,17 @@ def run(args, devices, jobs):
     log(
         "A finite sweep; no model/checkpoint loading and no deliberate overnight waiting."
     )
+    log(
+        f"JAX backend: {'cpu' if args.cpu else 'cuda'}; PyTorch reference: "
+        f"{effective_torch_backend(args.cpu, args.torch_backend)}"
+    )
     active, free = [], list(devices)
     failure = None
     interrupted = False
     started = time.monotonic()
     next_telemetry = 0.0
     try:
-        preflight_code = (
-            "import json,jax,torch; d=jax.devices(); "
-            f"assert len(d)==1 and d[0].platform=={'cpu' if args.cpu else 'gpu'!r},d; "
-            + (
-                ""
-                if args.cpu
-                else "assert torch.cuda.is_available(), 'CUDA-enabled PyTorch required'; "
-            )
-            + "print(json.dumps({'jax':jax.__version__,'torch':torch.__version__,'jax_devices':[str(x) for x in d],"
-            "'torch_cuda':torch.version.cuda,'torch_cuda_available':torch.cuda.is_available()}))"
-        )
+        preflight_code = preflight_source(args.cpu, args.torch_backend)
         for device in devices:
             log(f"Preflight device {device}")
             with (root / "logs" / f"preflight_{device}.log").open("w") as handle:
@@ -537,6 +575,8 @@ def run(args, devices, jobs):
             state: sum(j["state"] == state for j in statuses)
             for state in sorted({j["state"] for j in statuses})
         },
+        "jax_backend": "cpu" if args.cpu else "cuda",
+        "torch_backend": effective_torch_backend(args.cpu, args.torch_backend),
         "full_model_gradient_validation_status": "not_assessed",
         "interpretation": "Synthetic controls only. Numerical differences are retained even when a control fails. "
         "A strict/native comparison changes framework FP32 precision policies; it does not guarantee identical kernels.",
@@ -570,6 +610,12 @@ def main():
         "--cpu",
         action="store_true",
         help="Serial local test; defaults to one small worker",
+    )
+    parser.add_argument(
+        "--torch-backend",
+        choices=("match", "cpu"),
+        default="match",
+        help="match JAX's device type, or explicitly use a CPU PyTorch reference",
     )
     parser.add_argument("--seeds")
     parser.add_argument("--sizes")

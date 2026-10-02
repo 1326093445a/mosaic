@@ -24,6 +24,7 @@ def arguments(**overrides):
         precision_modes=None,
         rounds=None,
         repeats=3,
+        torch_backend="match",
     )
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -127,3 +128,45 @@ def test_preflight_failure_retains_summary_and_archive(runner, monkeypatch, tmp_
     assert "failed_preflight/metadata/runner_error.txt" in names
     assert "failed_preflight/READ_ME.txt" in names
     assert "failed_preflight/checksums.sha256" in names
+
+
+def test_cpu_reference_keeps_jax_on_requested_gpu(runner, tmp_path):
+    args = arguments(torch_backend="cpu")
+    _, jobs = runner.make_plan(args)
+    cmd = runner.command(jobs[0], tmp_path, "7", args)
+    assert cmd[cmd.index("--backend") + 1] == "cuda"
+    assert cmd[cmd.index("--torch-backend") + 1] == "cpu"
+    assert cmd[cmd.index("--device") + 1] == "7"
+    assert runner.effective_torch_backend(False, "cpu") == "cpu"
+    assert runner.effective_torch_backend(False, "match") == "cuda"
+
+
+@pytest.mark.parametrize(
+    "platform,selection,error",
+    [
+        ("gpu", "cpu", None),
+        ("gpu", "match", "CUDA-enabled PyTorch required"),
+        ("cpu", "cpu", "Expected one gpu JAX device"),
+    ],
+)
+def test_preflight_policy_never_silently_falls_back(
+    runner, monkeypatch, capsys, platform, selection, error
+):
+    # Test capability-policy branching, not actual GPU execution.
+    fake_jax = SimpleNamespace(
+        __version__="test", devices=lambda: [SimpleNamespace(platform=platform)]
+    )
+    fake_torch = SimpleNamespace(
+        __version__="test+cpu",
+        version=SimpleNamespace(cuda=None),
+        cuda=SimpleNamespace(is_available=lambda: False),
+    )
+    monkeypatch.setitem(sys.modules, "jax", fake_jax)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    code = runner.preflight_source(False, selection)
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            exec(code, {})
+    else:
+        exec(code, {})
+    assert '"torch_cuda_available": false' in capsys.readouterr().out

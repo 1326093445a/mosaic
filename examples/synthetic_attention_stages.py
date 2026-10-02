@@ -55,6 +55,7 @@ def run(
     root,
     *,
     backend="cpu",
+    torch_backend="match",
     device="0",
     seed=0,
     size="small",
@@ -74,11 +75,16 @@ def run(
     expected = "cpu" if backend == "cpu" else "gpu"
     if len(jax.devices()) != 1 or any(d.platform != expected for d in jax.devices()):
         raise RuntimeError(f"Expected exactly one {expected} JAX device")
-    if backend == "cuda" and not torch.cuda.is_available():
+    torch_backend = backend if torch_backend == "match" else "cpu"
+    if torch_backend == "cuda" and not torch.cuda.is_available():
         raise RuntimeError(
-            "CUDA PyTorch is required; CPU-only PyTorch cannot run this GPU comparison"
+            "CUDA PyTorch is required for a same-GPU comparison. "
+            "Use --torch-backend cpu explicitly for a CPU reference instead."
         )
-    torch_device = "cpu" if backend == "cpu" else "cuda:0"
+    torch_device = "cpu" if torch_backend == "cpu" else "cuda:0"
+    comparison_hardware = (
+        "same_backend" if backend == torch_backend else "jax_cuda_vs_torch_cpu"
+    )
     if precision_mode == "strict":
         jax.config.update("jax_default_matmul_precision", "highest")
         torch.set_float32_matmul_precision("highest")
@@ -91,8 +97,8 @@ def run(
             jm = {"supported": stats is not None, "stats": stats}
         except Exception as exc:
             jm = {"supported": False, "error": str(exc)}
-        tm = {"supported": backend == "cuda"}
-        if backend == "cuda":
+        tm = {"supported": torch_backend == "cuda", "backend": torch_backend}
+        if torch_backend == "cuda":
             tm.update(
                 allocated=torch.cuda.memory_allocated(),
                 reserved=torch.cuda.memory_reserved(),
@@ -113,7 +119,7 @@ def run(
             result = fn()
             if engine == "jax":
                 jax.block_until_ready(result)
-            elif engine == "torch" and backend == "cuda":
+            elif engine == "torch" and torch_backend == "cuda":
                 torch.cuda.synchronize()
             event["status"] = "ok"
             return result
@@ -144,12 +150,16 @@ def run(
     config = {
         "scope": "Seeded synthetic attention only; no biological model",
         "backend": backend,
+        "torch_backend": torch_backend,
+        "comparison_hardware": comparison_hardware,
+        "comparison_note": "When JAX uses CUDA and PyTorch uses CPU, differences can reflect "
+        "both hardware and framework behavior. JAX eager/JIT comparisons still use the same GPU.",
         "jax_device": str(jax.devices()[0]),
         "jax_device_kind": jax.devices()[0].device_kind,
         "torch_device": torch_device,
         "torch_cuda_version": torch.version.cuda,
         "torch_device_name": torch.cuda.get_device_name(0)
-        if backend == "cuda"
+        if torch_backend == "cuda"
         else "CPU",
         "seed": seed,
         "size": size,
@@ -376,6 +386,9 @@ def run(
             result = {
                 "variant": name,
                 "mode": mode,
+                "jax_backend": backend,
+                "torch_backend": torch_backend,
+                "comparison_hardware": comparison_hardware,
                 "loss": float(loss),
                 "loss_vs_torch_absolute_gap": abs(float(loss) - float(tloss.detach())),
                 "output_vs_torch": compare(np.asarray(out), tvalues["output_fp32"]),
@@ -482,6 +495,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--backend", choices=("cpu", "cuda"), default="cpu")
+    parser.add_argument(
+        "--torch-backend",
+        choices=("match", "cpu"),
+        default="match",
+        help="match JAX's device type, or explicitly use a CPU PyTorch reference",
+    )
     parser.add_argument("--device", default="0")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--size", choices=tuple(SIZES), default="small")
@@ -506,6 +525,7 @@ def main():
         return run(
             root,
             backend=args.backend,
+            torch_backend=args.torch_backend,
             device=args.device,
             seed=args.seed,
             size=args.size,
