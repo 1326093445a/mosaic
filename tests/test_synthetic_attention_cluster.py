@@ -170,3 +170,53 @@ def test_preflight_policy_never_silently_falls_back(
     else:
         exec(code, {})
     assert '"torch_cuda_available": false' in capsys.readouterr().out
+
+
+def test_fixed_device_plan_covers_every_gpu_in_every_round(runner):
+    devices, jobs = runner.make_plan(
+        arguments(
+            fixed_devices=True,
+            seeds="0",
+            sizes="small",
+            precision_modes="strict",
+            rounds=5,
+        )
+    )
+    assert len(jobs) == 40
+    for device in devices:
+        assert sorted(
+            j["round"] for j in jobs if j["assigned_device"] == device
+        ) == list(range(5))
+    assert len({j["name"] for j in jobs}) == 40
+
+
+def test_busy_device_never_moves_its_repeat_to_another_gpu(runner):
+    pending = [
+        {"assigned_device": "0", "name": "pinned0"},
+        {"assigned_device": "1", "name": "pinned1"},
+    ]
+    free = ["1", "2"]
+    job, device = runner.take_ready_job(pending, free)
+    assert (job["name"], device) == ("pinned1", "1")
+    assert runner.take_ready_job(pending, free) is None
+    assert pending[0]["name"] == "pinned0"
+    free.append("0")
+    assert runner.take_ready_job(pending, free)[1] == "0"
+
+
+def test_shell_launcher_preserves_child_failure(tmp_path):
+    import os
+
+    interpreter = tmp_path / "failing_interpreter"
+    interpreter.write_text("#!/usr/bin/env bash\nexit 17\n")
+    interpreter.chmod(0o755)
+    launcher = (
+        Path(__file__).resolve().parents[1] / "examples/run_synthetic_end_to_end.sh"
+    )
+    result = subprocess.run(
+        ["bash", str(launcher), "--cpu"],
+        env={**os.environ, "PYTHON_BIN": str(interpreter)},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 17

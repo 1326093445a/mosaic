@@ -5,6 +5,7 @@ Observations localize numerical differences; they are not model validation.
 """
 
 import argparse
+import hashlib
 from datetime import datetime, timezone
 import json
 import importlib.metadata
@@ -61,7 +62,15 @@ def run(
     size="small",
     precision_mode="native",
     repeats=3,
+    variants=None,
 ):
+    selected = list(VARIANTS) if variants is None else list(variants)
+    if (
+        not selected
+        or len(set(selected)) != len(selected)
+        or any(v not in VARIANTS for v in selected)
+    ):
+        raise ValueError("Select distinct known synthetic variants")
     root.mkdir(parents=True, exist_ok=False)
     os.environ["CUDA_VISIBLE_DEVICES"] = "" if backend == "cpu" else str(device)
     os.environ["JAX_PLATFORMS"] = "cpu" if backend == "cpu" else "cuda"
@@ -162,11 +171,18 @@ def run(
         if torch_backend == "cuda"
         else "CPU",
         "seed": seed,
+        "fixture_sha256": hashlib.sha256(
+            b"".join(a.tobytes() for a in [x_np, *weights_np])
+        ).hexdigest(),
         "size": size,
         "dimensions": SIZES[size],
         "repeats": repeats,
         "precision_mode": precision_mode,
         "jax_matmul_precision": jax.config.jax_default_matmul_precision,
+        "jax_compilation_cache": {
+            "enabled": getattr(jax.config, "jax_enable_compilation_cache", None),
+            "directory": getattr(jax.config, "jax_compilation_cache_dir", None),
+        },
         "torch_matmul_precision": torch.get_float32_matmul_precision(),
         "torch_allow_tf32": torch.backends.cuda.matmul.allow_tf32,
         "environment": {
@@ -178,6 +194,9 @@ def run(
                 "XLA_PYTHON_CLIENT_PREALLOCATE",
                 "NVIDIA_TF32_OVERRIDE",
                 "JAX_DEFAULT_MATMUL_PRECISION",
+                "JAX_ENABLE_COMPILATION_CACHE",
+                "JAX_COMPILATION_CACHE_DIR",
+                "CUDA_DEVICE_ORDER",
             )
         },
         "memory_note": "Per-process cumulative framework allocation counters, not incremental backward memory; CPU JAX counters may be unsupported.",
@@ -187,7 +206,7 @@ def run(
             "numpy": np.__version__,
             "jaxlib": importlib.metadata.version("jaxlib"),
         },
-        "variants": {name: sorted(flags) for name, flags in VARIANTS.items()},
+        "variants": {name: sorted(VARIANTS[name]) for name in selected},
         "stage_definitions": {
             "qkv": "Round projected/scaled Q, K, V to BF16. Other stages remain FP32 unless selected.",
             "scores": "Cast Q/K matmul operands to BF16 and produce BF16 scores; softmax remains FP32.",
@@ -206,7 +225,8 @@ def run(
     }
     (root / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     rows, arrays, checks = [], {}, []
-    for name, flags in VARIANTS.items():
+    for name in selected:
+        flags = VARIANTS[name]
 
         def jax_graph(a, weights, offsets=None):
             stages = {}
@@ -295,6 +315,10 @@ def run(
         tvalues = {k: v.detach().float().cpu().numpy() for k, v in tstage.items()}
         tgrads = {k: v.grad.detach().float().cpu().numpy() for k, v in tstage.items()}
         arrays[f"{name}/torch/input_gradient"] = tgrad
+        arrays[f"{name}/torch/original_output"] = tvalues["output_fp32"]
+        arrays[f"{name}/torch/original_loss"] = np.asarray(
+            float(tloss.detach()), dtype=np.float32
+        )
         for label in tvalues:
             arrays[f"{name}/torch/values/{label}"] = tvalues[label]
             arrays[f"{name}/torch/stage_gradients/{label}"] = tgrads[label]
@@ -319,11 +343,25 @@ def run(
             (loss, out), grad = measured(
                 f"{name}/{mode}/baseline", lambda: backward(x, jw)
             )
+            forward = jax.jit(original) if mode == "jit" else original
+            forward_loss, forward_out = measured(
+                f"{name}/{mode}/forward_only", lambda: forward(x, jw)
+            )
+            arrays[f"{name}/{mode}/forward_only/original_loss"] = np.asarray(
+                forward_loss
+            )
+            arrays[f"{name}/{mode}/forward_only/original_output"] = np.asarray(
+                forward_out
+            )
             repeat_records = []
             for repeat_index in range(1, repeats):
                 (repeat_loss, repeat_out), repeat_grad = measured(
                     f"{name}/{mode}/repeat{repeat_index}", lambda: backward(x, jw)
                 )
+                prefix = f"{name}/{mode}/repeat{repeat_index}"
+                arrays[f"{prefix}/input_gradient"] = np.asarray(repeat_grad)
+                arrays[f"{prefix}/original_output"] = np.asarray(repeat_out)
+                arrays[f"{prefix}/original_loss"] = np.asarray(repeat_loss)
                 repeat_records.append(
                     {
                         "repeat_index": repeat_index,
@@ -361,6 +399,8 @@ def run(
             )
             instrumented[mode] = (stages, stage_grads)
             arrays[f"{name}/{mode}/input_gradient"] = np.asarray(grad)
+            arrays[f"{name}/{mode}/original_output"] = np.asarray(out)
+            arrays[f"{name}/{mode}/original_loss"] = np.asarray(loss)
             stage_rows = []
             for label, value in stages.items():
                 value_np = np.asarray(value, dtype=np.float32)
@@ -400,6 +440,10 @@ def run(
                     r["gradient"]["identical"] for r in repeat_records
                 ),
                 "repeats": repeat_records,
+                "forward_only_vs_backward": {
+                    "loss": compare(np.asarray(forward_loss), np.asarray(loss)),
+                    "output": compare(np.asarray(forward_out), np.asarray(out)),
+                },
                 "instrumentation_effect": {
                     "loss_absolute_gap": abs(float(observed_loss) - float(loss)),
                     "output": compare(
@@ -508,6 +552,7 @@ def main():
         "--precision-mode", choices=("strict", "native"), default="native"
     )
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--variants", help="Comma-separated synthetic variant names")
     args = parser.parse_args()
     if args.seed < 0 or args.repeats < 2:
         parser.error("seed must be nonnegative and repeats must be at least two")
@@ -531,6 +576,7 @@ def main():
             size=args.size,
             precision_mode=args.precision_mode,
             repeats=args.repeats,
+            variants=args.variants.split(",") if args.variants else None,
         )
     except Exception as exc:
         # Preserve exception details even when setup fails before model-free evaluation.

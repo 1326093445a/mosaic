@@ -1,6 +1,9 @@
 # OpenDDE: current status and next steps
 
-Updated **2026-10-01**. This is the current handoff. The
+Project handoff updated **2026-10-01**. For the numerical investigation through
+**2026-10-02**, see [Numerical precision validation: evidence and readiness](numerical_precision_validation_summary.md).
+That newer summary separates synthetic results from full-model inference and gradient validation.
+The historical project handoff below has not been revalidated by the synthetic tests. The
 [detailed project record](p17_jn1_redesign.md) preserves historical experiments,
 implementation decisions and paper references. Older plans there are historical,
 not additional pending launch instructions.

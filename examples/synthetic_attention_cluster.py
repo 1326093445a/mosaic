@@ -23,6 +23,8 @@ SOURCES = [
     REPO / "examples" / "synthetic_attention_numerics.py",
     Path(__file__).resolve(),
     REPO / "examples" / "run_synthetic_attention_cluster.sh",
+    REPO / "examples" / "synthetic_validation_audit.py",
+    REPO / "examples" / "run_synthetic_end_to_end.sh",
 ]
 
 
@@ -84,7 +86,36 @@ def make_plan(args):
         for seed in seeds
         for mode in modes
     ]
+    if getattr(args, "fixed_devices", False):
+        jobs = [
+            {**job, "name": f"device{device}_{job['name']}", "assigned_device": device}
+            for job in jobs
+            for device in devices
+        ]
     return devices, jobs
+
+
+def take_ready_job(pending, free):
+    """Pop a runnable pair, preserving each fixed-device assignment across rounds."""
+    for index, job in enumerate(pending):
+        assigned = job.get("assigned_device")
+        device = assigned if assigned is not None else (free[0] if free else None)
+        if device in free:
+            free.remove(device)
+            return pending.pop(index), device
+    return None
+
+
+def selected_variants(args):
+    allowed = (
+        "fp32",
+        "qkv_rounding_only",
+        "score_matmul_only",
+        "probability_rounding_only",
+        "output_matmul_only",
+        "original_mixed_bf16",
+    )
+    return choices(getattr(args, "variants", None) or ",".join(allowed), allowed)
 
 
 def effective_torch_backend(cpu, selection):
@@ -135,6 +166,8 @@ def command(job, root, device, args):
         job["precision_mode"],
         "--repeats",
         str(args.repeats),
+        "--variants",
+        ",".join(selected_variants(args)),
     ]
 
 
@@ -264,7 +297,11 @@ def collect(root, statuses):
         with np.load(
             root / "workers" / first["name"] / "arrays.npz", allow_pickle=False
         ) as reference:
-            keys = [k for k in reference.files if k.endswith("/input_gradient")]
+            keys = [
+                k
+                for k in reference.files
+                if k.endswith("/input_gradient") and k.count("/") == 2
+            ]
             for job in group[1:]:
                 with np.load(
                     root / "workers" / job["name"] / "arrays.npz", allow_pickle=False
@@ -298,10 +335,16 @@ def collect(root, statuses):
 
 def run(args, devices, jobs):
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    prefix = (
+        "synthetic_end_to_end"
+        if getattr(args, "validation_suite", False)
+        else "synthetic_attention_cluster"
+    )
     root = (
-        args.output
-        or REPO / "results" / f"synthetic_attention_cluster_{stamp}_{os.getpid()}"
+        args.output or REPO / "results" / f"{prefix}_{stamp}_{os.getpid()}"
     ).resolve()
+    variants = selected_variants(args)
+    case_count = len(jobs) * len(variants) * 2
     if args.dry_run:
         print(
             json.dumps(
@@ -314,7 +357,9 @@ def run(args, devices, jobs):
                         args.cpu, args.torch_backend
                     ),
                     "workers": len(jobs),
-                    "variant_mode_cases": len(jobs) * 12,
+                    "variant_mode_cases": case_count,
+                    "variants": variants,
+                    "validation_suite": getattr(args, "validation_suite", False),
                     "jobs": jobs,
                 },
                 indent=2,
@@ -334,6 +379,8 @@ def run(args, devices, jobs):
         "tables/repeatability.csv: repeated evaluations in each worker process.\n"
         "tables/fresh_process_comparisons.csv: matched fixtures across rounds.\n"
         "tables/controls.csv: individual synthetic control outcomes.\n"
+        "validation.json (when requested): independent numerical, repeatability, and\n"
+        "synthetic integration axes; full-model correctness remains not assessed.\n"
         "workers/<name>/: config, summary, raw arrays, compiled IR, and event logs.\n"
         "logs/: worker stdout/stderr and preflight errors.\n"
         "metadata/: environment, GPU telemetry, and runner errors when applicable.\n"
@@ -351,6 +398,8 @@ def run(args, devices, jobs):
         "On completion a sibling .tar.gz contains this entire directory, unless\n"
         "--no-archive was used. Upload that archive for review.\n"
         "Verify extracted files with: sha256sum -c checksums.sha256\n"
+        "A sibling <result-name>.completion.json records the final exit code and\n"
+        "archive outcome after packaging; download it alongside the archive.\n"
     )
 
     def log(message):
@@ -381,6 +430,9 @@ def run(args, devices, jobs):
             "devices": devices,
             "jobs": jobs,
             "repeats": args.repeats,
+            "variants": variants,
+            "fixed_devices": getattr(args, "fixed_devices", False),
+            "validation_suite": getattr(args, "validation_suite", False),
             "worker_timeout_minutes": args.worker_timeout_minutes,
         },
     )
@@ -420,7 +472,7 @@ def run(args, devices, jobs):
     save(root / "metadata" / "environment.json", metadata)
     log(f"Repo: {REPO}; output: {root}")
     log(
-        f"Synthetic only: {len(jobs)} workers, {len(jobs) * 12} variant/mode cases; devices: {devices}"
+        f"Synthetic only: {len(jobs)} workers, {case_count} variant/mode cases; devices: {devices}"
     )
     log(
         "A finite sweep; no model/checkpoint loading and no deliberate overnight waiting."
@@ -458,7 +510,10 @@ def run(args, devices, jobs):
         pending = list(statuses)
         while pending or active:
             while pending and free:
-                job, device = pending.pop(0), free.pop(0)
+                pair = take_ready_job(pending, free)
+                if pair is None:
+                    break
+                job, device = pair
                 cmd = command(job, root, device, args)
                 with (root / "commands.sh").open("a") as handle:
                     handle.write(shlex.join(cmd) + "\n")
@@ -563,6 +618,39 @@ def run(args, devices, jobs):
         counts = {"aggregation_error": str(exc)}
         failure = failure or f"Aggregation failed: {exc}"
         (root / "metadata" / "aggregation_error.txt").write_text(traceback.format_exc())
+    validation = None
+    if getattr(args, "validation_suite", False):
+        try:
+            from synthetic_validation_audit import audit
+
+            validation = audit(root, statuses)
+            save(root / "validation.json", validation)
+            csv_file(
+                root / "tables" / "independent_numerical_checks.csv",
+                validation["numerical_checks"],
+            )
+            csv_file(
+                root / "tables" / "fixed_device_repeats.csv",
+                validation["between_processes"],
+            )
+            csv_file(
+                root / "tables" / "independent_within_process.csv",
+                validation["within_process"],
+            )
+            csv_file(
+                root / "tables" / "forward_path_comparisons.csv",
+                validation["forward_path_comparisons"],
+            )
+        except Exception as exc:
+            failure = failure or f"Independent audit failed: {exc}"
+            save(
+                root / "validation.json",
+                {
+                    "status": "error",
+                    "error": str(exc),
+                    "full_model_correctness": "not_assessed",
+                },
+            )
     summary = {
         "batch_completed": all(
             j["state"] in ("complete", "checks_failed") for j in statuses
@@ -582,6 +670,28 @@ def run(args, devices, jobs):
         "A strict/native comparison changes framework FP32 precision policies; it does not guarantee identical kernels.",
         **counts,
     }
+    if getattr(args, "validation_suite", False):
+        axes = validation["axes"] if validation else {}
+        summary["validation_axes"] = axes
+        summary["synthetic_suite_passed"] = (
+            failure is None
+            and summary["batch_completed"]
+            and all(
+                axes.get(k, {}).get("status") == "passed"
+                for k in (
+                    "strict_fp32_numerical_controls",
+                    "synthetic_pipeline_integrity",
+                )
+            )
+            and axes.get("repeatability", {}).get("status")
+            in ("identical", "variation_observed")
+        )
+        summary["exit_code_policy"] = (
+            "Zero requires completed synthetic integration and strict FP32 controls, plus assessed repeats. Repeat variation is reported separately. No full-model validation."
+        )
+    summary["archive_verification_status"] = (
+        "not_requested" if args.no_archive else "pending_at_summary_creation"
+    )
     save(root / "summary.json", summary)
     archive = root.with_name(root.name + ".tar.gz")
     log(f"Summary: {root / 'summary.json'}")
@@ -594,13 +704,46 @@ def run(args, devices, jobs):
                 with path.open("rb") as src:
                     digest = hashlib.file_digest(src, "sha256").hexdigest()
                 handle.write(f"{digest}  {path.relative_to(root).as_posix()}\n")
+    passed = summary.get(
+        "synthetic_suite_passed", summary["all_synthetic_controls_passed"]
+    )
+    exit_code = 130 if interrupted else 0 if passed else 1
+    completion_path = root.with_name(root.name + ".completion.json")
+    completion = {
+        "exit_code": exit_code,
+        "synthetic_checks_passed": passed,
+        "result_directory": str(root),
+        "archive": None if args.no_archive else str(archive),
+        "archive_verification_status": "not_requested",
+        "failure": failure,
+        "full_model_correctness": "not_assessed",
+    }
     if not args.no_archive:
-        partial = archive.with_suffix(archive.suffix + ".partial")
-        with tarfile.open(partial, "w:gz") as handle:
-            handle.add(root, arcname=root.name)
-        partial.replace(archive)
-        print(f"Download: {archive}", flush=True)
-    return 130 if interrupted else 0 if summary["all_synthetic_controls_passed"] else 1
+        try:
+            partial = archive.with_suffix(archive.suffix + ".partial")
+            with tarfile.open(partial, "w:gz") as handle:
+                handle.add(root, arcname=root.name)
+            partial.replace(archive)
+            if getattr(args, "validation_suite", False):
+                from synthetic_validation_audit import verify_archive
+
+                verified = verify_archive(root, archive)
+                completion.update(verified)
+                completion["archive_verification_status"] = "passed"
+                print(f"Archive verification: {verified}", flush=True)
+            else:
+                completion["archive_verification_status"] = "not_assessed"
+            print(f"Download: {archive}", flush=True)
+        except Exception as exc:
+            completion.update(
+                exit_code=130 if interrupted else 1,
+                archive_verification_status="failed",
+                failure=f"Archive creation/verification failed: {exc}",
+            )
+            print(completion["failure"], file=sys.stderr, flush=True)
+    save(completion_path, completion)
+    print(f"Final completion record: {completion_path}", flush=True)
+    return completion["exit_code"]
 
 
 def main():
@@ -617,6 +760,17 @@ def main():
         default="match",
         help="match JAX's device type, or explicitly use a CPU PyTorch reference",
     )
+    parser.add_argument(
+        "--fixed-devices",
+        action="store_true",
+        help="Replicate fixtures on each device; pin fresh-process rounds to that device",
+    )
+    parser.add_argument(
+        "--validation-suite",
+        action="store_true",
+        help="Independently audit synthetic artifacts and archive; requires fixed devices and two rounds",
+    )
+    parser.add_argument("--variants")
     parser.add_argument("--seeds")
     parser.add_argument("--sizes")
     parser.add_argument("--precision-modes")
@@ -638,7 +792,17 @@ def main():
             "Positive rounds/time limits and at least two repeats are required"
         )
     try:
+        selected = selected_variants(args)
         devices, jobs = make_plan(args)
+        if args.validation_suite and (
+            not args.fixed_devices
+            or max(j["round"] for j in jobs) < 1
+            or "fp32" not in selected
+            or not any(j["precision_mode"] == "strict" for j in jobs)
+        ):
+            parser.error(
+                "Validation suite requires --fixed-devices, at least two rounds, fp32 variant and strict precision"
+            )
     except argparse.ArgumentTypeError as exc:
         parser.error(str(exc))
 
