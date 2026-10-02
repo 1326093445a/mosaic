@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Fixed toy-input audit; eight GPUs run two probes x four seeds by default.
+# Use --cpu for serial local checks of both probes with seed 0.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"

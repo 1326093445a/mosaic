@@ -4,15 +4,20 @@ Separates the original coordinate and confidence probes. Repeats identical
 forward/backward calls and both sides of finite differences using one fixed
 model key per worker. No sequence optimization or arbitrary biological input.
 Exit zero means the audit was collected, NOT that gradients were validated.
+CPU mode runs serially and defaults to seed 0 for both probes.
+Schema version 2 reports gradient correctness as "not_assessed", separately
+from completion, observed repeatability, and derivative comparisons.
 """
 
 import argparse
 import csv
 from datetime import datetime, timezone
+import hashlib
 import importlib.metadata
 import json
 import os
 from pathlib import Path
+import random
 import subprocess
 import sys
 import time
@@ -24,6 +29,49 @@ EPSILONS = (0.1, 0.03, 0.01, 0.003, 0.001)
 FORWARD_REPEATS = 5
 BACKWARD_REPEATS = 3
 PAIR_REPEATS = 3
+
+
+def seed_host_generators(seed):
+    """Control setup randomness separately from the JAX evaluation key."""
+    import numpy as np
+    import torch
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def fingerprint_arrays(tree, *, include_arrays=False):
+    """Hash numerical leaves and their paths/shapes/dtypes, not static code."""
+    import jax
+    import numpy as np
+
+    aggregate = hashlib.sha256()
+    arrays = []
+    total_bytes = 0
+    for path, value in jax.tree_util.tree_flatten_with_path(tree)[0]:
+        if not hasattr(value, "dtype") or not hasattr(value, "shape"):
+            continue
+        array = np.asarray(value)
+        if array.dtype.hasobject:
+            raise TypeError("Object arrays cannot be reproducibly fingerprinted")
+        record = {
+            "path": jax.tree_util.keystr(path),
+            "shape": list(array.shape),
+            "dtype": str(array.dtype),
+            "sha256": hashlib.sha256(array.tobytes(order="C")).hexdigest(),
+        }
+        aggregate.update(json.dumps(record, sort_keys=True).encode())
+        arrays.append(record)
+        total_bytes += array.nbytes
+    result = {
+        "sha256": aggregate.hexdigest(),
+        "array_count": len(arrays),
+        "array_bytes": total_bytes,
+    }
+    if include_arrays:
+        result["arrays"] = arrays
+    return result
 
 
 def save(path, value):
@@ -97,6 +145,34 @@ def compare_derivatives(baseline, plus, minus, autodiff, epsilon):
     }
 
 
+def summarize_numerical_evidence(baseline, backward_losses, gradients, comparisons):
+    """Describe collected evidence without inventing a correctness criterion."""
+    import numpy as np
+
+    arrays = [np.asarray(x) for x in (baseline, backward_losses, gradients)]
+    if any(x.ndim == 0 or len(x) < 2 or not np.isfinite(x).all() for x in arrays):
+        raise ValueError("repeatability requires at least two finite observations")
+    gaps = [row["absolute_derivative_gap"] for row in comparisons]
+    return {
+        "repeatability": {
+            "status": "observed",
+            "forward_losses_identical": bool(np.all(arrays[0] == arrays[0][0])),
+            "backward_losses_identical": bool(np.all(arrays[1] == arrays[1][0])),
+            "gradients_identical": bool(np.all(arrays[2] == arrays[2][0])),
+            "interpretation": "Exact equality over collected repeats only; "
+            "does not establish gradient correctness.",
+        },
+        "derivative_agreement": {
+            "status": "not_assessed",
+            "comparisons_collected": len(comparisons),
+            "min_absolute_derivative_gap": min(gaps) if gaps else None,
+            "max_absolute_derivative_gap": max(gaps) if gaps else None,
+            "interpretation": "Differences and sampled ranges are descriptive. "
+            "No precision-aware acceptance criterion has been established.",
+        },
+    }
+
+
 def environment():
     from packaging.requirements import Requirement
 
@@ -130,14 +206,15 @@ def environment():
                 "XLA_CLIENT_MEM_FRACTION",
                 "XLA_PYTHON_CLIENT_MEM_FRACTION",
                 "MOSAIC_OPENDDE_AGGREGATION",
+                "PYTHONHASHSEED",
             )
         },
     }
 
 
 def run_worker(args):
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.devices
-    os.environ["JAX_PLATFORMS"] = "cuda"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "" if args.cpu else args.devices
+    os.environ["JAX_PLATFORMS"] = "cpu" if args.cpu else "cuda"
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     sys.path.insert(0, str(REPO / "src"))
     root = args.output
@@ -146,13 +223,17 @@ def run_worker(args):
     devices = []
     report = {
         "audit_completed": False,
-        "gradient_validated": False,
+        "schema_version": 2,
+        "gradient_validation_status": "not_assessed",
         "probe": args.probe,
         "seed": args.worker_seed,
+        "repeatability": {"status": "not_measured"},
+        "derivative_agreement": {"status": "not_assessed"},
     }
     config = {
         "input": {"first_chain_token_ids": [0, 7], "second_chain": "ACD"},
         "model": "OpenDDEModelAbag",
+        "backend": "cpu" if args.cpu else "cuda",
         "compute_precision": "fp32",
         "logits": "selected token 4, all others 0; softmax before model",
         "probe": args.probe,
@@ -165,6 +246,9 @@ def run_worker(args):
         "backward_repeats": BACKWARD_REPEATS,
         "repeats_per_perturbation": PAIR_REPEATS,
         "model_key": "same key for every evaluation within this worker",
+        "host_random_seed": args.worker_seed,
+        "host_seed_policy": "Python, NumPy, and PyTorch reset before model loading "
+        "and again before toy feature generation; Python hash seed set at worker launch.",
         "scope": "fixed toy numerical audit, not structure quality or production memory",
         "interpretation": "Ranges describe a few observations, not statistical confidence "
         "intervals. Signal/resolution is heuristic and is not a gradient acceptance test. "
@@ -191,8 +275,9 @@ def run_worker(args):
         from mosaic.structure_prediction import TargetChain
 
         devices = jax.devices()
-        if len(devices) != 1 or devices[0].platform != "gpu":
-            raise RuntimeError(f"Expected one CUDA device, got {devices}")
+        expected = "cpu" if args.cpu else "gpu"
+        if len(devices) != 1 or devices[0].platform != expected:
+            raise RuntimeError(f"Expected one {expected} device, got {devices}")
         report["device_kind"] = devices[0].device_kind
 
         def measured(label, fn):
@@ -232,8 +317,18 @@ def run_worker(args):
             f"Loading real model; probe={args.probe}, seed={args.worker_seed}",
             flush=True,
         )
+        seed_host_generators(args.worker_seed)
         model = OpenDDEModelAbag(compute_precision="fp32")
+        # Isolate feature randomness from loading/cache RNG consumption.
+        # This controls the toy harness only.
+        seed_host_generators(args.worker_seed)
         features, _ = model.binder_features(2, [TargetChain("ACD", use_msa=False)])
+        fingerprints = {
+            "model_arrays": fingerprint_arrays(model),
+            "feature_arrays": fingerprint_arrays(features, include_arrays=True),
+        }
+        save(root / "setup_fingerprints.json", fingerprints)
+        report["setup_array_hashes"] = {k: v["sha256"] for k, v in fingerprints.items()}
 
         class Probe(LossTerm):
             mode: str = eqx.field(static=True)
@@ -255,6 +350,9 @@ def run_worker(args):
         )
         key = jax.random.key(args.worker_seed)
         logits = jnp.zeros((2, 20)).at[jnp.arange(2), jnp.array([0, 7])].set(4.0)
+        report["evaluation_input_hash"] = fingerprint_arrays(
+            (logits, jax.random.key_data(key))
+        )["sha256"]
 
         def objective(x, model_loss, model_key):
             return model_loss(jax.nn.softmax(x, axis=-1), key=model_key)
@@ -333,6 +431,7 @@ def run_worker(args):
             else None,
             autodiff_directional_derivatives=ad.tolist(),
             finite_differences=rows,
+            **summarize_numerical_evidence(baseline, gradient_values, gradients, rows),
             interpretation="Audit collected. No automatic gradient-correctness verdict; "
             "examine repeat ranges, float32 resolution, derivative gaps, and step-size dependence.",
         )
@@ -362,8 +461,14 @@ def integers(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--devices", default="0,1,2,3,4,5,6,7")
-    parser.add_argument("--seeds", default="0,1,2,3", type=integers)
+    backend = parser.add_mutually_exclusive_group()
+    backend.add_argument("--devices", help="CUDA indices; defaults to 0,1,2,3,4,5,6,7")
+    backend.add_argument(
+        "--cpu", action="store_true", help="Use CPU only, one worker at a time"
+    )
+    parser.add_argument(
+        "--seeds", type=integers, help="Defaults to 0 on CPU; 0,1,2,3 on GPU"
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--worker-seed", type=int, help=argparse.SUPPRESS)
@@ -372,7 +477,7 @@ def main():
     )
     args = parser.parse_args()
     try:
-        devices = integers(args.devices)
+        devices = ["cpu"] if args.cpu else integers(args.devices or "0,1,2,3,4,5,6,7")
     except argparse.ArgumentTypeError as exc:
         parser.error(str(exc))
     if args.worker_seed is not None:
@@ -382,7 +487,9 @@ def main():
             or args.probe is None
             or args.worker_seed < 0
         ):
-            parser.error("worker requires one GPU, output, probe, and nonnegative seed")
+            parser.error(
+                "worker requires one device, output, probe, and nonnegative seed"
+            )
         return run_worker(args)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     root = (
@@ -390,11 +497,15 @@ def main():
     ).resolve()
     jobs = [
         {"probe": probe, "seed": seed, "name": f"{probe}_seed{seed}"}
-        for seed in args.seeds
+        for seed in (
+            args.seeds
+            if args.seeds is not None
+            else ([0] if args.cpu else [0, 1, 2, 3])
+        )
         for probe in ("coordinate", "confidence")
     ]
     print(
-        f"Output: {root}\nPlan: {len(jobs)} workers on GPUs {devices}; fixed five-residue fixture.",
+        f"Output: {root}\nPlan: {len(jobs)} workers on {'CPU (serial)' if args.cpu else f'GPUs {devices}'}; fixed five-residue fixture.",
         flush=True,
     )
     print(
@@ -420,8 +531,7 @@ def main():
                     sys.executable,
                     "-u",
                     str(Path(__file__).resolve()),
-                    "--devices",
-                    str(device),
+                    *(["--cpu"] if args.cpu else ["--devices", str(device)]),
                     "--worker-seed",
                     str(job["seed"]),
                     "--probe",
@@ -431,11 +541,15 @@ def main():
                 ]
                 with (root / "logs" / f"{job['name']}.log").open("w") as log:
                     proc = subprocess.Popen(
-                        command, stdout=log, stderr=subprocess.STDOUT, cwd=REPO
+                        command,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                        cwd=REPO,
+                        env={**os.environ, "PYTHONHASHSEED": str(job["seed"])},
                     )
                 running.append((job, device, proc))
                 print(
-                    f"Started {job['name']} on GPU {device} (PID {proc.pid})",
+                    f"Started {job['name']} on {'CPU' if args.cpu else f'GPU {device}'} (PID {proc.pid})",
                     flush=True,
                 )
             for job, device, proc in list(running):
@@ -473,7 +587,10 @@ def main():
         root / "summary.json",
         {
             "audit_completed": completed,
-            "gradient_validated": False,
+            "schema_version": 2,
+            "gradient_validation_status": "not_assessed",
+            "repeatability": {"status": "see_worker_summaries"},
+            "derivative_agreement": {"status": "not_assessed"},
             "workers": statuses,
             "scope": "fixed toy numerical conditioning audit",
         },
