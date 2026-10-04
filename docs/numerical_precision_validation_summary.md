@@ -1,6 +1,6 @@
 # Numerical precision investigation: evidence, readiness, and next checks
 
-Updated: **2026-10-02**. This document consolidates the numerical investigation through the reviewed H200 synthetic batch `synthetic_attention_cluster_20261002_094433_601222`.
+Updated: **2026-10-03**. This document consolidates the numerical investigation through the reviewed H200 archive `synthetic_end_to_end_20261002_220213_1118482.tar.gz` (360 workers; §9.1). The earlier 48-worker batch remains historical evidence in §7.
 
 ## 1. How close are we to real inference?
 
@@ -11,17 +11,27 @@ Updated: **2026-10-02**. This document consolidates the numerical investigation 
 | Question | Evidence available | What is still unresolved |
 |---|---|---|
 | Can inference code execute? | Historical project records contain completed forward predictions. Fixed toy model calls also executed. | Execution alone does not establish correct outputs or validate the latest implementation. |
-| Can the numerical comparison infrastructure run on H200? | All 48 workers in the latest synthetic cluster batch completed. | This is a small numerical workload, not a realistic full-model workload. |
-| Does generic attention autodiff agree with an independent reference? | FP64/FP32 CPU controls passed; all strict-precision H200 workers passed their existing synthetic controls. | This does not cover every operation, shape, integration path, or full-model derivative. |
+| Can the numerical comparison infrastructure run on H200? | All 360 workers in the corrected synthetic cluster batch completed (§9.1). | This is a small numerical workload, not a realistic full-model workload. |
+| Does generic attention autodiff agree with an independent reference? | FP64/FP32 CPU controls passed; the corrected H200 audit passed all 14,760 FP32 numerical checks, including repeats and forward-only outputs (§9.1). | This does not cover every operation, shape, integration path, or full-model derivative. |
 | Is BF16 numerically equivalent across execution modes? | Its behavior was measured in several synthetic configurations. Differences depend on precision policy, matrix size, and compilation. | There is no universal BF16 correctness verdict. |
 | Is current full-model forward inference validated? | Historical runs exist, but the latest synthetic archive does not contain model predictions. | Current integration, output quality, and representative resource evidence are separate from the synthetic results. |
 | Are full-model gradients and production memory validated? | Fixed toy model runs provided limited execution and numerical observations. | Full-model gradient correctness, realistic backward memory, and integration remain unvalidated. |
 
 Ordinary forward inference does not require a validated input-gradient path. Conversely, an apparently reasonable forward result does not certify its derivatives. These milestones should be evaluated separately.
 
-The [October 1 project handoff](p17_status_and_next_steps.md) contains historical forward findings and explicitly notes that execution and backbone checks do not establish overall structure accuracy. Those older results have not been re-reviewed or promoted to a current validation claim here. This document records numerical evidence; it does not provide a pathogen-targeted optimization procedure.
+The [project handoff](p17_status_and_next_steps.md) contains historical forward findings and explicitly notes that execution and backbone checks do not establish overall structure accuracy. Those older results have not been re-reviewed or promoted to a current validation claim here. This document records numerical evidence; it does not provide a pathogen-targeted optimization procedure.
 
 ## 2. Why we investigated precision
+
+The original project concern was confidence and target-aligned binder pose RMSD
+for the same P17 binder against Alpha versus JN.1. Later audits found invalid
+backbone geometry in some full-model outputs, making numerical and structural
+validation necessary before interpreting those metrics. The
+[project objective and test rationale](p17_status_and_next_steps.md#objective-and-baseline-comparison)
+separates the historical baseline, the modeled JN.1 reference and these validation
+questions. A large pose RMSD is not itself proof of a numerical defect; conversely,
+passing synthetic arithmetic checks does not establish pose recovery or improved
+interface confidence.
 
 BF16 was introduced in response to memory pressure in earlier work. That creates two independent questions:
 

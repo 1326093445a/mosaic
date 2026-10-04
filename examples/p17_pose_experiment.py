@@ -19,6 +19,11 @@ import sys
 
 REPO = Path(__file__).resolve().parent.parent
 
+# Structural seeds reserved for held-out evaluation: never used to tune
+# guidance, thresholds or retention. The plan and the coverage check read the
+# same constant so they cannot drift apart.
+HELDOUT_SEEDS = (101, 102, 103)
+
 
 def devices_from_csv(value):
     devices = value.split(",")
@@ -110,9 +115,7 @@ def build_plan(args):
                     "--opendde-dtype",
                     args.opendde_dtype,
                     "--seeds",
-                    "101",
-                    "102",
-                    "103",
+                    *[str(seed) for seed in HELDOUT_SEEDS],
                     "--num-shards",
                     str(len(args.devices)),
                     "--shard-index",
@@ -252,15 +255,58 @@ def summarize_search(root, pose_margin):
         writer.writerows(rows)
 
 
-def summarize_heldout(root, pose_margin):
-    """Use one held-out WT-relative definition for every candidate and source run."""
+def summarize_heldout(root, pose_margin, expected_seeds=HELDOUT_SEEDS):
+    """Use one held-out WT-relative definition for every candidate and source run.
+
+    Aggregates named `*_all_seeds` quantify over the planned seeds, so the
+    planned seeds have to be present. The shard merger rejects duplicate
+    `(candidate, seed)` pairs and per-shard count mismatches, which leaves a
+    *short* but internally consistent table possible: a candidate missing two
+    of its three seeds would otherwise report feasibility "across all seeds"
+    from one prediction, and the WT ceiling itself would be a max over fewer
+    seeds than it claims. Refuse that rather than summarize it.
+
+    Coverage is checked in both directions, because grouping predictions can
+    only see candidates that have at least one prediction. `candidates.csv` is
+    the authoritative list — the merger builds it per candidate and rejects
+    repeats — so a candidate that lost every prediction would silently vanish
+    from this report if the planned seeds were the only thing checked.
+    """
     with (root / "heldout/tables/predictions.csv").open() as handle:
         predictions = list(csv.DictReader(handle))
+    with (root / "heldout/tables/candidates.csv").open() as handle:
+        planned_candidates = [row["candidate_id"] for row in csv.DictReader(handle)]
     with (root / "heldout/tables/source_runs.csv").open() as handle:
         sources = list(csv.DictReader(handle))
     grouped = {}
     for row in predictions:
         grouped.setdefault(row["candidate_id"], []).append(row)
+    if "0" not in planned_candidates:
+        raise ValueError("held-out candidates contain no WT candidate (id 0)")
+    absent = sorted(set(planned_candidates) - set(grouped), key=int)
+    if absent:
+        raise ValueError(
+            "held-out candidate coverage is incomplete; candidates "
+            f"{absent} are in candidates.csv with no prediction at all"
+        )
+    unplanned = sorted(set(grouped) - set(planned_candidates), key=int)
+    if unplanned:
+        raise ValueError(
+            f"held-out predictions reference candidates {unplanned} that are "
+            "absent from candidates.csv"
+        )
+    want = {str(seed) for seed in expected_seeds}
+    short = {
+        candidate: sorted(want - {r["selection_seed"] for r in samples})
+        for candidate, samples in grouped.items()
+        if {r["selection_seed"] for r in samples} != want
+    }
+    if short:
+        raise ValueError(
+            "held-out seed coverage is incomplete; expected seeds "
+            f"{sorted(want)} for every candidate, missing: "
+            + ", ".join(f"candidate {c} missing {s}" for c, s in sorted(short.items()))
+        )
     ceiling = max(float(r["binder_pose_rmsd_A"]) for r in grouped["0"]) + pose_margin
     rows = []
     for candidate, samples in sorted(grouped.items(), key=lambda item: int(item[0])):
@@ -281,6 +327,7 @@ def summarize_heldout(root, pose_margin):
             values = [float(r[name]) for r in samples]
             row["mean_" + name] = statistics.mean(values)
             row["worst_" + name] = min(values) if name == "ipsae_min" else max(values)
+        row["heldout_seeds"] = len(samples)
         row["pose_feasible_all_seeds"] = row["worst_binder_pose_rmsd_A"] <= ceiling
         row["pose_feasible_seed_fraction"] = sum(
             float(r["binder_pose_rmsd_A"]) <= ceiling for r in samples

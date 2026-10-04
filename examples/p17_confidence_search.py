@@ -258,6 +258,34 @@ def build_parser():
         default=12.0,
         help="Interface-count diagnostic only.",
     )
+    # Recovery-control inputs. Omitting all of these reproduces the previous
+    # P17/JN.1 behavior exactly, including the literature hotspot epitope.
+    parser.add_argument(
+        "--complex",
+        type=Path,
+        default=None,
+        help="Reference complex; default is the JN.1 reference with its "
+        "hotspot epitope. Point this at P17_Alpha.pdb for the recovery "
+        "control of docs/P17_JN1.md section 19.3B.",
+    )
+    parser.add_argument("--binder-chain", default=None)
+    parser.add_argument("--target-chain", default=None)
+    parser.add_argument(
+        "--epitope-mode",
+        choices=["hotspots", "contact"],
+        default=None,
+        help="'hotspots' uses the five JN.1 literature positions (default "
+        "with no --complex). 'contact' derives the epitope from the "
+        "reference's own CA contacts, required for a non-JN.1 target whose "
+        "numbering those constants do not describe.",
+    )
+    parser.add_argument(
+        "--start-sequence",
+        default=None,
+        help="Binder sequence the search starts from, instead of the "
+        "reference's own. The recovery control passes a damaged sequence "
+        "here; edit counts and the WT-relative cap are measured against it.",
+    )
     return parser
 
 
@@ -351,6 +379,7 @@ def main(argv=None):
     from mosaic.structure_prediction import TargetChain
     from p17_hallucination_search import (
         CDR_RESIDUE_INDICES_1IDX,
+        CONTACT_DISTANCE,
         HOTSPOT_TARGET_RESIDUE_INDICES_1IDX,
         OPENDDE_RECYCLING_STEPS,
         POSE_DRIFT_MARGIN,
@@ -365,17 +394,108 @@ def main(argv=None):
     )
 
     setup_start = time.perf_counter()
-    model, binder_seq, target_seq = load_structure()
-    wt = np.array([TOKENS.index(aa) for aa in binder_seq], dtype=np.int32)
-    mask = np.array([i + 1 in CDR_RESIDUE_INDICES_1IDX for i in range(len(wt))])
+    reference_info = None
+    if args.complex is None:
+        if args.binder_chain or args.target_chain:
+            parser.error("--binder-chain/--target-chain require --complex")
+        if (args.epitope_mode or "hotspots") != "hotspots":
+            parser.error("--epitope-mode contact requires --complex")
+        model, binder_seq, target_seq = load_structure()
+        references = reference_binder_target_ca_distances(model)
+        binder_ca, target_ca = reference_binder_target_ca(model)
+        epitope_idx = np.array(
+            sorted(i - 1 for i in HOTSPOT_TARGET_RESIDUE_INDICES_1IDX)
+        )
+        epitope_mode = "hotspots"
+    else:
+        # A different reference means a different target numbering, so the
+        # JN.1 hotspot constants do not describe it. Require the epitope to be
+        # derived from the structure rather than silently reusing indices that
+        # would land on unrelated residues.
+        from p17_alpha_reference import (
+            ca_distance_matrix,
+            ca_spacing_report,
+            contact_epitope,
+            load_complex,
+        )
+
+        epitope_mode = args.epitope_mode or "contact"
+        if epitope_mode != "contact":
+            parser.error(
+                "--complex requires --epitope-mode contact: the hotspot "
+                "constants are JN.1 target positions and do not transfer"
+            )
+        reference_info = load_complex(
+            args.complex,
+            args.binder_chain or "B",
+            args.target_chain or "A",
+        )
+        binder_seq = reference_info["binder_seq"]
+        target_seq = reference_info["target_seq"]
+        binder_ca = reference_info["binder_ca"]
+        target_ca = reference_info["target_ca"]
+        references = ca_distance_matrix(binder_ca, target_ca)
+        epitope_idx = contact_epitope(binder_ca, target_ca, CONTACT_DISTANCE)
+        reference_info["spacing"] = [
+            ca_spacing_report(binder_ca, "binder"),
+            ca_spacing_report(target_ca, "target"),
+        ]
+        for report in reference_info["spacing"]:
+            if not report["passed"]:
+                raise ValueError(f"reference backbone spacing failed: {report}")
+        reference_info["epitope_idx"] = [int(i) for i in epitope_idx]
+        reference_info["binder_ca"] = None
+        reference_info["target_ca"] = None
+        model = None
+        print(
+            f"Reference {args.complex.name}: binder {len(binder_seq)} aa, "
+            f"target {len(target_seq)} aa, contact epitope "
+            f"{epitope_idx.size} residues at {CONTACT_DISTANCE} A",
+            flush=True,
+        )
+
+    mask = np.array(
+        [i + 1 in CDR_RESIDUE_INDICES_1IDX for i in range(len(binder_seq))]
+    )
     designable_idx = np.flatnonzero(mask)
-    epitope_idx = np.array(sorted(i - 1 for i in HOTSPOT_TARGET_RESIDUE_INDICES_1IDX))
-    references = reference_binder_target_ca_distances(model)
-    binder_ca, target_ca = reference_binder_target_ca(model)
+
+    # The search's origin. Edit budget and the Hamming cap are relative to
+    # this sequence, so for the recovery control the damaged sequence is the
+    # origin and the reference's own sequence is a point the search may or may
+    # not reach -- it is never given as a target.
+    if args.start_sequence is not None:
+        start_seq = args.start_sequence.strip().upper()
+        if len(start_seq) != len(binder_seq):
+            parser.error(
+                f"--start-sequence has {len(start_seq)} residues, reference "
+                f"binder has {len(binder_seq)}"
+            )
+        if set(start_seq) - set(TOKENS[:20]):
+            parser.error("--start-sequence has non-standard residues")
+        changed = np.flatnonzero(
+            np.array(list(start_seq)) != np.array(list(binder_seq))
+        )
+        if changed.size and not set(changed.tolist()) <= set(designable_idx.tolist()):
+            parser.error(
+                "--start-sequence differs from the reference outside the "
+                "designable mask, so the search could not undo those changes"
+            )
+        print(
+            f"Start sequence differs from the reference at {changed.size} "
+            f"designable positions: {sorted(int(i) + 1 for i in changed)}",
+            flush=True,
+        )
+        binder_seq = start_seq
+    wt = np.array([TOKENS.index(aa) for aa in binder_seq], dtype=np.int32)
     outputs = SearchOutputs(args.output_dir, binder_ca, target_ca)
 
     metadata = dict(
         output_layout_version=2,
+        reference_source=str(args.complex) if args.complex else "P17_JN1.pdb",
+        epitope_mode=epitope_mode,
+        reference_details=reference_info,
+        start_sequence=binder_seq,
+        start_differs_from_reference=args.start_sequence is not None,
         config=asdict(config),
         arguments={
             k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
@@ -414,6 +534,7 @@ def main(argv=None):
             for k in (
                 "CUDA_VISIBLE_DEVICES",
                 "JOPENDDE_ATTENTION_DTYPE",
+                "MOSAIC_OPENDDE_AGGREGATION",
                 "XLA_FLAGS",
                 "XLA_PYTHON_CLIENT_PREALLOCATE",
                 "XLA_PYTHON_CLIENT_MEM_FRACTION",
@@ -468,18 +589,38 @@ def main(argv=None):
         from p17_pose_diagnostics import audit_reference, geometry_checks, write_report
         from p17_hallucination_search import BINDER_CHAIN, TARGET_CHAIN, COMPLEX_PDB
 
+        # Audit whatever reference this run actually loaded, not the module
+        # default: auditing P17_JN1.pdb while scoring against Alpha would
+        # report a passing correspondence for the wrong file.
+        complex_pdb = args.complex if args.complex is not None else COMPLEX_PDB
+        chains = (
+            (args.binder_chain or "B", args.target_chain or "A")
+            if args.complex is not None
+            else (BINDER_CHAIN, TARGET_CHAIN)
+        )
         try:
-            reference_audit = audit_reference(
-                model,
-                (BINDER_CHAIN, TARGET_CHAIN),
-                (binder_seq, target_seq),
-                (binder_ca, target_ca),
-            )
+            if model is None:
+                # `audit_reference` walks a gemmi model; the recovery control's
+                # loader already validated numbering, CA uniqueness, altlocs
+                # and spacing, and `reference_info` records all of it.
+                reference_audit = dict(
+                    source="p17_alpha_reference.load_complex",
+                    reference=reference_info,
+                    binder_residues=len(binder_seq),
+                    target_residues=len(target_seq),
+                )
+            else:
+                reference_audit = audit_reference(
+                    model,
+                    chains,
+                    (binder_seq, target_seq),
+                    (binder_ca, target_ca),
+                )
             reference_audit["source_sha256"] = hashlib.sha256(
-                COMPLEX_PDB.read_bytes()
+                complex_pdb.read_bytes()
             ).hexdigest()
             reference_audit["geometry"] = geometry_checks(binder_ca, target_ca)
-            shutil.copyfile(COMPLEX_PDB, args.output_dir / "reference.pdb")
+            shutil.copyfile(complex_pdb, args.output_dir / "reference.pdb")
             np.savez_compressed(
                 args.output_dir / "confidence/reference_ca.npz",
                 binder_ca=binder_ca,

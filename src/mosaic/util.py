@@ -70,6 +70,61 @@ def kabsch(
 
     return R, t
 
+def kabsch_conditioning(
+    P: Float[Array, "N 3"], Q: Float[Array, "M 3"], *, tol: float = 1e-3
+):
+    """Conditioning of the SVD that `kabsch(P, Q)` solves -- a diagnostic only.
+
+    `project_to_SO3` differentiates through `_safe_SVD`, whose pullback carries
+    `1 / (s_i**2 - s_j**2)` terms: it is nonfinite when two singular values of
+    the covariance coincide. `zero_nan_pullback` replaces nonfinite pullback
+    entries with zeros, so the usual symptom is a gradient with respect to `P`
+    that is finite, plausible-looking and silently wrong.
+
+    That is not the only symptom, and the zeroing is not reliable. Measured on
+    a degenerate (isotropic) alignment in
+    `tests/test_pose_rmsd_geometry.py`, the same path produces three distinct
+    behaviors depending on the rotation and the **backend**: a zeroed
+    derivative where the true one is nonzero; a finite value far from the truth
+    (CPU, ~46x too large at one probe angle); and a **nonfinite** value that
+    reaches the caller (GPU, at another probe angle) — so suppression does not
+    catch every case. A correct-looking value also occurs at some angles on
+    GPU, which is why checking one probe point establishes nothing.
+
+    Consequently neither a zero check nor a NaN check detects this, and that is
+    what this diagnostic is for. It reports the quantities that identify the
+    degenerate case; it does not change or repair any gradient.
+
+    A flagged alignment does not mean the derivative fails to exist. The
+    composite map stays differentiable where the covariance is nonsingular,
+    even with repeated singular values; what breaks is computing it through
+    separately differentiated `U` and `Vt` factors. So treat a flag as "this
+    implementation cannot differentiate here", not as "no derivative exists".
+
+    `min_relative_gap` is the smallest pairwise singular-value separation and
+    `smallest_relative_value` the smallest singular value, both relative to the
+    largest. `well_conditioned` is false when either falls to `tol`, which flags
+    a possibly-zeroed derivative rather than proving one.
+    """
+    centered_P = P - jnp.mean(P, axis=0)
+    centered_Q = Q - jnp.mean(Q, axis=0)
+    s = jnp.linalg.svd(centered_P.T @ centered_Q, compute_uv=False)
+    largest = s[0]
+    scale = jnp.where(largest > 0, largest, 1.0)
+    # Mask the diagonal with `where`: `eye * inf` leaves 0 * inf = nan offdiagonal.
+    pairwise = jnp.abs(s[:, None] - s[None, :])
+    gaps = jnp.where(jnp.eye(s.shape[0], dtype=bool), jnp.inf, pairwise)
+    min_relative_gap = jnp.min(gaps) / scale
+    smallest_relative_value = s[-1] / scale
+    return {
+        "singular_values": s,
+        "min_relative_gap": min_relative_gap,
+        "smallest_relative_value": smallest_relative_value,
+        "well_conditioned": (min_relative_gap > tol)
+        & (smallest_relative_value > tol)
+        & (largest > 0),
+    }
+
 def unaligned_rmsd(
     P: Float[Array, "N 3"], Q: Float[Array, "M 3"]
 ):

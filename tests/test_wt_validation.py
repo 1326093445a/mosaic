@@ -207,12 +207,167 @@ def test_collection_distinguishes_geometry_failure_from_execution_failure(
             ]
         },
     )
-    (path / "summary.json").write_text(json.dumps(dict(reports=[report])))
+    # A real worker declares completion and writes one report per repeat; the
+    # collector now requires both before calling the worker complete.
+    (path / "summary.json").write_text(
+        json.dumps(
+            dict(
+                completed=True,
+                reports=[report, dict(report, repeat=1)],
+            )
+        )
+    )
     runner.collect_results(tmp_path, [dict(name="invalid"), dict(name="crashed")])
     summary = json.loads((tmp_path / "summary.json").read_text())
     assert not summary["completed"] and not summary["geometry_passed"]
     assert summary["rows"][0]["completed"] and not summary["rows"][0]["geometry_passed"]
-    assert not summary["rows"][1]["completed"]
+    assert not summary["rows"][-1]["completed"]
+
+
+@pytest.mark.parametrize(
+    "summary_payload,expected_note",
+    [
+        ({"completed": True, "reports": []}, "expected 2 reports, found 0"),
+        ({"completed": False, "reports": []}, "completed flag is False"),
+        ({"reports": []}, "completed flag is None"),
+    ],
+)
+def test_a_worker_without_reports_cannot_disappear_from_the_table(
+    modules, tmp_path, summary_payload, expected_note
+):
+    """A worker that produced nothing must still fail the run.
+
+    Rows are what the root summary and the forward-evidence gate are computed
+    over, so a worker that contributed no rows would leave `completed` true
+    and let a partially-failed batch gate a cluster launch.
+    """
+    _, runner, _, _ = modules
+    (tmp_path / "tables").mkdir()
+    good = tmp_path / "workers" / "healthy"
+    good.mkdir(parents=True)
+    report = dict(
+        repeat=0,
+        passed=True,
+        mapping_agrees=True,
+        raw_geometry={
+            "chains": [
+                {
+                    "distances": {
+                        "adjacent_CA": {"median_A": 3.8},
+                        "N_CA": {"median_A": 1.46},
+                    }
+                }
+            ]
+        },
+    )
+    good.joinpath("summary.json").write_text(
+        json.dumps(dict(completed=True, reports=[report, dict(report, repeat=1)]))
+    )
+    empty = tmp_path / "workers" / "empty"
+    empty.mkdir(parents=True)
+    empty.joinpath("summary.json").write_text(json.dumps(summary_payload))
+
+    runner.collect_results(
+        tmp_path, [dict(name="healthy"), dict(name="empty")]
+    )
+    summary = json.loads((tmp_path / "summary.json").read_text())
+
+    workers = {row["worker"] for row in summary["rows"]}
+    assert workers == {"healthy", "empty"}, "the empty worker must still appear"
+    assert summary["completed"] is False
+    failed = [row for row in summary["rows"] if row["worker"] == "empty"]
+    assert len(failed) == 1 and failed[0]["completed"] is False
+    assert expected_note in failed[0]["note"]
+    assert summary["expected_rows"] == 4 and summary["observed_rows"] == 3
+
+
+@pytest.mark.parametrize(
+    "repeats,expected_note",
+    [
+        ([0, 0], "expected repeats [0, 1], found [0, 0]"),
+        ([1, 1], "expected repeats [0, 1], found [1, 1]"),
+        ([0, 5], "found [0, 5]"),
+        ([0, None], "found [0, None]"),
+    ],
+)
+def test_duplicated_or_mislabelled_repeats_are_not_repeat_coverage(
+    modules, tmp_path, repeats, expected_note
+):
+    """Two copies of one repeat satisfy a count check and measure nothing.
+
+    The repeats are the only evidence about within-process repeatability, so
+    the collector must require the planned repeat ids rather than their number.
+    """
+    _, runner, _, _ = modules
+    (tmp_path / "tables").mkdir()
+    worker = tmp_path / "workers" / "healthy"
+    worker.mkdir(parents=True)
+    report = dict(
+        passed=True,
+        mapping_agrees=True,
+        raw_geometry={
+            "chains": [
+                {
+                    "distances": {
+                        "adjacent_CA": {"median_A": 3.8},
+                        "N_CA": {"median_A": 1.46},
+                    }
+                }
+            ]
+        },
+    )
+    worker.joinpath("summary.json").write_text(
+        json.dumps(
+            dict(
+                completed=True,
+                reports=[dict(report, repeat=value) for value in repeats],
+            )
+        )
+    )
+
+    runner.collect_results(tmp_path, [dict(name="healthy")])
+    summary = json.loads((tmp_path / "summary.json").read_text())
+
+    assert summary["completed"] is False
+    assert len(summary["rows"]) == 1
+    assert expected_note in summary["rows"][0]["note"]
+    assert summary["rows"][0]["completed"] is False
+
+
+def test_distinct_repeats_still_pass_the_coverage_check(modules, tmp_path):
+    """The companion positive case: ids 0 and 1 in either order are complete."""
+    _, runner, _, _ = modules
+    (tmp_path / "tables").mkdir()
+    worker = tmp_path / "workers" / "healthy"
+    worker.mkdir(parents=True)
+    report = dict(
+        passed=True,
+        mapping_agrees=True,
+        raw_geometry={
+            "chains": [
+                {
+                    "distances": {
+                        "adjacent_CA": {"median_A": 3.8},
+                        "N_CA": {"median_A": 1.46},
+                    }
+                }
+            ]
+        },
+    )
+    worker.joinpath("summary.json").write_text(
+        json.dumps(
+            dict(
+                completed=True,
+                reports=[dict(report, repeat=1), dict(report, repeat=0)],
+            )
+        )
+    )
+
+    runner.collect_results(tmp_path, [dict(name="healthy")])
+    summary = json.loads((tmp_path / "summary.json").read_text())
+
+    assert summary["completed"] is True
+    assert sorted(row["repeat"] for row in summary["rows"]) == [0, 1]
 
 
 def test_raw_cif_roundtrip_preserves_named_backbone(modules, reference, tmp_path):

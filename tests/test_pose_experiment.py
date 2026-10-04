@@ -335,6 +335,9 @@ def test_heldout_summary_uses_common_wt_ceiling_and_preserves_raw_scores(
     (tmp_path / "heldout/tables/source_runs.csv").write_text(
         "candidate_id,source_run\n1,B_guidance_seed0\n1,D_both_seed0\n"
     )
+    (tmp_path / "heldout/tables/candidates.csv").write_text(
+        "candidate_id,sequence\n0,AAAA\n1,AAAC\n"
+    )
     launcher.summarize_heldout(tmp_path, 3.0)
     summary = list(csv.DictReader((tmp_path / "tables/heldout_candidates.csv").open()))
     assert all(float(r["common_reporting_ceiling_A"]) == 7.0 for r in summary)
@@ -344,6 +347,154 @@ def test_heldout_summary_uses_common_wt_ceiling_and_preserves_raw_scores(
     assert float(summary[1]["worst_ipsae_min"]) == pytest.approx(0.7)
     assert float(summary[1]["pose_feasible_seed_fraction"]) == pytest.approx(2 / 3)
     assert summary[1]["source_runs"] == "B_guidance_seed0;D_both_seed0"
+
+
+def _write_heldout_tables(root, rows, planned=None):
+    """Stage tables as `merge_shard_tables` leaves them.
+
+    `planned` defaults to the candidates appearing in `rows`; pass it
+    explicitly to model a candidate that reached `candidates.csv` but lost its
+    predictions, or a prediction for a candidate nobody planned.
+    """
+    (root / "heldout/tables").mkdir(parents=True)
+    (root / "tables").mkdir()
+    with (root / "heldout/tables/predictions.csv").open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    if planned is None:
+        planned = sorted({r["candidate_id"] for r in rows}, key=int)
+    (root / "heldout/tables/candidates.csv").write_text(
+        "candidate_id,sequence\n"
+        + "".join(f"{candidate},AAAA\n" for candidate in planned)
+    )
+    (root / "heldout/tables/source_runs.csv").write_text(
+        "candidate_id,source_run\n1,B_guidance_seed0\n"
+    )
+
+
+def _heldout_row(candidate, seed, pose):
+    return dict(
+        candidate_id=candidate,
+        selection_seed=seed,
+        ipsae_min=0.5,
+        binder_pose_rmsd_A=pose,
+        target_aligned_rmsd_A=1.0,
+        binder_internal_rmsd_A=2.0,
+    )
+
+
+def test_heldout_summary_refuses_incomplete_seed_coverage(modules, tmp_path):
+    """"All seeds" must mean the planned seeds, not the rows that showed up.
+
+    The shard merger rejects duplicate (candidate, seed) pairs and per-shard
+    count mismatches, so a short table can still be internally consistent. A
+    candidate scored on one of three seeds would otherwise report feasibility
+    "across all seeds" from that single prediction.
+    """
+    _, launcher = modules
+    rows = [_heldout_row(0, seed, 2.0) for seed in launcher.HELDOUT_SEEDS]
+    rows.append(_heldout_row(1, launcher.HELDOUT_SEEDS[0], 2.0))
+    _write_heldout_tables(tmp_path, rows)
+
+    with pytest.raises(ValueError) as excinfo:
+        launcher.summarize_heldout(tmp_path, 3.0)
+    message = str(excinfo.value)
+    assert "seed coverage is incomplete" in message
+    assert "candidate 1 missing" in message
+    assert not (tmp_path / "tables/heldout_candidates.csv").exists()
+
+
+def test_heldout_summary_refuses_a_wt_ceiling_built_from_missing_seeds(
+    modules, tmp_path
+):
+    """The WT ceiling is a max over seeds, so short WT coverage lowers it."""
+    _, launcher = modules
+    rows = [_heldout_row(0, launcher.HELDOUT_SEEDS[0], 2.0)]
+    rows += [_heldout_row(1, seed, 2.0) for seed in launcher.HELDOUT_SEEDS]
+    _write_heldout_tables(tmp_path, rows)
+
+    with pytest.raises(ValueError, match="seed coverage is incomplete"):
+        launcher.summarize_heldout(tmp_path, 3.0)
+
+
+def test_heldout_summary_requires_a_wt_candidate(modules, tmp_path):
+    _, launcher = modules
+    _write_heldout_tables(
+        tmp_path, [_heldout_row(1, seed, 2.0) for seed in launcher.HELDOUT_SEEDS]
+    )
+
+    with pytest.raises(ValueError, match="no WT candidate"):
+        launcher.summarize_heldout(tmp_path, 3.0)
+
+
+def test_heldout_summary_refuses_a_candidate_with_no_predictions(modules, tmp_path):
+    """Grouping predictions cannot see a candidate that lost all of them.
+
+    `candidates.csv` is the authoritative list, so a candidate present there
+    and absent from `predictions.csv` must fail rather than quietly drop out
+    of the report.
+    """
+    _, launcher = modules
+    rows = [
+        _heldout_row(candidate, seed, 2.0)
+        for candidate in (0, 1)
+        for seed in launcher.HELDOUT_SEEDS
+    ]
+    _write_heldout_tables(tmp_path, rows, planned=["0", "1", "2"])
+
+    with pytest.raises(ValueError) as excinfo:
+        launcher.summarize_heldout(tmp_path, 3.0)
+    message = str(excinfo.value)
+    assert "candidate coverage is incomplete" in message
+    assert "['2']" in message
+    assert not (tmp_path / "tables/heldout_candidates.csv").exists()
+
+
+def test_heldout_summary_refuses_a_prediction_for_an_unplanned_candidate(
+    modules, tmp_path
+):
+    """The other direction: a prediction whose candidate is not in the list."""
+    _, launcher = modules
+    rows = [
+        _heldout_row(candidate, seed, 2.0)
+        for candidate in (0, 1)
+        for seed in launcher.HELDOUT_SEEDS
+    ]
+    _write_heldout_tables(tmp_path, rows, planned=["0"])
+
+    with pytest.raises(ValueError, match="absent from candidates.csv"):
+        launcher.summarize_heldout(tmp_path, 3.0)
+
+
+def test_heldout_summary_refuses_a_wt_missing_from_the_candidate_list(
+    modules, tmp_path
+):
+    """WT is checked against the authoritative list, not against predictions."""
+    _, launcher = modules
+    rows = [
+        _heldout_row(candidate, seed, 2.0)
+        for candidate in (0, 1)
+        for seed in launcher.HELDOUT_SEEDS
+    ]
+    _write_heldout_tables(tmp_path, rows, planned=["1"])
+
+    with pytest.raises(ValueError, match="no WT candidate"):
+        launcher.summarize_heldout(tmp_path, 3.0)
+
+
+def test_heldout_summary_records_how_many_seeds_each_row_covers(modules, tmp_path):
+    _, launcher = modules
+    rows = [
+        _heldout_row(candidate, seed, 2.0)
+        for candidate in (0, 1)
+        for seed in launcher.HELDOUT_SEEDS
+    ]
+    _write_heldout_tables(tmp_path, rows)
+
+    launcher.summarize_heldout(tmp_path, 3.0)
+    summary = list(csv.DictReader((tmp_path / "tables/heldout_candidates.csv").open()))
+    assert [int(r["heldout_seeds"]) for r in summary] == [3, 3]
 
 
 def test_search_summary_uses_one_reporting_ceiling_across_arms(modules, tmp_path):

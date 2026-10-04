@@ -2,19 +2,19 @@
 
 **Follow-up, 2026-09-22:** The latest user constraints, three-policy shortlist,
 Germinal discussion, evolutionary-search follow-up, and paper index
-are now in [the project handoff](p17_jn1_redesign.md#10-search-policy-handoff-for-claude--2026-09-22)
-and [its references](p17_jn1_redesign.md#813-sources). That handoff supersedes the
+are now in [the project handoff](P17_JN1.md#10-search-policy-handoff-for-claude--2026-09-22)
+and [its references](P17_JN1.md#813-sources). That handoff supersedes the
 initial priority ranking below. The current P17 MCMC implementation is an
 unfinished prototype, not a validated baseline. The first proposed comparison
 retains frozen OpenDDE + AbLang2 guidance, fixed framework/CDRs, and requires no
 additional model training.
 
 The subsequent index includes 26 papers plus a pinned BindCraft2 implementation
-reference. [§12 of the handoff](p17_jn1_redesign.md#12-first-implementation-and-response-to-claude--2026-09-22)
+reference. [§12 of the handoff](P17_JN1.md#12-first-implementation-and-response-to-claude--2026-09-22)
 records the first coded harness, review corrections, and CPU validation; real-model
 GPU validation remains pending.
 
-Reviewed 2026-09-21. This is a broad, targeted literature survey, not an exhaustive review of every protein-design paper. Relevant methods, results, and limitations were inspected in primary papers; entries explicitly marked abstract-level received a lighter review. No experiments were reproduced. Project observations come from `p17_jn1_redesign.md` and the earlier code review, not independent validation of its experimental outputs.
+Reviewed 2026-09-21. This is a broad, targeted literature survey, not an exhaustive review of every protein-design paper. Relevant methods, results, and limitations were inspected in primary papers; entries explicitly marked abstract-level received a lighter review. No experiments were reproduced. Project observations come from `P17_JN1.md` and the earlier code review, not independent validation of its experimental outputs.
 
 The most relevant problem formulation is **constrained optimization of an existing antibody, with expensive and imperfect evaluation**. This overlaps several literatures that the original notes underrepresent: local sequence optimization, antibody lead optimization, surrogate-assisted evolution, and discrete gradient sampling.
 

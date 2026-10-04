@@ -49,7 +49,7 @@ path can include differentiable coordinate sampling and confidence outputs;
 the earlier distogram-only path was an implementation choice. The full-path
 experiment was listed as built but unrun in the July notes. That dated status
 must not be confused with the later P17 runs in the
-[detailed project record](p17_jn1_redesign.md).
+[detailed project record](P17_JN1.md).
 
 ## Interpretation retained in the current handoff
 

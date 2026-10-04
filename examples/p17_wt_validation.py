@@ -22,6 +22,9 @@ from time import perf_counter
 from p17_pose_experiment import REPO, devices_from_csv, run_stage
 
 PATHS = ("mosaic", "direct", "native")
+# Identical-input evaluations per worker. The collector requires exactly this
+# many reports before it will call a worker complete.
+REPEATS_PER_WORKER = 2
 ATOM_FIELDS = (
     "atom_to_token_idx",
     "atom_to_tokatom_idx",
@@ -93,7 +96,14 @@ def build_plan(args):
                     if aggregation:
                         command += ["--aggregation-mode", aggregation]
                     jobs.append(
-                        dict(name=name, command=command, aggregation_mode=aggregation)
+                        dict(
+                            name=name,
+                            command=command,
+                            aggregation_mode=aggregation,
+                            path=mode,
+                            sampling_steps=steps,
+                            seed=seed,
+                        )
                     )
     return jobs
 
@@ -361,7 +371,7 @@ def run_worker(args):
         },
         preparation_seed=0,
         sample_count=1,
-        repeats=2,
+        repeats=REPEATS_PER_WORKER,
         environment={
             k: v
             for k, v in os.environ.items()
@@ -439,7 +449,7 @@ def run_worker(args):
     )
     reports, first = [], None
     names = decode_atom_names(arrays["ref_atom_name_chars"])
-    for repeat in range(2):
+    for repeat in range(REPEATS_PER_WORKER):
         before = memory_stats(args.path == "native")
         tick = perf_counter()
         status = "error"
@@ -515,6 +525,12 @@ def run_worker(args):
             seed=args.seed,
             sampling_steps=args.sampling_steps,
             recycles=args.recycles,
+            # Recorded here, not only in config.json, so a consumer deciding
+            # whether this archive covers its configuration can check the
+            # precision and reference without opening further files.
+            opendde_dtype=args.opendde_dtype,
+            reference=str(args.reference),
+            reference_sha256=sha256_file(args.reference),
             model_key_data=model_key,
             geometry_passed=all(r["passed"] for r in reports),
             reports=reports,
@@ -525,27 +541,80 @@ def run_worker(args):
 
 
 def collect_results(root, jobs):
+    """One row per planned worker/repeat, including for workers that failed.
+
+    Every planned worker contributes at least one row. A worker that wrote no
+    summary, declared itself incomplete, or returned the wrong number of
+    reports yields an explicit incomplete row rather than silently dropping
+    out of the table: a disappearing worker would otherwise leave the root
+    `completed` flag true, because that flag is computed over present rows.
+
+    Repeat *coverage* is checked separately from repeat *count*. The repeats
+    are the only evidence about within-process repeatability, so two copies of
+    repeat 0 would satisfy a count check while measuring nothing; the ids must
+    be exactly the planned set.
+    """
     rows = []
+
+    def incomplete_row(job, note, repeat=None):
+        return dict(
+            worker=job["name"],
+            repeat=repeat,
+            path=job.get("path"),
+            sampling_steps=job.get("sampling_steps"),
+            seed=job.get("seed"),
+            opendde_dtype=None,
+            reference_sha256=None,
+            aggregation_mode=job.get("aggregation_mode"),
+            repeat_bitwise_identical=None,
+            repeat_raw_max_displacement_A=None,
+            completed=False,
+            geometry_passed=None,
+            mapping_agrees=None,
+            raw_CA_median_max_A=None,
+            raw_N_CA_median_max_A=None,
+            note=note,
+        )
+
     for job in jobs:
         path = root / "workers" / job["name"] / "summary.json"
         if not path.exists():
+            rows.append(incomplete_row(job, "no worker summary"))
+            continue
+        try:
+            summary = json.loads(path.read_text())
+        except ValueError as exc:
+            rows.append(incomplete_row(job, f"unreadable summary: {exc}"))
+            continue
+        reports = summary.get("reports") or []
+        if summary.get("completed") is not True:
             rows.append(
-                dict(
-                    worker=job["name"],
-                    repeat=None,
-                    aggregation_mode=job.get("aggregation_mode"),
-                    repeat_bitwise_identical=None,
-                    repeat_raw_max_displacement_A=None,
-                    completed=False,
-                    geometry_passed=None,
-                    mapping_agrees=None,
-                    raw_CA_median_max_A=None,
-                    raw_N_CA_median_max_A=None,
+                incomplete_row(
+                    job, f"worker completed flag is {summary.get('completed')!r}"
                 )
             )
             continue
-        summary = json.loads(path.read_text())
-        for report in summary["reports"]:
+        if len(reports) != REPEATS_PER_WORKER:
+            rows.append(
+                incomplete_row(
+                    job,
+                    f"expected {REPEATS_PER_WORKER} reports, found {len(reports)}",
+                )
+            )
+            continue
+        observed_repeats = [r.get("repeat") for r in reports]
+        if sorted(observed_repeats, key=lambda v: (v is None, v)) != list(
+            range(REPEATS_PER_WORKER)
+        ):
+            rows.append(
+                incomplete_row(
+                    job,
+                    f"expected repeats {list(range(REPEATS_PER_WORKER))}, found "
+                    f"{observed_repeats}",
+                )
+            )
+            continue
+        for report in reports:
             chains = report["raw_geometry"]["chains"]
 
             def largest_median(name):
@@ -556,6 +625,13 @@ def collect_results(root, jobs):
                 dict(
                     worker=job["name"],
                     repeat=report["repeat"],
+                    path=summary.get("path", job.get("path")),
+                    sampling_steps=summary.get(
+                        "sampling_steps", job.get("sampling_steps")
+                    ),
+                    seed=summary.get("seed", job.get("seed")),
+                    opendde_dtype=summary.get("opendde_dtype"),
+                    reference_sha256=summary.get("reference_sha256"),
                     aggregation_mode=summary.get("aggregation_mode"),
                     repeat_bitwise_identical=report.get("repeat_bitwise_identical"),
                     repeat_raw_max_displacement_A=report.get(
@@ -566,17 +642,28 @@ def collect_results(root, jobs):
                     mapping_agrees=report.get("mapping_agrees"),
                     raw_CA_median_max_A=largest_median("adjacent_CA"),
                     raw_N_CA_median_max_A=largest_median("N_CA"),
+                    # Keep the field set identical to `incomplete_row`: the CSV
+                    # writer takes its columns from the first row only.
+                    note=None,
                 )
             )
     with (root / "tables/geometry.csv").open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
+    planned = [job["name"] for job in jobs]
+    present = {row["worker"] for row in rows}
     write_json(
         root / "summary.json",
         dict(
-            completed=all(row["completed"] for row in rows),
+            completed=all(row["completed"] for row in rows)
+            and set(planned) == present
+            and len(rows) == len(planned) * REPEATS_PER_WORKER,
             geometry_passed=all(row["geometry_passed"] is True for row in rows),
+            planned_workers=planned,
+            expected_rows=len(planned) * REPEATS_PER_WORKER,
+            observed_rows=len(rows),
+            repeats_per_worker=REPEATS_PER_WORKER,
             rows=rows,
             interpretation="Inspect each path/budget separately; this report never authorizes optimization.",
         ),
