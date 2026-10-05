@@ -24,10 +24,24 @@ def check_reference_consistency(
 ):
     """Refuse to rescore archived sequences against the wrong reference.
 
-    The target must match exactly: it defines the complex, and a mismatch
-    means pose would be measured against the wrong structure. This is what
-    caught a run on 2026-10-04 that pointed Alpha searches (195-residue target,
-    chain A) at the default JN.1 reference (184 residues, chain T).
+    Returns the target sequence that must actually be folded, which is not
+    always the reference's own.
+
+    The target normally must match exactly: it defines the complex, and a
+    mismatch means pose would be measured against the wrong structure. This is
+    what caught a run on 2026-10-04 that pointed Alpha searches (195-residue
+    target, chain A) at the default JN.1 reference (184 residues, chain T).
+
+    The negative control is the one case where the archived target is
+    *supposed* to differ: it replaces the target sequence with a decoy while
+    keeping the reference's coordinates, since pose against a decoy is not
+    interpretable anyway (§20.11 item 1). For such an archive the real target
+    is checked against the reference instead, the archived target is checked
+    against the recorded decoy, and the decoy is returned so the rescoring
+    folds the complex the search actually scored. Without this the gate
+    refused the arm outright -- which it did on 2026-10-05 -- and relaxing the
+    gate alone would have silently rescored every decoy winner against the
+    real JN.1 target.
 
     The binder is compared against the *reference's* sequence, which is not the
     archived `binder_sequence` when a run started somewhere else. The recovery
@@ -45,13 +59,37 @@ def check_reference_consistency(
             else original["binder_sequence"]
         )
     name = Path(complex_pdb).name
-    if target != original["target_sequence"]:
+    decoy = original.get("decoy_target")
+    if decoy is not None:
+        if target != decoy["real_target_sequence"]:
+            raise ValueError(
+                "local reference target differs from the real target this "
+                f"decoy run replaced: {name} chain {target_chain} gives "
+                f"{len(target)} aa, archive expects "
+                f"{len(decoy['real_target_sequence'])} aa. Pass "
+                "--complex/--target-chain for a non-JN.1 reference."
+            )
+        if original["target_sequence"] != decoy["decoy_target_sequence"]:
+            raise ValueError(
+                "archived target sequence does not match the decoy recorded "
+                "in the same config; the archive is internally inconsistent "
+                "and must not be rescored"
+            )
+        if len(decoy["decoy_target_sequence"]) != len(target):
+            raise ValueError(
+                "decoy and reference target lengths differ, so the reference "
+                "coordinates cannot be reused"
+            )
+        scored_target = decoy["decoy_target_sequence"]
+    elif target != original["target_sequence"]:
         raise ValueError(
             "local reference target differs from archived input: "
             f"{name} chain {target_chain} gives {len(target)} aa, archive "
             f"expects {len(original['target_sequence'])} aa. Pass "
             "--complex/--target-chain for a non-JN.1 reference."
         )
+    else:
+        scored_target = target
     if expected_binder is not None and wt != expected_binder:
         raise ValueError(
             "local reference binder differs from archived input: "
@@ -65,6 +103,7 @@ def check_reference_consistency(
             f"{len(original['binder_sequence'])} aa; pose comparison would be "
             "between different-length chains"
         )
+    return scored_target
 
 
 def load_candidates(source):
@@ -313,7 +352,8 @@ def main(argv=None):
         wt, target = loaded["binder_seq"], loaded["target_seq"]
         binder_ca, target_ca = loaded["binder_ca"], loaded["target_ca"]
 
-    check_reference_consistency(
+    # The sequence to fold, which is the decoy for a negative-control archive.
+    scored_target = check_reference_consistency(
         wt, target, original, complex_pdb, binder_chain, target_chain
     )
     outputs = SearchOutputs(args.output_dir, binder_ca, target_ca)
@@ -368,11 +408,21 @@ def main(argv=None):
         reference_sha256=hashlib.sha256(complex_pdb.read_bytes()).hexdigest(),
         pae_cutoff=original["arguments"]["pae_cutoff"],
         distance_cutoff=original["arguments"]["distance_cutoff"],
+        # Says plainly which target was folded, so a decoy archive's numbers
+        # cannot be read as the real target's.
+        scored_target_is_decoy=original.get("decoy_target") is not None,
+        decoy_identity_to_real_target=(
+            original["decoy_target"].get("identity_to_real_target")
+            if original.get("decoy_target") is not None
+            else None
+        ),
     )
     (args.output_dir / "config.json").write_text(json.dumps(config, indent=2) + "\n")
     print(f"OpenDDE compute: {precision}", flush=True)
     model = OpenDDEModelAbag(compute_precision=precision)
-    features, _ = model.binder_features(len(wt), [TargetChain(target, use_msa=False)])
+    features, _ = model.binder_features(
+        len(wt), [TargetChain(scored_target, use_msa=False)]
+    )
 
     @eqx.filter_jit
     def predict(x, key):

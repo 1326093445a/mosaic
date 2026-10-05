@@ -430,3 +430,111 @@ def test_guard_keeps_the_strict_check_for_legacy_jn1_archives():
             "B",
             "T",
         )
+
+
+# The decoy archive: the third layer, found on 2026-10-05 ---------------------
+
+
+# The shared JN.1 fixture is a run of one residue, which cannot be permuted
+# into anything different. A decoy needs a target with some variety in it.
+TARGET_VARIED = "".join(
+    "ACDEFGHIKLMNPQRSTVWY"[i % 20] for i in range(len(TARGET_JN1))
+)
+
+
+def _decoy_archive(real, decoy, binder=None):
+    binder = binder or REFERENCE_BINDER
+    return _archive(
+        binder, binder, decoy,
+        decoy_target=dict(
+            real_target_sequence=real,
+            decoy_target_sequence=decoy,
+            identity_to_real_target=0.9239,
+        ),
+    )
+
+
+def _scramble(sequence, positions):
+    chars = list(sequence)
+    rotated = [chars[p] for p in positions][1:] + [chars[positions[0]]]
+    for position, residue in zip(positions, rotated):
+        chars[position] = residue
+    return "".join(chars)
+
+
+def test_guard_returns_the_real_target_for_an_ordinary_archive():
+    """The return value is what gets folded, so it has to be the right one."""
+    scored = check_reference_consistency(
+        REFERENCE_BINDER,
+        TARGET_JN1,
+        _archive(REFERENCE_BINDER, REFERENCE_BINDER, TARGET_JN1),
+        Path("P17_JN1.pdb"), "B", "T",
+    )
+    assert scored == TARGET_JN1
+
+
+def test_guard_accepts_a_decoy_archive_and_returns_the_decoy():
+    """The negative control's archived target differs by design.
+
+    The gate refused this arm outright on 2026-10-05. Relaxing it without
+    returning the decoy would have been worse: every decoy winner would have
+    been rescored against the real JN.1 target, reporting numbers for a
+    complex the search never evaluated.
+    """
+    decoy = _scramble(TARGET_VARIED, [10, 20, 30, 40])
+    assert decoy != TARGET_VARIED and len(decoy) == len(TARGET_VARIED)
+    assert sorted(decoy) == sorted(TARGET_VARIED), "composition is preserved"
+    scored = check_reference_consistency(
+        REFERENCE_BINDER,
+        TARGET_VARIED,
+        _decoy_archive(TARGET_VARIED, decoy),
+        Path("P17_JN1.pdb"), "B", "T",
+    )
+    assert scored == decoy, "the decoy is what the search scored"
+
+
+def test_guard_still_catches_the_wrong_reference_under_a_decoy_archive():
+    """A decoy must not become a licence to accept any reference at all."""
+    decoy = _scramble(TARGET_VARIED, [10, 20, 30, 40])
+    with pytest.raises(ValueError, match="real target this decoy run replaced"):
+        check_reference_consistency(
+            REFERENCE_BINDER,
+            TARGET_ALPHA,
+            _decoy_archive(TARGET_VARIED, decoy),
+            Path("P17_Alpha.pdb"), "B", "A",
+        )
+
+
+def test_guard_rejects_an_archive_whose_decoy_record_disagrees_with_itself():
+    decoy = _scramble(TARGET_VARIED, [10, 20, 30, 40])
+    other = _scramble(TARGET_VARIED, [5, 15, 25, 35])
+    assert decoy != other
+    archive = _decoy_archive(TARGET_VARIED, decoy)
+    archive["target_sequence"] = other
+    with pytest.raises(ValueError, match="internally inconsistent"):
+        check_reference_consistency(
+            REFERENCE_BINDER, TARGET_VARIED, archive,
+            Path("P17_JN1.pdb"), "B", "T",
+        )
+
+
+def test_guard_rejects_a_decoy_of_a_different_length_than_the_reference():
+    """The reference coordinates are reused, so the lengths must match."""
+    archive = _decoy_archive(TARGET_JN1, TARGET_JN1[:-3])
+    with pytest.raises(ValueError, match="lengths differ"):
+        check_reference_consistency(
+            REFERENCE_BINDER, TARGET_JN1, archive,
+            Path("P17_JN1.pdb"), "B", "T",
+        )
+
+
+def test_guard_still_checks_the_binder_under_a_decoy_archive():
+    decoy = _scramble(TARGET_VARIED, [10, 20, 30, 40])
+    archive = _decoy_archive(
+        TARGET_VARIED, decoy, binder="A" * len(REFERENCE_BINDER)
+    )
+    with pytest.raises(ValueError, match="binder differs from archived"):
+        check_reference_consistency(
+            REFERENCE_BINDER, TARGET_VARIED, archive,
+            Path("P17_JN1.pdb"), "B", "T",
+        )
