@@ -371,9 +371,128 @@ if __name__ == "__main__":
 
 # Decoy targets --------------------------------------------------------------
 #
-# The negative control the design lacked (docs/P17_JN1.md section 20.10 item 1):
+# The negative control the design lacked (docs/P17_JN1.md section 20.11 item 1):
 # every control so far asks whether a solution exists, none asks whether the
 # pipeline would report success against a target it should fail on.
+
+
+def epitope_scrambled_target(sequence, epitope_idx, seed):
+    """A decoy that keeps the target's fold and destroys only its interface.
+
+    The two cheaper decoys were measured on 2026-10-05 and both fail the fold
+    confound in this predictor:
+
+        decoy                      mean target pLDDT
+        shuffled JN.1 (184 aa)                 0.405
+        IL7RA, trimmed to 184 aa               0.425
+        -- real targets, same path --
+        JN.1 RBD                               0.890
+        Alpha RBD                              0.967
+
+    The shuffle has no native fold, which was expected. IL7RA failing was not:
+    all three of its disulfides survive the trim, so truncation does not
+    explain it. This predictor folds the RBD targets it was trained around and
+    does not fold an unrelated receptor from sequence alone, which makes a
+    generic out-of-distribution decoy unusable -- its low interface confidence
+    would follow from the target not folding. An in-distribution decoy (another
+    sarbecovirus RBD) has the opposite problem: P17 is an anti-RBD binder, so
+    partial cross-reactivity is exactly what one would expect there.
+
+    Scrambling only the epitope avoids both horns. The chain stays the real
+    target everywhere outside the interface, so the predictor can still fold it
+    -- which the caller's pLDDT gate verifies rather than assumes -- while the
+    surface the binder needs is gone. Length and composition are preserved
+    exactly, so the arm still differs from the real one in one input.
+
+    Residues are permuted among the epitope positions, so a position can retain
+    its own residue by chance; the returned identity records how many did.
+    """
+    epitope_idx = np.asarray(epitope_idx, dtype=int)
+    if epitope_idx.size < 2:
+        raise ValueError("need at least two epitope positions to permute")
+    if epitope_idx.min() < 0 or epitope_idx.max() >= len(sequence):
+        raise ValueError("epitope indices fall outside the target sequence")
+    if len(set(epitope_idx.tolist())) != epitope_idx.size:
+        raise ValueError("duplicate epitope indices")
+    rng = np.random.default_rng(seed)
+    residues = list(sequence)
+    patch = [residues[i] for i in epitope_idx]
+    rng.shuffle(patch)
+    for position, residue in zip(epitope_idx, patch):
+        residues[position] = residue
+    scrambled = "".join(residues)
+    if sorted(scrambled) != sorted(sequence):
+        raise ValueError("scramble changed the composition")
+    kept = sum(scrambled[i] == sequence[i] for i in epitope_idx)
+    return scrambled, dict(
+        kind="epitope_scrambled",
+        seed=seed,
+        length=len(scrambled),
+        epitope_positions=epitope_idx.tolist(),
+        epitope_size=int(epitope_idx.size),
+        epitope_residues_unchanged_by_chance=int(kept),
+        identity_to_real_target=round(
+            sum(a == b for a, b in zip(scrambled, sequence)) / len(sequence), 4
+        ),
+        composition_matched=True,
+        fold_preserved_outside_the_epitope=True,
+    )
+
+
+def real_decoy_target(path, chain, length):
+    """A real unrelated protein, trimmed to `length`, as a decoy target.
+
+    The shuffled decoy of `shuffled_target` is composition-matched but has no
+    native fold -- measured at 0.405 mean target pLDDT on 2026-10-05, against
+    the binder's 0.843 in the same prediction -- so its low interface
+    confidence is explained by the predictor failing to fold it. A real protein
+    removes that confound.
+
+    The length has to match the reference target exactly, because the reference
+    coordinates and every array shape are reused unchanged. Natural chains
+    rarely have the required length, so the chain is trimmed symmetrically at
+    the termini, which are the residues most often disordered. Whether the
+    trimmed chain still folds is not assumed: the caller's fold check measures
+    its pLDDT, and the kept range is recorded here so the trim is auditable.
+    """
+    structure = gemmi.read_structure(str(path))
+    structure.setup_entities()
+    structure.remove_ligands_and_waters()
+    try:
+        residues = [r for r in structure[0][chain]]
+    except (KeyError, RuntimeError, ValueError) as error:
+        chains = [c.name for c in structure[0]]
+        raise ValueError(f"chain {chain!r} not in {path} (has {chains})") from error
+    sequence = gemmi.one_letter_code([r.name for r in residues]).upper()
+    if set(sequence) - set("ACDEFGHIKLMNPQRSTVWY"):
+        raise ValueError(
+            f"chain {chain} of {path} has non-standard residues, which the "
+            "search alphabet cannot represent"
+        )
+    if len(sequence) < length:
+        raise ValueError(
+            f"chain {chain} of {path} is {len(sequence)} aa, shorter than the "
+            f"{length} aa the reference target requires; trimming cannot "
+            "lengthen it"
+        )
+    drop = len(sequence) - length
+    start = drop // 2
+    trimmed = sequence[start : start + length]
+    assert len(trimmed) == length
+    return trimmed, dict(
+        kind="real_trimmed",
+        source=str(path),
+        chain=chain,
+        source_length=len(sequence),
+        length=length,
+        trimmed_from_n_terminus=start,
+        trimmed_from_c_terminus=drop - start,
+        kept_author_residues=[
+            int(residues[start].seqid.num),
+            int(residues[start + length - 1].seqid.num),
+        ],
+        composition_matched=False,
+    )
 
 
 def shuffled_target(sequence, seed):

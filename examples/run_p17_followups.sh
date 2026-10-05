@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The four follow-up arms from docs/P17_JN1.md section 20.10, in priority order.
+# The four follow-up arms from docs/P17_JN1.md section 20.11, in priority order.
 #
 #   1. decoy     NEGATIVE CONTROL. The identical search against a target P17
 #                should fail on. Every other control asks whether a solution
@@ -7,6 +7,12 @@
 #                regardless of the target. If the decoy reaches the confidence
 #                section 20.5 reports, that result says nothing about JN.1.
 #                Cheapest thing that can overturn the headline, so it runs first.
+#                The decoy keeps the real target everywhere except its contact
+#                epitope, which is permuted. Measured mean target pLDDT on
+#                2026-10-05: epitope-scrambled 0.838, real JN.1 0.890, whole-
+#                chain shuffle 0.405, IL7RA trimmed to 184 aa 0.425. Only the
+#                first is usable -- a decoy the predictor cannot fold scores
+#                low for reasons that have nothing to do with binding.
 #   2. budget    All eight JN.1 runs stopped at their score-call ceiling with
 #                two still climbing (section 20.8), so the result is cut off,
 #                not converged. Raises the ceiling and warms the chain.
@@ -41,6 +47,11 @@ BUDGET_PROPOSALS=3000
 BUDGET_ENTROPY=0.8
 BUDGET_ACCEPT=0.05
 ARMS="decoy budget posezero alpha5"
+# Empty means the default epitope scramble, which is what should be used. A
+# structure here switches to a real unrelated protein instead; IL7RA does not
+# fold in this predictor (0.425 pLDDT), so expect that to fail its own gate.
+DECOY_STRUCTURE=""
+DECOY_CHAIN=A
 ALPHA_RUN=""
 STAMP="$(date +%Y%m%d_%H%M%S)"
 DRY_RUN=false
@@ -54,6 +65,10 @@ Options:
   --arms "A B"       subset of: decoy budget posezero alpha5 (default: all four)
   --seeds "N N"      search seeds per arm (default: 0 1 2 3)
   --alpha-run PATH   run holding the damage ladder for alpha5 (default: newest)
+  --decoy-structure PATH  use a real unrelated protein instead of the default
+                     epitope scramble. Its own pLDDT is checked first, and no
+                     local candidate passes that check.
+  --decoy-chain ID   chain to take it from (default: A)
   --dry-run          print the plan; create nothing, load nothing
 USAGE
 }
@@ -65,6 +80,8 @@ while [[ $# -gt 0 ]]; do
         --seeds) SEEDS="$2"; shift 2 ;;
         --edit-budget) EDIT_BUDGET="$2"; shift 2 ;;
         --alpha-run) ALPHA_RUN="$2"; shift 2 ;;
+        --decoy-structure) DECOY_STRUCTURE="$2"; shift 2 ;;
+        --decoy-chain) DECOY_CHAIN="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -72,6 +89,16 @@ while [[ $# -gt 0 ]]; do
 done
 
 cd "$REPO_DIR"
+if [[ -n "$DECOY_STRUCTURE" && ! -f "$DECOY_STRUCTURE" ]]; then
+    echo "Decoy structure not found: $DECOY_STRUCTURE" >&2; exit 2
+fi
+if [[ -n "$DECOY_STRUCTURE" ]]; then
+    DECOY_ARGS="--decoy-structure $DECOY_STRUCTURE --decoy-structure-chain $DECOY_CHAIN"
+    DECOY_LABEL="$DECOY_STRUCTURE chain $DECOY_CHAIN, trimmed to the target length"
+else
+    DECOY_ARGS="--decoy-mode epitope"
+    DECOY_LABEL="real JN.1 target with its contact epitope permuted"
+fi
 if [[ -z "$ALPHA_RUN" ]]; then
     ALPHA_RUN="$(ls -d "$REPO_DIR"/results/p17_alpha_recovery_* 2>/dev/null | tail -1 || true)"
 fi
@@ -84,11 +111,12 @@ echo "  arms:     $ARMS"
 echo "  seeds:    $SEEDS   budget $EDIT_BUDGET edits, $STEPS steps, $DTYPE"
 echo "  output:   $OUT_ROOT/<arm>"
 echo "  saliency: recorded for every arm (tables/saliency.csv)"
+echo "  decoy:    $DECOY_LABEL"
 
 COMMON=(--devices "$DEVICES" --search-seeds $SEEDS --steps "$STEPS"
         --opendde-dtype "$DTYPE" --save-saliency)
 
-plan_decoy()    { echo "$PYTHON_BIN $DRIVER decoy --output-dir $OUT_ROOT/decoy --edit-budget $EDIT_BUDGET ${COMMON[*]}"; }
+plan_decoy()    { echo "$PYTHON_BIN $DRIVER decoy --output-dir $OUT_ROOT/decoy --edit-budget $EDIT_BUDGET $DECOY_ARGS ${COMMON[*]}"; }
 plan_budget()   { echo "$PYTHON_BIN $DRIVER jn1 --output-dir $OUT_ROOT/budget --edit-budget $EDIT_BUDGET --max-score-calls $BUDGET_SCORE_CALLS --max-gradient-calls $BUDGET_GRADIENT_CALLS --max-proposals $BUDGET_PROPOSALS --target-entropy $BUDGET_ENTROPY --acceptance-temperature $BUDGET_ACCEPT ${COMMON[*]}"; }
 plan_posezero() { echo "$PYTHON_BIN $DRIVER jn1 --output-dir $OUT_ROOT/posezero --edit-budget $EDIT_BUDGET --weight-pose 0 ${COMMON[*]}"; }
 # alpha5 reads the damage ladder and calibration from the completed 2-edit run
@@ -146,8 +174,10 @@ echo "################ Done ################"
 printf '%s\n' "${SUMMARY[@]/#/  }"
 echo
 echo "Read, in order:"
-echo "  1. $OUT_ROOT/decoy/fold_check.json  -- does the decoy target place"
-echo "     consistently? If not, its low score proves nothing and the arm is void."
+echo "  1. $OUT_ROOT/decoy/fold_check.json  -- can the predictor fold the decoy"
+echo "     target on its own (mean_target_plddt)? If not, its low interface score"
+echo "     proves nothing and the arm is void. Ignore target_aligned_rmsd_A here:"
+echo "     it measures shape difference from JN.1, not whether the decoy folded."
 echo "  2. $OUT_ROOT/decoy/tables/jn1_recovery.csv vs the real JN.1 run's."
 echo "     Comparable confidence means that run's gains are not about its target."
 echo "  3. $OUT_ROOT/budget/   -- where the search actually plateaus."

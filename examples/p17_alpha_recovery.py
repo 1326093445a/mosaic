@@ -38,6 +38,9 @@ import sys
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
+# The Alpha control's reference. `None` elsewhere means the search script's
+# own default reference, which is JN.1.
+ALPHA_COMPLEX_PDB = REPO / "P17_Alpha.pdb"
 SELECTION_SEEDS = (0, 1)
 HELDOUT_SEEDS = (101, 102, 103)
 
@@ -85,20 +88,25 @@ def run_workers(jobs, devices, log_dir):
     return codes
 
 
-def score_command(output_dir, start_sequence, steps, dtype):
+def score_command(output_dir, start_sequence, steps, dtype, complex_pdb):
     """A minimal confidence-search invocation that only scores its start point.
 
     Reuses the search entry point rather than a second scoring path, so the
     calibration numbers come from exactly the machinery the search will use.
     Budgets are the smallest the harness accepts; the start sequence is scored
     as that run's own WT.
+
+    `complex_pdb` is required and has no default: `None` means the search
+    script's own reference (JN.1). It used to be hardcoded to Alpha, which
+    silently pointed the decoy arm's fold check at the wrong reference -- the
+    decoy was built to the 184 aa JN.1 target and then validated against
+    Alpha's 195 aa one, so the length guard refused the run (exit 2) on
+    2026-10-05. Every caller now states which reference it means.
     """
     command = [
         sys.executable, str(EXAMPLES / "p17_confidence_search.py"),
         "--policy", "independent",
         "--output-dir", str(output_dir),
-        "--complex", str(REPO / "P17_Alpha.pdb"),
-        "--epitope-mode", "contact",
         "--width", "1",
         "--max-score-calls", "1",
         "--max-gradient-calls", "1",
@@ -107,13 +115,52 @@ def score_command(output_dir, start_sequence, steps, dtype):
         "--opendde-dtype", dtype,
         "--selection-seeds", *[str(s) for s in SELECTION_SEEDS],
     ]
+    if complex_pdb is not None:
+        command += ["--complex", str(complex_pdb), "--epitope-mode", "contact"]
     if start_sequence is not None:
         command += ["--start-sequence", start_sequence]
     return command
 
 
+def chain_plddt(run_dir, rows):
+    """Mean per-chain pLDDT for the given prediction rows, or None.
+
+    Read from the saved confidence arrays rather than a table column, so this
+    works on runs archived before the columns existed. Returns None when the
+    arrays are absent instead of failing: the caller decides whether a missing
+    intrinsic measure is fatal.
+    """
+    import numpy as np
+
+    binder, target = [], []
+    for row in rows:
+        path = Path(run_dir) / row.get("confidence_file", "")
+        if not path.is_file():
+            return None
+        with np.load(path, allow_pickle=True) as data:
+            if "plddt" not in data or "asym_id" not in data:
+                return None
+            plddt = np.asarray(data["plddt"], dtype=float)
+            asym = np.asarray(data["asym_id"]).astype(int)
+        is_binder = asym == asym[0]
+        if is_binder.all():
+            return None
+        binder.append(float(plddt[is_binder].mean()))
+        target.append(float(plddt[~is_binder].mean()))
+    if not binder:
+        return None
+    return dict(
+        mean_binder_plddt=sum(binder) / len(binder),
+        mean_target_plddt=sum(target) / len(target),
+        worst_target_plddt=min(target),
+    )
+
+
 def read_start_metrics(run_dir):
-    """Mean ipSAE and worst pose RMSD for candidate 0 -- the run's start point."""
+    """Mean ipSAE and worst pose RMSD for candidate 0 -- the run's start point.
+
+    pLDDT fields are present only when the confidence arrays were saved.
+    """
     path = Path(run_dir) / "tables/predictions.csv"
     if not path.is_file():
         return None
@@ -130,6 +177,7 @@ def read_start_metrics(run_dir):
         mean_pose_rmsd_A=sum(pose) / len(pose),
         worst_pose_rmsd_A=max(pose),
         mean_target_fit_A=sum(target) / len(target),
+        **(chain_plddt(run_dir, rows) or {}),
     )
 
 
@@ -141,7 +189,10 @@ def calibrate(args):
     jobs = [
         dict(
             name="reference",
-            command=score_command(root / "reference", None, args.steps, args.opendde_dtype),
+            command=score_command(
+                root / "reference", None, args.steps, args.opendde_dtype,
+                ALPHA_COMPLEX_PDB,
+            ),
         )
     ]
     for rung in ladder["rungs"]:
@@ -153,6 +204,7 @@ def calibrate(args):
                     rung["sequence"],
                     args.steps,
                     args.opendde_dtype,
+                    ALPHA_COMPLEX_PDB,
                 ),
             )
         )
@@ -484,7 +536,7 @@ def write_jn1_table(root, stage="heldout", heldout_seeds=HELDOUT_SEEDS):
 def decoy(args):
     """Negative control: the identical search against a target it should fail on.
 
-    Section 20.10 item 1. Every other control asks whether a solution exists;
+    Section 20.11 item 1. Every other control asks whether a solution exists;
     none asks whether this pipeline reports success regardless of the target.
     If confidence still climbs to the levels section 20.5 reports, those
     numbers say nothing about JN.1 specifically.
@@ -495,14 +547,31 @@ def decoy(args):
     vacuous. The first stage scores the decoy's own WT and checks that the
     target still places consistently; only then does the search run.
     """
-    from p17_alpha_reference import shuffled_target
+    from p17_alpha_reference import (
+        epitope_scrambled_target,
+        real_decoy_target,
+        shuffled_target,
+    )
 
     devices = [d for d in args.devices.replace(" ", "").split(",") if d]
     root = Path(args.output_dir)
     (root / "logs").mkdir(parents=True, exist_ok=True)
 
     real_target = reference_target_sequence(args.complex, args.target_chain)
-    if args.decoy_sequence:
+    if args.decoy_sequence and args.decoy_structure:
+        raise ValueError("pass either --decoy-sequence or --decoy-structure")
+    if args.decoy_structure:
+        decoy_seq, provenance = real_decoy_target(
+            args.decoy_structure, args.decoy_structure_chain, len(real_target)
+        )
+    elif args.decoy_mode == "epitope" and not args.decoy_sequence:
+        real_target, epitope_idx = reference_epitope(
+            args.complex, args.binder_chain, args.target_chain
+        )
+        decoy_seq, provenance = epitope_scrambled_target(
+            real_target, epitope_idx, args.decoy_seed
+        )
+    elif args.decoy_sequence:
         decoy_seq = Path(args.decoy_sequence).read_text().strip().upper() \
             if Path(args.decoy_sequence).is_file() else args.decoy_sequence.strip().upper()
         provenance = dict(kind="supplied", length=len(decoy_seq))
@@ -519,10 +588,12 @@ def decoy(args):
     # Stage 1: does the decoy target fold? Without this the control can pass
     # for the wrong reason.
     probe = root / "fold_check"
-    command = score_command(probe, None, args.steps, args.opendde_dtype)
+    # The fold check must use the same reference the decoy was built from, or
+    # the length guard in the search script refuses it.
+    command = score_command(
+        probe, None, args.steps, args.opendde_dtype, args.complex
+    )
     command += ["--target-sequence", decoy_seq]
-    if args.complex is not None:
-        command += ["--complex", str(args.complex), "--epitope-mode", "contact"]
     codes = run_workers(
         [dict(name="fold_check", command=command)], devices[:1], root / "logs"
     )
@@ -531,10 +602,26 @@ def decoy(args):
         raise RuntimeError(
             f"decoy fold check failed (exit {codes[0]}); see {root / 'logs'}"
         )
-    interpretable = metrics["mean_target_fit_A"] <= args.max_target_fit
+    # The gate is the decoy target's own pLDDT, not its fit to the reference
+    # target's coordinates. Measured on 2026-10-05: the shuffled decoy's
+    # target fit is 17.40 A, but so would a *perfectly folded* unrelated
+    # protein's be -- `target_aligned_rmsd_A` superimposes the predicted decoy
+    # on JN.1's coordinates, so for a decoy it measures shape difference from
+    # JN.1 and says nothing about folding. pLDDT is intrinsic to the chain.
+    # (The shuffled decoy fails both, at 0.405 target pLDDT against the
+    # binder's 0.843 in the same prediction -- the right verdict, but the
+    # RMSD gate reached it for the wrong reason.)
+    plddt = metrics.get("mean_target_plddt")
+    if plddt is None:
+        raise RuntimeError(
+            "decoy fold check saved no confidence arrays, so the decoy's own "
+            f"pLDDT cannot be read; see {root / 'logs'}"
+        )
+    interpretable = plddt >= args.min_target_plddt
     print(
-        f"  decoy WT: mean ipSAE {metrics['mean_ipsae']:.4f}, target fit "
-        f"{metrics['mean_target_fit_A']:.2f} A "
+        f"  decoy WT: mean ipSAE {metrics['mean_ipsae']:.4f}, target pLDDT "
+        f"{plddt:.3f} (binder {metrics['mean_binder_plddt']:.3f}), fit to the "
+        f"real target {metrics['mean_target_fit_A']:.2f} A "
         f"({'interpretable' if interpretable else 'NOT INTERPRETABLE'})"
     )
     (root / "fold_check.json").write_text(
@@ -543,13 +630,17 @@ def decoy(args):
                 decoy=provenance,
                 decoy_sequence=decoy_seq,
                 wt_metrics=metrics,
-                max_target_fit_A=args.max_target_fit,
+                min_target_plddt=args.min_target_plddt,
                 interpretable=interpretable,
                 interpretation=(
-                    "A decoy target that does not place consistently makes this "
-                    "negative control vacuous: low confidence would follow from "
-                    "the target not folding rather than from absent "
-                    "complementarity."
+                    "A decoy target the predictor cannot fold makes this "
+                    "negative control vacuous: low confidence would follow "
+                    "from the target not folding rather than from absent "
+                    "complementarity. The gate is the decoy chain's own "
+                    "pLDDT. target_aligned_rmsd_A is recorded but is NOT a "
+                    "fold test here: it superimposes the predicted decoy on "
+                    "the real target's coordinates, so a correctly folded "
+                    "unrelated protein scores badly on it by construction."
                 ),
             ),
             indent=2,
@@ -558,10 +649,11 @@ def decoy(args):
     )
     if not interpretable and not args.force:
         raise RuntimeError(
-            f"decoy target fit {metrics['mean_target_fit_A']:.2f} A exceeds "
-            f"{args.max_target_fit} A, so a low decoy score would be "
-            "uninterpretable. Supply a real unrelated protein with "
-            "--decoy-sequence, or pass --force to proceed and record why."
+            f"decoy target pLDDT {plddt:.3f} is below {args.min_target_plddt}, "
+            "so the predictor cannot fold this decoy and a low decoy score "
+            "would be uninterpretable. Supply a real unrelated protein with "
+            "--decoy-sequence or --decoy-structure, or pass --force to "
+            "proceed and record why."
         )
 
     jobs = search_jobs(
@@ -584,6 +676,37 @@ def decoy(args):
     )
     print(f"Completed. Results: {root}")
     return 0
+
+
+def reference_epitope(complex_pdb, binder_chain, target_chain):
+    """Target sequence and contact-epitope indices for the reference in use.
+
+    Uses the same 8 A CA-CA definition and the same reference file the search
+    itself loads, so the positions an epitope-scrambled decoy destroys are the
+    positions this run calls the interface.
+    """
+    sys.path.insert(0, str(EXAMPLES))
+    from p17_alpha_reference import contact_epitope
+    from p17_hallucination_search import CONTACT_DISTANCE
+
+    if complex_pdb is None:
+        from p17_hallucination_search import (
+            load_structure,
+            reference_binder_target_ca,
+        )
+
+        model, _, target = load_structure()
+        binder_ca, target_ca = reference_binder_target_ca(model)
+    else:
+        from p17_alpha_reference import load_complex
+
+        reference = load_complex(
+            complex_pdb, binder_chain or "B", target_chain or "A"
+        )
+        target = reference["target_seq"]
+        binder_ca = reference["binder_ca"]
+        target_ca = reference["target_ca"]
+    return target, contact_epitope(binder_ca, target_ca, CONTACT_DISTANCE)
 
 
 def reference_target_sequence(complex_pdb, target_chain):
@@ -829,6 +952,18 @@ def build_parser():
         help="reference to draw the real target from; default is JN.1",
     )
     d.add_argument("--target-chain", default=None)
+    d.add_argument("--binder-chain", default=None)
+    d.add_argument(
+        "--decoy-mode",
+        choices=["epitope", "shuffled"],
+        default="epitope",
+        help="how to build the decoy when no sequence or structure is given. "
+        "`epitope` scrambles only the contact epitope, keeping the rest of "
+        "the real target so the predictor can still fold it. `shuffled` "
+        "scrambles the whole chain and does NOT fold in this predictor "
+        "(0.405 mean target pLDDT, measured), so it fails its own gate "
+        "(default: %(default)s).",
+    )
     d.add_argument(
         "--decoy-sequence",
         default=None,
@@ -837,11 +972,22 @@ def build_parser():
     )
     d.add_argument("--decoy-seed", type=int, default=0)
     d.add_argument(
-        "--max-target-fit",
+        "--decoy-structure",
+        type=Path,
+        default=None,
+        help="a structure to draw a real unrelated decoy target from, trimmed "
+        "symmetrically to the reference target's length. Preferred over the "
+        "shuffled decoy, which does not fold (0.405 pLDDT, measured).",
+    )
+    d.add_argument("--decoy-structure-chain", default="A")
+    d.add_argument(
+        "--min-target-plddt",
         type=float,
-        default=3.0,
-        help="the decoy's own WT target fit must be within this, or a low "
-        "decoy score is uninterpretable (default: %(default)s A).",
+        default=0.7,
+        help="the decoy chain's own mean pLDDT must reach this, or the "
+        "predictor cannot fold it and a low decoy score is uninterpretable "
+        "(default: %(default)s). The real JN.1 target reaches ~0.9; the "
+        "shuffled decoy measured 0.405.",
     )
     d.add_argument(
         "--force",

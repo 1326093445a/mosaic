@@ -64,15 +64,31 @@ def test_start_metrics_absent_table_is_none_not_a_crash(tmp_path):
     assert driver.read_start_metrics(tmp_path / "missing") is None
 
 
-def test_score_command_pins_the_alpha_reference_and_contact_epitope(tmp_path):
-    command = driver.score_command(tmp_path, None, 64, "bf16")
+def test_score_command_takes_the_reference_it_is_given(tmp_path):
+    command = driver.score_command(
+        tmp_path, None, 64, "bf16", driver.ALPHA_COMPLEX_PDB
+    )
     assert "--complex" in command and "P17_Alpha.pdb" in " ".join(command)
     assert command[command.index("--epitope-mode") + 1] == "contact"
     assert command[command.index("--sampling-steps") + 1] == "64"
     assert "--start-sequence" not in command, "the reference scores its own sequence"
 
-    damaged = driver.score_command(tmp_path, "ACDE", 64, "bf16")
+    damaged = driver.score_command(
+        tmp_path, "ACDE", 64, "bf16", driver.ALPHA_COMPLEX_PDB
+    )
     assert damaged[damaged.index("--start-sequence") + 1] == "ACDE"
+
+
+def test_score_command_without_a_reference_leaves_the_script_default(tmp_path):
+    """`None` means JN.1, the search script's own reference.
+
+    This used to be impossible to express: the Alpha reference was hardcoded
+    here, so the decoy arm's fold check validated a JN.1-length decoy against
+    Alpha's longer target and exited 2.
+    """
+    command = driver.score_command(tmp_path, None, 64, "bf16", None)
+    assert "--complex" not in command
+    assert "--epitope-mode" not in command
 
 
 def _ladder(tmp_path, counts=(2, 5)):
