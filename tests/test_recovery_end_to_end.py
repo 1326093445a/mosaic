@@ -538,3 +538,78 @@ def test_guard_still_checks_the_binder_under_a_decoy_archive():
             REFERENCE_BINDER, TARGET_VARIED, archive,
             Path("P17_JN1.pdb"), "B", "T",
         )
+
+
+# The folded target and the exported target must be one sequence -------------
+
+
+def test_the_rescorer_folds_and_exports_the_same_target():
+    """The second half of the decoy bug, found 2026-10-05.
+
+    `check_reference_consistency` returns the sequence to fold, and the first
+    fix used it for the model features but kept passing the *reference's*
+    target to `save_prediction`. For the negative control those differ, so
+    every shard with candidates died on save_prediction's own invariant --
+    which did its job, but only after the arm had run. Asserted structurally
+    because the failure is a name mismatch between two call sites, and no
+    cheap runtime test reaches both.
+    """
+    import ast
+
+    source = (REPO / "examples/p17_rescore_winners.py").read_text()
+    tree = ast.parse(source)
+
+    folded, exported, returned = [], [], []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "TargetChain":
+            assert node.args and isinstance(node.args[0], ast.Name), (
+                "the folded target should be a plain name, not an expression"
+            )
+            folded.append(node.args[0].id)
+        if isinstance(func, ast.Attribute) and func.attr == "save_prediction":
+            assert len(node.args) >= 4, "save_prediction takes the target 4th"
+            assert isinstance(node.args[3], ast.Name)
+            exported.append(node.args[3].id)
+        if isinstance(func, ast.Name) and func.id == "check_reference_consistency":
+            parent = next(
+                (
+                    n for n in ast.walk(tree)
+                    if isinstance(n, ast.Assign) and n.value is node
+                ),
+                None,
+            )
+            if parent and isinstance(parent.targets[0], ast.Name):
+                returned.append(parent.targets[0].id)
+
+    assert folded, "no TargetChain call found"
+    assert exported, "no save_prediction call found"
+    assert returned, "the guard's return value should be bound to a name"
+    assert set(folded) == set(exported), (
+        f"folded {folded} but exported {exported}; a decoy archive would "
+        "export predictions labelled with the wrong target"
+    )
+    assert set(folded) == set(returned), (
+        "both should use what check_reference_consistency returned, which is "
+        "the decoy for a negative-control archive"
+    )
+
+
+def test_the_reference_target_is_not_reusable_after_the_guard():
+    """Keeping it in scope is what allowed the wrong one to be exported."""
+    import re
+
+    lines = (REPO / "examples/p17_rescore_winners.py").read_text().splitlines()
+    # `reference_target_chain` is a different name, so match on word bounds.
+    name = re.compile(r"\breference_target\b")
+    deletions = [i for i, line in enumerate(lines) if line.strip() == "del reference_target"]
+    assert len(deletions) == 1, "the reference target should be released once"
+    after = [
+        line for line in lines[deletions[0] + 1:]
+        if name.search(line) and not line.lstrip().startswith("#")
+    ]
+    assert after == [], (
+        f"reference_target is still reachable after the guard: {after}"
+    )

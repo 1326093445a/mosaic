@@ -340,7 +340,7 @@ def main(argv=None):
             raise ValueError("--binder-chain/--target-chain require --complex")
         complex_pdb = COMPLEX_PDB
         binder_chain, target_chain = BINDER_CHAIN, TARGET_CHAIN
-        reference, wt, target = load_structure()
+        reference, wt, reference_target = load_structure()
         binder_ca, target_ca = reference_binder_target_ca(reference)
     else:
         from p17_alpha_reference import load_complex
@@ -349,13 +349,19 @@ def main(argv=None):
         binder_chain = args.binder_chain or "B"
         target_chain = args.target_chain or "A"
         loaded = load_complex(complex_pdb, binder_chain, target_chain)
-        wt, target = loaded["binder_seq"], loaded["target_seq"]
+        wt, reference_target = loaded["binder_seq"], loaded["target_seq"]
         binder_ca, target_ca = loaded["binder_ca"], loaded["target_ca"]
 
     # The sequence to fold, which is the decoy for a negative-control archive.
+    # From here on `scored_target` is the only target sequence in scope: the
+    # reference's own is deliberately not reusable, because on 2026-10-05 this
+    # function folded the decoy and then exported the prediction labelled with
+    # the reference target, which `SearchOutputs.save_prediction` refused --
+    # correctly, but only after the whole arm had run.
     scored_target = check_reference_consistency(
-        wt, target, original, complex_pdb, binder_chain, target_chain
+        wt, reference_target, original, complex_pdb, binder_chain, target_chain
     )
+    del reference_target
     outputs = SearchOutputs(args.output_dir, binder_ca, target_ca)
     shutil.copy2(complex_pdb, args.output_dir / "reference.pdb")
     (args.output_dir / "README.md").write_text(
@@ -474,7 +480,7 @@ def main(argv=None):
                         candidate["candidate_id"],
                         seed,
                         candidate["sequence"],
-                        target,
+                        scored_target,
                         output,
                         dict(iptm=float(iptm), **metrics),
                     )
