@@ -367,3 +367,44 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# Decoy targets --------------------------------------------------------------
+#
+# The negative control the design lacked (docs/P17_JN1.md section 20.10 item 1):
+# every control so far asks whether a solution exists, none asks whether the
+# pipeline would report success against a target it should fail on.
+
+
+def shuffled_target(sequence, seed):
+    """A length- and composition-matched decoy target, deterministically.
+
+    Matching the length matters mechanically: the reference coordinates belong
+    to the real target, and reusing them keeps the pose loss, contact epitope
+    and every array shape identical, so the decoy arm differs from the real arm
+    in exactly one input. Matching composition removes amino-acid frequency as
+    an explanation for any confidence difference.
+
+    ⚠️ This decoy has a confound that must be checked before its result is
+    used: a shuffled sequence has no native fold, so if the predictor cannot
+    fold it the interface confidence will be low for reasons that have nothing
+    to do with binding specificity, and the control passes vacuously. The
+    check is the target-fit RMSD and pLDDT of the decoy's own WT prediction --
+    if the target does not place consistently, the control establishes nothing.
+    A real unrelated protein avoids this confound and costs a sequence source;
+    `--decoy-sequence` accepts one.
+    """
+    rng = np.random.default_rng(seed)
+    residues = list(sequence)
+    rng.shuffle(residues)
+    shuffled = "".join(residues)
+    if sorted(shuffled) != sorted(sequence):
+        raise ValueError("shuffle changed the composition")
+    identity = sum(a == b for a, b in zip(shuffled, sequence)) / len(sequence)
+    return shuffled, dict(
+        kind="shuffled",
+        seed=seed,
+        length=len(shuffled),
+        identity_to_real_target=round(identity, 4),
+        composition_matched=True,
+    )

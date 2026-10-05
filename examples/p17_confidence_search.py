@@ -280,6 +280,25 @@ def build_parser():
         "numbering those constants do not describe.",
     )
     parser.add_argument(
+        "--save-saliency",
+        action="store_true",
+        help="Write tables/saliency.csv: the first-order delta loss for every "
+        "feasible (position, residue) at every gradient step. The search "
+        "computes this to form its proposal distribution and keeps only the "
+        "chosen move, so it cannot be recovered after a run. A Taylor-1 delta "
+        "indicates where the gradient points, not why a residue is good "
+        "(docs/P17_JN1.md section 11.2).",
+    )
+    parser.add_argument(
+        "--target-sequence",
+        default=None,
+        help="Replace the reference's target sequence, keeping its "
+        "coordinates. For the negative control: a decoy target of the same "
+        "length makes every array shape and loss term identical, so the arm "
+        "differs from the real one in exactly one input. Recorded as a decoy "
+        "in the run metadata.",
+    )
+    parser.add_argument(
         "--start-sequence",
         default=None,
         help="Binder sequence the search starts from, instead of the "
@@ -454,6 +473,38 @@ def main(argv=None):
             flush=True,
         )
 
+    decoy_target = None
+    if args.target_sequence is not None:
+        replacement = args.target_sequence.strip().upper()
+        if len(replacement) != len(target_seq):
+            parser.error(
+                f"--target-sequence has {len(replacement)} residues, the "
+                f"reference target has {len(target_seq)}. Lengths must match "
+                "so the reference coordinates and every loss term stay valid."
+            )
+        if set(replacement) - set(TOKENS[:20]):
+            parser.error("--target-sequence has non-standard residues")
+        identity = sum(a == b for a, b in zip(replacement, target_seq)) / len(target_seq)
+        decoy_target = dict(
+            real_target_sequence=target_seq,
+            decoy_target_sequence=replacement,
+            identity_to_real_target=round(identity, 4),
+            note=(
+                "Negative control: the reference coordinates still belong to "
+                "the real target, so pose RMSD here measures distance to an "
+                "arrangement that has no meaning for this target. Read the "
+                "confidence metrics, and check target fit first -- a decoy "
+                "that does not fold makes this control vacuous."
+            ),
+        )
+        print(
+            f"DECOY TARGET: replacing the reference target "
+            f"({identity:.1%} identity retained). This is a negative control; "
+            "pose RMSD is not interpretable against it.",
+            flush=True,
+        )
+        target_seq = replacement
+
     mask = np.array(
         [i + 1 in CDR_RESIDUE_INDICES_1IDX for i in range(len(binder_seq))]
     )
@@ -502,6 +553,7 @@ def main(argv=None):
         reference_details=reference_info,
         start_sequence=binder_seq,
         start_differs_from_reference=args.start_sequence is not None,
+        decoy_target=decoy_target,
         config=asdict(config),
         arguments={
             k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
@@ -931,14 +983,54 @@ def main(argv=None):
                 raise SystemExit("Pose diagnostic failed; see diagnostic.json")
             return
 
-        result = run_gradient_search(
-            wt=wt,
-            designable_mask=mask,
-            gradient_fn=gradient_fn,
-            confidence_fn=confidence_fn,
-            config=config,
-            on_event=on_event,
-        )
+        saliency_writer = None
+        if args.save_saliency:
+            # One row per (step, position, residue) first-order delta. The
+            # search discards all but the chosen move, so this is the only
+            # chance to record it; it cannot be reconstructed from the event
+            # log afterwards.
+            saliency_path = args.output_dir / "tables/saliency.csv"
+            saliency_path.parent.mkdir(parents=True, exist_ok=True)
+            saliency_handle = saliency_path.open("w", newline="")
+            saliency_csv = csv.writer(saliency_handle)
+            saliency_csv.writerow(
+                [
+                    "gradient_call", "candidate_id", "position_0idx",
+                    "position_1idx", "from_residue", "to_residue",
+                    "reverted_position_0idx", "delta_loss", "rank",
+                ]
+            )
+
+            def saliency_writer(
+                *, candidate_id, sequence, moves, deltas, gradient_calls
+            ):
+                order = np.argsort(deltas)
+                ranks = np.empty(len(deltas), dtype=int)
+                ranks[order] = np.arange(1, len(deltas) + 1)
+                for index, (pos, aa, reverted) in enumerate(moves):
+                    saliency_csv.writerow(
+                        [
+                            gradient_calls, candidate_id, int(pos), int(pos) + 1,
+                            TOKENS[int(sequence[pos])], TOKENS[int(aa)],
+                            int(reverted), f"{float(deltas[index]):.6g}",
+                            int(ranks[index]),
+                        ]
+                    )
+                saliency_handle.flush()
+
+        try:
+            result = run_gradient_search(
+                wt=wt,
+                designable_mask=mask,
+                gradient_fn=gradient_fn,
+                confidence_fn=confidence_fn,
+                config=config,
+                on_event=on_event,
+                on_saliency=saliency_writer,
+            )
+        finally:
+            if args.save_saliency:
+                saliency_handle.close()
     active_ids = {candidate.id for candidate in result.active}
     ranking = {
         c.id: i + 1

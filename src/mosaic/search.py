@@ -186,6 +186,7 @@ def run_gradient_search(
     config: SearchConfig,
     initial_sequences=None,
     on_event: Callable[[dict], None] | None = None,
+    on_saliency: Callable[..., None] | None = None,
 ) -> SearchResult:
     """Compare retention policies using the same feasible gradient proposals.
 
@@ -194,6 +195,12 @@ def run_gradient_search(
     and the highest-scoring active candidate cannot be replaced by a worse one.
     Both policies otherwise use the same confidence-based stochastic acceptance.
     The best evaluated candidate is also retained in the result archive.
+
+    `on_saliency`, when given, receives the full per-(position, residue)
+    first-order delta set at every gradient step. The search computes it to
+    build the proposal distribution and otherwise discards everything but the
+    chosen move, so it cannot be recovered afterwards. Backend-agnostic: the
+    callback decides whether and how to persist.
 
     Optional nonnegative constraint violations take priority over confidence.
     Neither duplicate-slot filling nor stochastic acceptance can increase the
@@ -331,6 +338,20 @@ def run_gradient_search(
         moves, deltas = _moves(
             sequence, wt, mask, config.edit_budget, gradients[parent.id]
         )
+        if on_saliency is not None and moves:
+            # Per-(position, residue) first-order delta loss, which the search
+            # computes at every step and otherwise discards -- only the chosen
+            # move survives into the event log. Persisting it gives a saliency
+            # map over the designable positions, which cannot be recovered
+            # after the fact. A Taylor-1 delta over a nonlinear loss shows
+            # where the gradient points, not why a residue is good there.
+            on_saliency(
+                candidate_id=parent.id,
+                sequence=sequence.copy(),
+                moves=list(moves),
+                deltas=np.asarray(deltas),
+                gradient_calls=stats["gradient_calls"],
+            )
         if not moves:
             stop_reason = "no_feasible_moves"
             break

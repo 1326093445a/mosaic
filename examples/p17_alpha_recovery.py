@@ -261,6 +261,20 @@ def search_jobs(root, policies, seeds, start_sequence, budget, args, complex_pdb
                 "--selection-seeds",
                 *[str(s) for s in getattr(args, "selection_seeds", SELECTION_SEEDS)],
             ]
+            for flag, attr in (
+                ("--target-entropy", "target_entropy"),
+                ("--acceptance-temperature", "acceptance_temperature"),
+                ("--weight-pose", "weight_pose"),
+                ("--width", "width"),
+            ):
+                value = getattr(args, attr, None)
+                if value is not None:
+                    command += [flag, str(value)]
+            decoy = getattr(args, "_decoy_sequence", None)
+            if decoy is not None:
+                command += ["--target-sequence", decoy]
+            if getattr(args, "save_saliency", False):
+                command += ["--save-saliency"]
             if complex_pdb is not None:
                 command += [
                     "--complex", str(complex_pdb),
@@ -467,6 +481,126 @@ def write_jn1_table(root, stage="heldout", heldout_seeds=HELDOUT_SEEDS):
     )
 
 
+def decoy(args):
+    """Negative control: the identical search against a target it should fail on.
+
+    Section 20.10 item 1. Every other control asks whether a solution exists;
+    none asks whether this pipeline reports success regardless of the target.
+    If confidence still climbs to the levels section 20.5 reports, those
+    numbers say nothing about JN.1 specifically.
+
+    Two stages, because the decoy has a confound. A shuffled target has no
+    native fold, so a low score could mean "no complementarity" or merely "the
+    predictor could not fold the target" -- the second makes the control
+    vacuous. The first stage scores the decoy's own WT and checks that the
+    target still places consistently; only then does the search run.
+    """
+    from p17_alpha_reference import shuffled_target
+
+    devices = [d for d in args.devices.replace(" ", "").split(",") if d]
+    root = Path(args.output_dir)
+    (root / "logs").mkdir(parents=True, exist_ok=True)
+
+    real_target = reference_target_sequence(args.complex, args.target_chain)
+    if args.decoy_sequence:
+        decoy_seq = Path(args.decoy_sequence).read_text().strip().upper() \
+            if Path(args.decoy_sequence).is_file() else args.decoy_sequence.strip().upper()
+        provenance = dict(kind="supplied", length=len(decoy_seq))
+        if len(decoy_seq) != len(real_target):
+            raise ValueError(
+                f"supplied decoy is {len(decoy_seq)} aa, the reference target "
+                f"is {len(real_target)}; lengths must match"
+            )
+    else:
+        decoy_seq, provenance = shuffled_target(real_target, args.decoy_seed)
+    args._decoy_sequence = decoy_seq
+    print(f"Decoy target: {provenance}")
+
+    # Stage 1: does the decoy target fold? Without this the control can pass
+    # for the wrong reason.
+    probe = root / "fold_check"
+    command = score_command(probe, None, args.steps, args.opendde_dtype)
+    command += ["--target-sequence", decoy_seq]
+    if args.complex is not None:
+        command += ["--complex", str(args.complex), "--epitope-mode", "contact"]
+    codes = run_workers(
+        [dict(name="fold_check", command=command)], devices[:1], root / "logs"
+    )
+    metrics = read_start_metrics(probe) if codes[0] == 0 else None
+    if metrics is None:
+        raise RuntimeError(
+            f"decoy fold check failed (exit {codes[0]}); see {root / 'logs'}"
+        )
+    interpretable = metrics["mean_target_fit_A"] <= args.max_target_fit
+    print(
+        f"  decoy WT: mean ipSAE {metrics['mean_ipsae']:.4f}, target fit "
+        f"{metrics['mean_target_fit_A']:.2f} A "
+        f"({'interpretable' if interpretable else 'NOT INTERPRETABLE'})"
+    )
+    (root / "fold_check.json").write_text(
+        json.dumps(
+            dict(
+                decoy=provenance,
+                decoy_sequence=decoy_seq,
+                wt_metrics=metrics,
+                max_target_fit_A=args.max_target_fit,
+                interpretable=interpretable,
+                interpretation=(
+                    "A decoy target that does not place consistently makes this "
+                    "negative control vacuous: low confidence would follow from "
+                    "the target not folding rather than from absent "
+                    "complementarity."
+                ),
+            ),
+            indent=2,
+        )
+        + "\n"
+    )
+    if not interpretable and not args.force:
+        raise RuntimeError(
+            f"decoy target fit {metrics['mean_target_fit_A']:.2f} A exceeds "
+            f"{args.max_target_fit} A, so a low decoy score would be "
+            "uninterpretable. Supply a real unrelated protein with "
+            "--decoy-sequence, or pass --force to proceed and record why."
+        )
+
+    jobs = search_jobs(
+        root, args.policies, args.search_seeds, None, args.edit_budget, args,
+        args.complex,
+    )
+    codes = run_workers(jobs, devices, root / "logs")
+    if any(code != 0 for code in codes):
+        failed = [j["name"] for j, c in zip(jobs, codes) if c != 0]
+        raise RuntimeError(f"decoy search workers failed: {failed}")
+
+    heldout_seeds = getattr(args, "heldout_seeds", None) or HELDOUT_SEEDS
+    stage = run_heldout(
+        root, devices, args.opendde_dtype, args.complex, "", heldout_seeds
+    )
+    write_jn1_table(root, stage, heldout_seeds)
+    print(
+        "\nCompare mean_ipsae against the real JN.1 arm. If the decoy reaches "
+        "comparable confidence, that arm's gains are not about its target."
+    )
+    print(f"Completed. Results: {root}")
+    return 0
+
+
+def reference_target_sequence(complex_pdb, target_chain):
+    """The target sequence a decoy replaces, from whichever reference is used."""
+    if complex_pdb is None:
+        import sys as _sys
+
+        _sys.path.insert(0, str(EXAMPLES))
+        from p17_hallucination_search import load_structure
+
+        _, _, target = load_structure()
+        return target
+    from p17_alpha_reference import load_complex
+
+    return load_complex(complex_pdb, "B", target_chain or "A")["target_seq"]
+
+
 def search(args):
     ladder = json.loads(Path(args.ladder).read_text())
     calibration = json.loads(Path(args.calibration).read_text())
@@ -643,6 +777,27 @@ def build_parser():
             help="structural seeds reserved for evaluation, never used for "
             "selection (default: %(default)s).",
         )
+        # Exploration knobs. Already on the search CLI but never threaded
+        # through a launcher, and never swept: section 20.8 found six of eight
+        # runs plateauing under the cold default chain.
+        sub_parser.add_argument(
+            "--save-saliency",
+            action="store_true",
+            help="record the per-(position, residue) delta matrix at every "
+            "gradient step; it cannot be recovered after a run.",
+        )
+        sub_parser.add_argument("--target-entropy", type=float, default=None)
+        sub_parser.add_argument("--acceptance-temperature", type=float, default=None)
+        sub_parser.add_argument("--width", type=int, default=None)
+        sub_parser.add_argument(
+            "--weight-pose",
+            type=float,
+            default=None,
+            help="0 runs the pose-held-out arm: pose is still measured and "
+            "reported but no longer guides proposals, which is what separates "
+            "a real pose gain from the objective reporting on itself "
+            "(section 19.6 item 1).",
+        )
 
     s = sub.add_parser("search", help="Alpha recovery from a damaged rung")
     s.add_argument("--ladder", type=Path, required=True)
@@ -662,6 +817,40 @@ def build_parser():
     )
     add_search_options(j, seed_default=[0, 1, 2, 3])
     j.set_defaults(func=jn1)
+
+    d = sub.add_parser(
+        "decoy",
+        help="negative control: the same search against a target it should fail on",
+    )
+    d.add_argument(
+        "--complex",
+        type=Path,
+        default=None,
+        help="reference to draw the real target from; default is JN.1",
+    )
+    d.add_argument("--target-chain", default=None)
+    d.add_argument(
+        "--decoy-sequence",
+        default=None,
+        help="a real unrelated protein of matching length, inline or as a "
+        "file. Avoids the shuffled decoy's fold confound.",
+    )
+    d.add_argument("--decoy-seed", type=int, default=0)
+    d.add_argument(
+        "--max-target-fit",
+        type=float,
+        default=3.0,
+        help="the decoy's own WT target fit must be within this, or a low "
+        "decoy score is uninterpretable (default: %(default)s A).",
+    )
+    d.add_argument(
+        "--force",
+        action="store_true",
+        help="proceed despite a failed fold check, recording that it failed.",
+    )
+    d.add_argument("--edit-budget", type=int, default=5)
+    add_search_options(d, seed_default=[0, 1, 2, 3])
+    d.set_defaults(func=decoy)
 
     h = sub.add_parser(
         "heldout",
