@@ -47,6 +47,7 @@ BUDGET_PROPOSALS=3000
 BUDGET_ENTROPY=0.8
 BUDGET_ACCEPT=0.05
 ARMS="decoy budget posezero alpha5"
+ALLOW_BUSY=false
 # Empty means the default epitope scramble, which is what should be used. A
 # structure here switches to a real unrelated protein instead; IL7RA does not
 # fold in this predictor (0.425 pLDDT), so expect that to fail its own gate.
@@ -69,6 +70,7 @@ Options:
                      epitope scramble. Its own pLDDT is checked first, and no
                      local candidate passes that check.
   --decoy-chain ID   chain to take it from (default: A)
+  --allow-busy-gpus  launch even though a requested device holds a process
   --dry-run          print the plan; create nothing, load nothing
 USAGE
 }
@@ -77,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --devices) DEVICES="$2"; shift 2 ;;
         --arms) ARMS="$2"; shift 2 ;;
+        --allow-busy-gpus) ALLOW_BUSY=true; shift ;;
         --seeds) SEEDS="$2"; shift 2 ;;
         --edit-budget) EDIT_BUDGET="$2"; shift 2 ;;
         --alpha-run) ALPHA_RUN="$2"; shift 2 ;;
@@ -123,6 +126,49 @@ plan_posezero() { echo "$PYTHON_BIN $DRIVER jn1 --output-dir $OUT_ROOT/posezero 
 # but writes to a fresh directory: that run's search/ already holds
 # population_seed0 and the search refuses a pre-existing output directory.
 plan_alpha5()   { echo "$PYTHON_BIN $DRIVER search --output-dir $OUT_ROOT/alpha5 --ladder $ALPHA_RUN/ladder/ladder.json --calibration $ALPHA_RUN/calibrate/calibration.json --select-rung 5 --edit-budget 5 ${COMMON[*]}"; }
+
+# Occupancy. Each worker preallocates most of its device, so another process
+# on a requested GPU makes that worker die on allocation rather than erroring
+# usefully. This launcher had no such check until 2026-10-05.
+IFS=',' read -r -a DEVICE_ARRAY <<< "${DEVICES// /}"
+if command -v nvidia-smi >/dev/null 2>&1; then
+    BUSY=""
+    MISSING=""
+    for index in "${DEVICE_ARRAY[@]}"; do
+        [[ -n "$index" ]] || continue
+        # An absent device prints "No devices were found" on *stdout* and exits
+        # nonzero, so the exit code is what distinguishes "does not exist" from
+        # "exists and is idle". Counting lines alone called every absent device
+        # busy, which is the bug this check had in run_p17_recovery_all.sh.
+        if ! PIDS="$(nvidia-smi --id="$index" --query-compute-apps=pid \
+                     --format=csv,noheader 2>&1)"; then
+            MISSING="$MISSING $index"
+            continue
+        fi
+        COUNT="$(printf '%s' "$PIDS" | grep -c . || true)"
+        [[ "${COUNT:-0}" -gt 0 ]] && BUSY="$BUSY $index"
+    done
+    if [[ -n "$MISSING" ]]; then
+        # Not an occupancy problem, so --allow-busy-gpus does not cover it.
+        echo "  ERROR: requested device(s)$MISSING do not exist on this host." >&2
+        "$DRY_RUN" || exit 2
+    fi
+    if [[ -n "$BUSY" ]]; then
+        echo "  WARNING: device(s)$BUSY already hold a process." >&2
+        if ! "$ALLOW_BUSY" && ! "$DRY_RUN"; then
+            echo "Workers preallocate most of each device, so they would die on" >&2
+            echo "allocation. Wait for the current run, request a different" >&2
+            echo "--devices, or pass --allow-busy-gpus." >&2
+            exit 2
+        fi
+    elif [[ -z "$MISSING" ]]; then
+        echo "  gpus:     all ${#DEVICE_ARRAY[@]} requested devices exist and are free"
+    fi
+else
+    echo "  WARNING: nvidia-smi unavailable, so occupancy was NOT checked." >&2
+    "$ALLOW_BUSY" || "$DRY_RUN" || {
+        echo "Pass --allow-busy-gpus to proceed anyway." >&2; exit 2; }
+fi
 
 if "$DRY_RUN"; then
     echo

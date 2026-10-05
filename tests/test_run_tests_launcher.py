@@ -86,36 +86,102 @@ def test_gpu_mode_refuses_a_device_that_is_not_on_the_host(tmp_path):
     assert "test session starts" not in result.stdout
 
 
-def test_dry_run_skips_only_what_absent_dependencies_break(tmp_path):
-    """A bare pytest collects nothing here; the skips are what make it run."""
+def optional_deps():
+    """The script's own OPTIONAL_DEPS table, as (module, kind, target)."""
+    lines = RUNNER.read_text().split("OPTIONAL_DEPS=(", 1)[1].split(")", 1)[0]
+    entries = []
+    for line in lines.splitlines():
+        line = line.strip()
+        if not line.startswith('"'):
+            continue
+        module, kind, target = line.strip('"').split(":", 2)
+        entries.append((module, kind, target))
+    return entries
+
+
+def importable(module):
+    import subprocess
+
+    return subprocess.run(
+        [str(REPO / ".venv/bin/python"), "-c", f"import {module}"],
+        capture_output=True, timeout=120,
+    ).returncode == 0
+
+
+def test_a_dependency_is_skipped_exactly_when_it_is_unusable(tmp_path):
+    """Asserted against this host, not against a hardcoded environment.
+
+    The first version of this test assumed the local machine's missing
+    packages. On the cluster `esmjfold2` and `jpromera` are installed, so it
+    failed there while the script was behaving correctly. What has to hold is
+    the conditional: a skip appears iff importing the guarding module fails.
+    """
     result = invoke("--dry-run", path_prefix=fake_nvidia_smi(tmp_path))
     assert result.returncode == 0, result.stderr
-    assert "--ignore=tests/test_esmfold2_multisample.py" in result.stdout
-    assert "--deselect" in result.stdout
-    assert "test_esmfold_msa_cache_follows_runtime_override" in result.stdout
-    assert "--ignore=tests/test_promera.py" in result.stdout
-    # test_cache's other three tests pass, so the file itself stays in.
-    assert "--ignore=tests/test_cache.py" not in result.stdout
+    plan = result.stdout.split("Would run:")[1]
+
+    entries = optional_deps()
+    assert entries, "the table should not be empty"
+    # A target can be guarded by more than one module; it is skipped if any of
+    # them is unusable.
+    unusable = {}
+    for module, kind, target in entries:
+        unusable[(kind, target)] = unusable.get((kind, target), False) or (
+            not importable(module)
+        )
+    for (kind, target), expected in unusable.items():
+        flag = f"--ignore={target}" if kind == "ignore" else target
+        assert (flag in plan) is expected, (
+            f"{target} should {'be' if expected else 'not be'} skipped here"
+        )
+        if kind == "ignore":
+            assert plan.count(flag) <= 1, "a target must not be skipped twice"
+
+    # test_cache's other three tests pass either way, so the file itself is
+    # never ignored wholesale.
+    assert "--ignore=tests/test_cache.py " not in plan
 
 
 def test_a_present_dependency_brings_its_tests_back_with_no_edit(tmp_path):
-    """The skips are conditional, not a hardcoded exclusion list."""
+    """The skips are conditional, not a hardcoded exclusion list.
+
+    test_promera is guarded by two modules, so satisfying only one must not
+    bring it back -- that is the cluster's exact situation, where `jpromera`
+    imports and `tinyprot.msa` raises for a missing taxonomy database.
+    """
     stub = tmp_path / "stub"
     stub.mkdir()
     (stub / "jpromera.py").write_text("")
-    env_result = subprocess.run(
-        ["bash", str(RUNNER), "--dry-run"],
-        cwd=REPO,
-        env={
-            **os.environ,
-            "PYTHONPATH": str(stub),
-            "PATH": f"{fake_nvidia_smi(tmp_path)}{os.pathsep}{os.environ['PATH']}",
-        },
-        capture_output=True, text=True, timeout=120,
+
+    def run_with(stub_path):
+        return subprocess.run(
+            ["bash", str(RUNNER), "--dry-run"],
+            cwd=REPO,
+            env={
+                **os.environ,
+                "PYTHONPATH": str(stub_path),
+                "PATH": (
+                    f"{fake_nvidia_smi(tmp_path)}{os.pathsep}{os.environ['PATH']}"
+                ),
+            },
+            capture_output=True, text=True, timeout=180,
+        )
+
+    half = run_with(stub)
+    assert half.returncode == 0, half.stderr
+    assert "jpromera present" in half.stdout
+    assert "--ignore=tests/test_promera.py" in half.stdout, (
+        "tinyprot.msa still guards it, which is the cluster's situation"
     )
-    assert env_result.returncode == 0, env_result.stderr
-    assert "jpromera present" in env_result.stdout
-    assert "--ignore=tests/test_promera.py" not in env_result.stdout
+
+    package = stub / "tinyprot"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "msa.py").write_text("")
+    both = run_with(stub)
+    assert both.returncode == 0, both.stderr
+    assert "tinyprot.msa present" in both.stdout
+    assert "--ignore=tests/test_promera.py" not in both.stdout
 
 
 def test_slow_marker_override_is_an_empty_m_not_a_removed_addopts(tmp_path):

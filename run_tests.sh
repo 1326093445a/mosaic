@@ -9,8 +9,14 @@
 #      whole run rather than itself, so tests/test_esmfold2_multisample.py
 #      (`esmjfold2`) makes a bare pytest collect nothing. Two further tests
 #      import theirs inside the test body, so they merely fail. Both kinds are
-#      skipped here, and only while the dependency is genuinely absent -- so
+#      skipped here, and only while the dependency is genuinely unusable -- so
 #      installing one brings its tests back with no edit to this script.
+#      "Unusable" is wider than "not installed", because a package can import
+#      and still be unusable: on the cluster `jpromera` is installed, and
+#      test_promera fails inside it at `tinyprot.msa`, which raises unless a
+#      taxonomy LMDB has been downloaded. So each entry names the module whose
+#      *import* is the real precondition, and any failure to import it -- a
+#      missing package or a missing data file -- skips that test.
 #
 #   2. Nothing pins the backend, and JAX preallocates 75% of EVERY visible
 #      device, so a bare pytest on an 8-GPU node claims all eight and kills
@@ -42,6 +48,8 @@ OPTIONAL_DEPS=(
     "esmjfold2:ignore:tests/test_esmfold2_multisample.py"
     "esmjfold2:deselect:tests/test_cache.py::test_esmfold_msa_cache_follows_runtime_override"
     "jpromera:ignore:tests/test_promera.py"
+    # Installed on the cluster but unusable without `python -m tinyprot.init`.
+    "tinyprot.msa:ignore:tests/test_promera.py"
 )
 
 SLOW=false
@@ -118,13 +126,19 @@ for entry in "${OPTIONAL_DEPS[@]}"; do
             echo "  deps:     $module present, so its tests are included"
         else
             DEP_SEEN[$module]=missing
-            echo "  deps:     $module missing, so its tests are skipped"
+            echo "  deps:     $module unavailable, so its tests are skipped"
         fi
     fi
     [[ "${DEP_SEEN[$module]}" == missing ]] || continue
+    # Two modules can guard the same file, so the same flag must not be added
+    # twice.
     case "$kind" in
-        ignore)   SKIPS+=("--ignore=$target") ;;
-        deselect) SKIPS+=("--deselect" "$target") ;;
+        ignore)
+            [[ " ${SKIPS[*]-} " == *" --ignore=$target "* ]] && continue
+            SKIPS+=("--ignore=$target") ;;
+        deselect)
+            [[ " ${SKIPS[*]-} " == *" $target "* ]] && continue
+            SKIPS+=("--deselect" "$target") ;;
         *) echo "Bad OPTIONAL_DEPS entry: $entry" >&2; exit 2 ;;
     esac
 done

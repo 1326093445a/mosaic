@@ -518,6 +518,82 @@ def test_launcher_still_allows_an_explicit_real_protein_decoy():
     assert "--decoy-mode" not in result.stdout
 
 
+def _dry_run_with_stub_smi(tmp_path, *args, busy_pids="", absent=False):
+    """Dry-run the launcher against a stubbed nvidia-smi.
+
+    The occupancy check's behaviour is how it reads that output, not whether
+    this host happens to have eight free devices.
+    """
+    import os
+    import subprocess
+
+    directory = tmp_path / "bin"
+    directory.mkdir(exist_ok=True)
+    script = directory / "nvidia-smi"
+    body = (
+        '      echo "No devices were found"; exit 6 ;;\n'
+        if absent
+        else f'      printf "%s" {busy_pids!r}; exit 0 ;;\n'
+    )
+    script.write_text(
+        "#!/usr/bin/env bash\n"
+        'for arg in "$@"; do\n'
+        '  case "$arg" in\n'
+        "    --query-compute-apps=pid)\n" + body + "  esac\n"
+        "done\nexit 0\n"
+    )
+    script.chmod(0o755)
+    env = dict(os.environ)
+    env["PATH"] = f"{directory}{os.pathsep}{env['PATH']}"
+    return subprocess.run(
+        ["bash", str(FOLLOWUPS), "--arms", "decoy", *map(str, args)],
+        cwd=REPO, env=env, capture_output=True, text=True, timeout=60,
+    )
+
+
+def test_launcher_refuses_to_launch_onto_a_busy_device(tmp_path):
+    """Workers preallocate, so a busy device kills them rather than queueing.
+
+    Added 2026-10-05: this launcher had no occupancy check, which is how a
+    second run onto the same node would have failed.
+    """
+    result = _dry_run_with_stub_smi(
+        tmp_path, "--devices", "0", busy_pids="4242\n"
+    )
+    assert result.returncode == 2
+    assert "already hold a process" in result.stderr
+    assert "Applied five OpenDDE patches" not in result.stdout
+
+
+def test_launcher_allows_a_busy_device_only_when_told_to(tmp_path):
+    result = _dry_run_with_stub_smi(
+        tmp_path, "--devices", "0", "--allow-busy-gpus", "--dry-run",
+        busy_pids="4242\n",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "already hold a process" in result.stderr
+
+
+def test_launcher_treats_an_absent_device_as_fatal_not_busy(tmp_path):
+    """--allow-busy-gpus must not cover a device that is not there.
+
+    nvidia-smi prints to stdout and exits nonzero for an absent device, so
+    counting its output as a process reports every absent device as busy.
+    """
+    result = _dry_run_with_stub_smi(
+        tmp_path, "--devices", "0,1", "--allow-busy-gpus", absent=True
+    )
+    assert result.returncode == 2
+    assert "do not exist on this host" in result.stderr
+    assert "already hold a process" not in result.stderr
+
+
+def test_launcher_reports_free_devices_before_launching(tmp_path):
+    result = _dry_run_with_stub_smi(tmp_path, "--devices", "0,1,2", "--dry-run")
+    assert result.returncode == 0, result.stderr
+    assert "all 3 requested devices exist and are free" in result.stdout
+
+
 def test_launcher_refuses_a_decoy_structure_that_is_not_there(tmp_path):
     result = _dry_run("--arms", "decoy", "--decoy-structure", tmp_path / "nope.cif")
     assert result.returncode == 2
