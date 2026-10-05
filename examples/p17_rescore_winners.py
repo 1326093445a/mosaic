@@ -19,6 +19,54 @@ import numpy as np
 from p17_search_outputs import SearchOutputs, compact_prediction
 
 
+def check_reference_consistency(
+    wt, target, original, complex_pdb, binder_chain, target_chain
+):
+    """Refuse to rescore archived sequences against the wrong reference.
+
+    The target must match exactly: it defines the complex, and a mismatch
+    means pose would be measured against the wrong structure. This is what
+    caught a run on 2026-10-04 that pointed Alpha searches (195-residue target,
+    chain A) at the default JN.1 reference (184 residues, chain T).
+
+    The binder is compared against the *reference's* sequence, which is not the
+    archived `binder_sequence` when a run started somewhere else. The recovery
+    control starts from a deliberately damaged sequence, so comparing that to
+    the reference would refuse every such run -- the second half of the same
+    bug. Archives predating `reference_binder_sequence` fall back to
+    `start_differs_from_reference`, and length is always checked because a
+    different-length chain cannot be compared at all.
+    """
+    expected_binder = original.get("reference_binder_sequence")
+    if expected_binder is None:
+        expected_binder = (
+            None
+            if original.get("start_differs_from_reference")
+            else original["binder_sequence"]
+        )
+    name = Path(complex_pdb).name
+    if target != original["target_sequence"]:
+        raise ValueError(
+            "local reference target differs from archived input: "
+            f"{name} chain {target_chain} gives {len(target)} aa, archive "
+            f"expects {len(original['target_sequence'])} aa. Pass "
+            "--complex/--target-chain for a non-JN.1 reference."
+        )
+    if expected_binder is not None and wt != expected_binder:
+        raise ValueError(
+            "local reference binder differs from archived input: "
+            f"{name} chain {binder_chain} gives {len(wt)} aa, archive expects "
+            f"{len(expected_binder)} aa. Pass --complex/--binder-chain for a "
+            "non-JN.1 reference."
+        )
+    if len(wt) != len(original["binder_sequence"]):
+        raise ValueError(
+            f"reference binder is {len(wt)} aa but archived sequences are "
+            f"{len(original['binder_sequence'])} aa; pose comparison would be "
+            "between different-length chains"
+        )
+
+
 def load_candidates(source):
     """Read flat or organized batch results, optionally directly from a tarball."""
     source = Path(source)
@@ -185,6 +233,14 @@ def main(argv=None):
     parser.add_argument("--opendde-dtype", choices=["fp32", "bf16"], default=None)
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
+    # Which reference the archived sequences were searched against. Omitting
+    # this keeps the JN.1 default. The Alpha recovery control searches a
+    # different target (195 residues, chain A, against JN.1's 184 on chain T),
+    # so rescoring its winners needs the reference told to it: the sequence
+    # consistency check below would otherwise correctly refuse the run.
+    parser.add_argument("--complex", type=Path, default=None)
+    parser.add_argument("--binder-chain", default=None)
+    parser.add_argument("--target-chain", default=None)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if min(args.seeds) < 0 or len(set(args.seeds)) != len(args.seeds):
@@ -240,18 +296,34 @@ def main(argv=None):
         reference_binder_target_ca,
     )
 
-    reference, wt, target = load_structure()
-    if wt != original["binder_sequence"] or target != original["target_sequence"]:
-        raise ValueError("local reference sequences differ from archived input")
-    binder_ca, target_ca = reference_binder_target_ca(reference)
+    if args.complex is None:
+        if args.binder_chain or args.target_chain:
+            raise ValueError("--binder-chain/--target-chain require --complex")
+        complex_pdb = COMPLEX_PDB
+        binder_chain, target_chain = BINDER_CHAIN, TARGET_CHAIN
+        reference, wt, target = load_structure()
+        binder_ca, target_ca = reference_binder_target_ca(reference)
+    else:
+        from p17_alpha_reference import load_complex
+
+        complex_pdb = args.complex
+        binder_chain = args.binder_chain or "B"
+        target_chain = args.target_chain or "A"
+        loaded = load_complex(complex_pdb, binder_chain, target_chain)
+        wt, target = loaded["binder_seq"], loaded["target_seq"]
+        binder_ca, target_ca = loaded["binder_ca"], loaded["target_ca"]
+
+    check_reference_consistency(
+        wt, target, original, complex_pdb, binder_chain, target_chain
+    )
     outputs = SearchOutputs(args.output_dir, binder_ca, target_ca)
-    shutil.copy2(COMPLEX_PDB, args.output_dir / "reference.pdb")
+    shutil.copy2(complex_pdb, args.output_dir / "reference.pdb")
     (args.output_dir / "README.md").write_text(
         "# P17 winner pose review\n\n"
         "New forward predictions of archived WT and winners; no optimization.\n"
         "`reference.pdb` is the target/binder pose reference. Align predicted target "
-        f"to reference target chain {TARGET_CHAIN} to inspect binder pose "
-        f"(reference binder chain {BINDER_CHAIN}). Prediction chain mappings are in predictions.csv.\n"
+        f"to reference target chain {target_chain} to inspect binder pose "
+        f"(reference binder chain {binder_chain}). Prediction chain mappings are in predictions.csv.\n"
         "`tables/candidates.csv` maps new IDs to sequences; "
         "`tables/source_runs.csv` maps them back to original winners.\n"
         "`tables/predictions.csv` contains per-seed ipSAE, ipTM, pose RMSD, target "
@@ -290,9 +362,10 @@ def main(argv=None):
         recycling_steps=original["recycling_steps"],
         checkpoint=original["checkpoint"],
         opendde_compute_precision=precision,
-        reference_binder_chain=BINDER_CHAIN,
-        reference_target_chain=TARGET_CHAIN,
-        reference_sha256=hashlib.sha256(COMPLEX_PDB.read_bytes()).hexdigest(),
+        reference_binder_chain=binder_chain,
+        reference_target_chain=target_chain,
+        reference_source=str(complex_pdb),
+        reference_sha256=hashlib.sha256(complex_pdb.read_bytes()).hexdigest(),
         pae_cutoff=original["arguments"]["pae_cutoff"],
         distance_cutoff=original["arguments"]["distance_cutoff"],
     )

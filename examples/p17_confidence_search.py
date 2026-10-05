@@ -458,6 +458,12 @@ def main(argv=None):
         [i + 1 in CDR_RESIDUE_INDICES_1IDX for i in range(len(binder_seq))]
     )
     designable_idx = np.flatnonzero(mask)
+    # Kept before `binder_seq` is replaced by a damaged start. Downstream
+    # rescoring must distinguish the *reference's* sequence (which the pose
+    # coordinates belong to) from the search's starting sequence; conflating
+    # them makes a reference-consistency check fail on every run that starts
+    # anywhere other than the reference.
+    reference_binder_seq = binder_seq
 
     # The search's origin. Edit budget and the Hamming cap are relative to
     # this sequence, so for the recovery control the damaged sequence is the
@@ -501,6 +507,7 @@ def main(argv=None):
             k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()
         },
         binder_sequence=binder_seq,
+        reference_binder_sequence=reference_binder_seq,
         target_sequence=target_seq,
         designable_positions_0idx=designable_idx.tolist(),
         epitope_positions_0idx=epitope_idx.tolist(),
