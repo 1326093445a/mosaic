@@ -823,6 +823,12 @@ def main(argv=None):
                 "tb_pae",
                 "pTMEnergy",
                 "ablang2_ppl",
+                # Registry restraint (section 26). This list is an allow-list,
+                # so a term absent from it has its aux silently discarded --
+                # which is what hid the registry value from the first smoke
+                # run even though the term was active.
+                "registry_log_p",
+                "registry_repel_p",
             ):
                 leaf = _ranking_leaf(aux, name)
                 if leaf is not None:
