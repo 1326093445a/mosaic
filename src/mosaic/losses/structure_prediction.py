@@ -2,7 +2,7 @@ import itertools
 
 import equinox as eqx
 import jax
-from jaxtyping import Float, Array, Int
+from jaxtyping import Float, Int, Array
 
 from collections.abc import Callable
 import jax.numpy as jnp
@@ -338,6 +338,101 @@ class BinderTargetContact(LossTerm):
 
         average_log_prob = binder_target_max_p.mean()
         return -average_log_prob, {"target_contact": average_log_prob}
+
+
+class BinderTargetRegistry(LossTerm):
+    """Contact probability for *named* binder-target residue pairs.
+
+    Why this exists, and how it differs from `BinderTargetContact`: that term
+    reduces per binder residue, asking "is residue i near any of the epitope
+    columns". A binder rotated 180 degrees at the correct epitope satisfies
+    that -- its CDR residues are still near epitope residues, just the wrong
+    ones. Measured on saved predictions, candidates flipped 156-178 degrees
+    carried 56-76% CDR interface and passed every aggregate site criterion
+    (docs/P17_JN1.md section 25).
+
+    This term scores the specific pairs that are in contact in the reference,
+    so exchanging partners breaks it. That is what makes it sensitive to
+    orientation rather than only to proximity.
+
+    `pairs` is an integer array of (binder_index, target_index), both
+    0-indexed into their own chains, taken from reference contacts. Operates
+    on the distogram rather than on coordinates: no published work optimizes
+    sequence through an inter-chain coordinate RMSD, and every pipeline that
+    specifies placement does so in distogram or contact space.
+
+    `repel_pairs` is optional and carries the other half of the signal --
+    pairs that must *not* form, for instance the partners a flipped pose would
+    create. Germinal subtracts a framework-proximity term for the analogous
+    reason; the target-side form is not implemented by any published pipeline.
+    """
+
+    pairs: Int[Array, "P 2"]
+    contact_distance: float = 8.0
+    repel_pairs: Int[Array, "Q 2"] | None = None
+    repel_weight: float = 0.0
+
+    def __call__(
+        self,
+        sequence: Float[Array, "N 20"],
+        output: StructureModelOutput,
+        key,
+    ):
+        binder_len = sequence.shape[0]
+        inter = contact_log_probability(
+            output.distogram_logits[:binder_len, binder_len:],
+            self.contact_distance,
+            bins=output.distogram_bins,
+        )
+        i, j = self.pairs[:, 0], self.pairs[:, 1]
+        attract = inter[i, j].mean()
+        loss = -attract
+        aux = {"registry_log_p": attract}
+
+        if self.repel_pairs is not None and self.repel_weight != 0.0:
+            ri, rj = self.repel_pairs[:, 0], self.repel_pairs[:, 1]
+            # Penalize contact *probability*, not log-probability: a
+            # non-contacting pair has a log-probability of large negative
+            # magnitude, so adding that term would reward exactly the pairs it
+            # is meant to discourage, and it is unbounded below. The
+            # probability is bounded in [0, 1] and is 0 when the pair is apart.
+            repel = jnp.exp(inter[ri, rj]).mean()
+            loss = loss + self.repel_weight * repel
+            aux["registry_repel_p"] = repel
+
+        return loss, aux
+
+
+def reference_contact_pairs(
+    binder_ca,
+    target_ca,
+    contact_distance: float = 8.0,
+    binder_subset=None,
+    target_subset=None,
+):
+    """Reference (binder, target) index pairs within `contact_distance`.
+
+    Restricting `binder_subset` to the designable positions and
+    `target_subset` to the epitope keeps the restraint inside the space the
+    search can act on. Returns an integer array of shape (P, 2); an empty
+    result means the reference has no contacts under these settings and the
+    caller should fail rather than optimize an empty objective.
+    """
+    import numpy as np
+
+    binder_ca = np.asarray(binder_ca)
+    target_ca = np.asarray(target_ca)
+    d = np.linalg.norm(binder_ca[:, None, :] - target_ca[None, :, :], axis=-1)
+    mask = d <= contact_distance
+    if binder_subset is not None:
+        keep = np.zeros(len(binder_ca), dtype=bool)
+        keep[np.asarray(binder_subset)] = True
+        mask &= keep[:, None]
+    if target_subset is not None:
+        keep = np.zeros(len(target_ca), dtype=bool)
+        keep[np.asarray(target_subset)] = True
+        mask &= keep[None, :]
+    return np.argwhere(mask).astype(np.int32)
 
 
 class BinderPoseRMSD(LossTerm):

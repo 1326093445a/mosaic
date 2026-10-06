@@ -227,6 +227,22 @@ def build_parser():
         help="full includes confidence and coordinate-RMSD gradients; distogram is the earlier proxy objective.",
     )
     parser.add_argument("--weight-pose", type=float, default=1.0)
+    # Registry term (section 26), off by default so existing runs are
+    # unchanged. It scores the specific reference contact pairs rather than
+    # aggregate proximity, which is what separates a binder flipped at the
+    # correct epitope from one in the reference registry (section 25).
+    parser.add_argument(
+        "--weight-registry",
+        type=float,
+        default=0.0,
+        help="weight on the named-pair registry restraint; 0 disables it",
+    )
+    parser.add_argument(
+        "--registry-contact-distance",
+        type=float,
+        default=8.0,
+        help="reference contact cutoff defining the pair set (default: %(default)s)",
+    )
     parser.add_argument(
         "--retention-pose-margin",
         type=float,
@@ -549,6 +565,8 @@ def main(argv=None):
     metadata = dict(
         output_layout_version=2,
         reference_source=str(args.complex) if args.complex else "P17_JN1.pdb",
+        registry_weight=args.weight_registry,
+        registry_contact_distance=args.registry_contact_distance,
         epitope_mode=epitope_mode,
         reference_details=reference_info,
         start_sequence=binder_seq,
@@ -744,6 +762,11 @@ def main(argv=None):
         opendde_sampling_steps=args.sampling_steps,
         opendde_num_samples=1,
         confidence_loss=confidence_loss,
+        # Constant across the pose-weight toggle: the registry restraint is a
+        # separate term, so the paired pose-on/pose-off diagnostic varies only
+        # what it is meant to vary.
+        registry_weight=args.weight_registry,
+        registry_contact_distance=args.registry_contact_distance,
     )
 
     def make_gradient(weight):

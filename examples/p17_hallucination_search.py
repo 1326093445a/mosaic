@@ -61,6 +61,8 @@ from mosaic.losses.structure_prediction import (
     BinderPoseRMSD,
     BinderPoseDistogramDrift,
     BinderTargetContact,
+    BinderTargetRegistry,
+    reference_contact_pairs,
 )
 from mosaic.losses.transformations import ClippedGradient, EditBudget, SetPositions
 from mosaic.models.opendde import OpenDDEModelAbag
@@ -293,7 +295,10 @@ def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenize
                            opendde_path: str, pose_tolerance: float,
                            opendde_sampling_steps: int | None,
                            opendde_num_samples: int, confidence_loss=None,
-                           pose_weight: float = 1.0):
+                           pose_weight: float = 1.0,
+                           registry_weight: float = 0.0,
+                           registry_repel_weight: float = 0.0,
+                           registry_contact_distance: float = CONTACT_DISTANCE):
     if not np.isfinite(pose_weight) or pose_weight < 0:
         raise ValueError("pose_weight must be finite and nonnegative")
     # Keep the zero-weight term so paired runs preserve the random-key schedule.
@@ -310,6 +315,38 @@ def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenize
         paratope_idx=designable_idx, contact_distance=CONTACT_DISTANCE,
         epitope_idx=epitope_idx,
     )
+
+    # Registry term, off unless weighted (§26). `BinderTargetContact` above
+    # reduces per binder residue -- "is residue i near any epitope column" --
+    # which a binder flipped at the correct epitope still satisfies: §25
+    # measured candidates rotated 156-178 degrees retaining 56-76% CDR
+    # interface and passing every aggregate site criterion. This term scores
+    # the specific reference contact pairs instead, so exchanging partners
+    # breaks it. On the real reference a paratope-preserving tumble costs it
+    # ~47x what it costs the aggregate term.
+    if registry_weight < 0 or registry_repel_weight < 0:
+        raise ValueError("registry weights must be nonnegative")
+    if registry_weight > 0:
+        if reference_binder_ca is None or reference_target_ca is None:
+            raise ValueError("registry term needs reference binder/target CA")
+        pairs = reference_contact_pairs(
+            reference_binder_ca, reference_target_ca,
+            contact_distance=registry_contact_distance,
+            binder_subset=designable_idx,
+        )
+        if len(pairs) == 0:
+            raise ValueError(
+                "no reference contacts between designable binder positions and "
+                f"the target at {registry_contact_distance} A; the registry "
+                "term would be an empty objective"
+            )
+        registry = BinderTargetRegistry(
+            pairs=jax.numpy.asarray(pairs),
+            contact_distance=registry_contact_distance,
+            repel_pairs=None,
+            repel_weight=0.0,
+        )
+        contact_loss = contact_loss + registry_weight * registry
     if opendde_path == "distogram":
         pose_loss = ClippedGradient(
             BinderPoseDistogramDrift(reference_distances, tolerance=pose_tolerance),

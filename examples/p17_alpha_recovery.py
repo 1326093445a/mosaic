@@ -318,6 +318,11 @@ def search_jobs(root, policies, seeds, start_sequence, budget, args, complex_pdb
                 ("--acceptance-temperature", "acceptance_temperature"),
                 ("--weight-pose", "weight_pose"),
                 ("--width", "width"),
+                # Registry restraint (section 26). Forwarded like any other
+                # weight so a cell that sets it is recorded in the worker's
+                # own config, not only in the launcher's plan.
+                ("--weight-registry", "weight_registry"),
+                ("--registry-contact-distance", "registry_contact_distance"),
             ):
                 value = getattr(args, attr, None)
                 if value is not None:
@@ -910,6 +915,13 @@ def build_parser():
             "gradient step; it cannot be recovered after a run.",
         )
         sub_parser.add_argument("--target-entropy", type=float, default=None)
+        # None means "leave p17_confidence_search.py's own default alone", so
+        # omitting these keeps a cell's objective exactly as it was before
+        # section 26 added the term.
+        sub_parser.add_argument("--weight-registry", type=float, default=None)
+        sub_parser.add_argument(
+            "--registry-contact-distance", type=float, default=None
+        )
         sub_parser.add_argument("--acceptance-temperature", type=float, default=None)
         sub_parser.add_argument("--width", type=int, default=None)
         sub_parser.add_argument(
