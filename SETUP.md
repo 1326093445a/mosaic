@@ -1,7 +1,7 @@
 # OpenDDE setup and validation
 
 This guide covers the OpenDDE work in this checkout. Start with
-[the current status and next steps](docs/p17_status_and_next_steps.md) for the
+[the current status and next steps](docs/archive/p17_status_and_next_steps.md) for the
 latest findings; [the detailed record](docs/P17_JN1.md) contains history
 and references.
 
@@ -53,12 +53,12 @@ spawning GPU workers. Watch `logs/template_cache.log` during that preparation.
 
 [Test notes](tests/README.md) describe the small numerical regression checks.
 The recorded CPU, GPU-kernel and featurizer results are summarized in the
-[current handoff](docs/p17_status_and_next_steps.md#implemented-fixes-and-verification).
+[current handoff](docs/archive/p17_status_and_next_steps.md#implemented-fixes-and-verification).
 They do not verify full-model geometry or gradients.
 
 ## Cluster handoff
 
-Use the [current validation instructions](docs/p17_status_and_next_steps.md#next-cluster-run-the-gated-pose-experiment)
+Use the [current validation instructions](docs/archive/p17_status_and_next_steps.md#next-cluster-run-the-gated-pose-experiment)
 for the next run and its outputs. The scripts resolve paths from the checkout,
 so the cluster checkout at `/storage/frank/mosaic` needs no `/home/yfeng17`
 path substitution. The numerical preset performs forward controls only.

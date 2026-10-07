@@ -19,8 +19,8 @@ particular edit counts, so coverage was not identical across policies.
 
 The experimental comparison used single-substitution contrast pairs. Only
 65 of 166 mutation instances were testable, and generated candidates had no exact
-CDR matches in that sweep's experimental table. A nearby measured sequence is
-not a direct affinity measurement of a generated candidate.
+designable region matches in that sweep's experimental table. A nearby measured sequence is
+not a direct measurement of any property of a generated candidate.
 
 Deduplicating recurring substitutions changed the interpretation of the apparent
 agreement. Across all configurations, the recorded pooled favorable-vote fraction
@@ -41,7 +41,7 @@ historical aggregate results were:
 
 The lowest mean predicted loss coincided with the lowest favorable-vote fraction.
 These are descriptive results from the earlier record; the vote counts have the
-coverage and dependence limitations above. They do not measure affinity for the
+coverage and dependence limitations above. They do not measure fitness for the
 complete generated sequences.
 
 The record also corrected an architectural misunderstanding: the full OpenDDE
@@ -49,11 +49,11 @@ path can include differentiable coordinate sampling and confidence outputs;
 the earlier distogram-only path was an implementation choice. The full-path
 experiment was listed as built but unrun in the July notes. That dated status
 must not be confused with the later P17 runs in the
-[detailed project record](P17_JN1.md).
+[detailed project record](../P17_JN1.md).
 
 ## Interpretation retained in the current handoff
 
-- Composite loss and confidence are not calibrated affinity measurements.
+- Composite loss and confidence are not calibrated property measurements.
 - Mechanical changes to an optimizer do not establish biological improvement.
 - Report experimental coverage and shared evidence instead of treating every
   repeated mutation instance as independent.

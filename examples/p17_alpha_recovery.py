@@ -327,6 +327,9 @@ def search_jobs(root, policies, seeds, start_sequence, budget, args, complex_pdb
                 value = getattr(args, attr, None)
                 if value is not None:
                     command += [flag, str(value)]
+            start = getattr(args, "start_sequence", None)
+            if start:
+                command += ["--start-sequence", start]
             decoy = getattr(args, "_decoy_sequence", None)
             if decoy is not None:
                 command += ["--target-sequence", decoy]
@@ -919,6 +922,11 @@ def build_parser():
         # omitting these keeps a cell's objective exactly as it was before
         # section 26 added the term.
         sub_parser.add_argument("--weight-registry", type=float, default=None)
+        # Start the search from a supplied sequence instead of WT. The
+        # continuous seeding stage (p17_continuous_seed.py) produces one;
+        # p17_confidence_search.py validates that it differs from the
+        # reference only inside the designable mask.
+        sub_parser.add_argument("--start-sequence", default=None)
         sub_parser.add_argument(
             "--registry-contact-distance", type=float, default=None
         )

@@ -2,24 +2,24 @@
 
 Project handoff updated **2026-10-03**. The
 [numerical investigation](numerical_precision_validation_summary.md) records the
-reviewed October 2 synthetic results. The [detailed project record](P17_JN1.md)
+reviewed October 2 synthetic results. The [detailed project record](../P17_JN1.md)
 preserves historical experiments and implementation decisions. Older plans there
 are historical, not additional pending launch instructions.
 
-The [October 3 pose-constraint literature handoff for Claude](P17_JN1.md#18-pose-constraint-literature-handoff-for-claude)
+The [October 3 pose-constraint literature handoff for Claude](../P17_JN1.md#18-pose-constraint-literature-handoff-for-claude)
 reviews Task Space Regions, TrajOpt, robust losses, and SVD rotation gradients.
 It records conceptual distinctions and open synthetic-geometry checks; it adds
 no implementation change or model-validation result.
 
 ## Objective and baseline comparison
 
-The two baseline complexes contain the **same original P17 binder**. The target
-changes from Alpha RBD to JN.1 RBD. In the current validator, “WT” means
+The two baseline complexes contain the **same original P17 designed chain**. The target
+changes from Alpha target domain to JN.1 target domain. In the current validator, “WT” means
 **unmodified P17**, not an ancestral viral target. The project objective is to
 recover binding to JN.1; the computational objectives discussed here are higher
-predicted interface confidence and lower target-aligned binder pose RMSD to the
+predicted interface confidence and lower target-aligned designed-chain pose RMSD to the
 intended arrangement, with valid protein geometry. These metrics alone do not
-establish binding or affinity.
+establish any measured property.
 
 The Alpha complex is the positive reference. The local project record identifies
 `P17_Alpha.pdb` as experimental PDB 8GZ5. `P17_JN1.pdb` is a **modeled reference**:
@@ -35,18 +35,18 @@ three seeds, and no MSA or structural template:
 |---|---:|---:|
 | ipTM | 0.9006–0.9017 | 0.2225–0.5794 |
 | ipSAE minimum, PAE cutoff 12 Å | 0.7949–0.7954 | 0–0.1629 |
-| Target-aligned binder pose RMSD | 1.98–2.96 Å | 22.37–57.56 Å |
+| Target-aligned designed-chain pose RMSD | 1.98–2.96 Å | 22.37–57.56 Å |
 | Target Cα RMSD after alignment | 0.66–0.74 Å | 1.84–1.87 Å |
 
-Sources: [confidence results](../results/p17_alpha_vs_jn1_native_opendde/comparison.csv)
-and [pose/ipSAE results](../results/p17_alpha_vs_jn1_native_opendde/rmsd_ipsae.csv).
+Sources: [confidence results](../../results/p17_alpha_vs_jn1_native_opendde/comparison.csv)
+and [pose/ipSAE results](../../results/p17_alpha_vs_jn1_native_opendde/rmsd_ipsae.csv).
 These historical results motivate the question; they do not validate the latest
 implementation. Higher confidence can accompany a different pose, and a lower
 RMSD to a modeled reference does not by itself imply better binding.
 
 **Pose RMSD uses a target-derived alignment:** align the predicted target to the
-reference target, apply that same transform to the predicted binder, then compare
-binder Cα coordinates. Independently aligning the binder measures its internal
+reference target, apply that same transform to the predicted designed chain, then compare
+designed chain Cα coordinates. Independently aligning the designed chain measures its internal
 shape and removes the placement error of interest. Unaligned maximum coordinate
 displacement is a different measurement and must not be called pose RMSD.
 
@@ -54,20 +54,20 @@ displacement is a different measurement and must not be called pose RMSD.
 
 The original question was the pose/RMSD discrepancy. Subsequent audits revealed
 that some predictions also had invalid within-chain geometry. A misplaced but
-well-formed binder and a malformed protein are different failures. Large pose
+well-formed designed chain and a malformed protein are different failures. Large pose
 RMSD alone does not diagnose a numerical bug or identify its cause.
 
 | Test layer | Question it addresses | What it does not establish |
 |---|---|---|
-| Historical Alpha/JN.1 comparison | How do confidence and predicted placement differ for the same binder against the two targets? | The cause of the discrepancy or current implementation correctness. |
+| Historical Alpha/JN.1 comparison | How do confidence and predicted placement differ for the same designed chain against the two targets? | The cause of the discrepancy or current implementation correctness. |
 | Structure and mapping audits | Are chains geometrically valid, and do raw coordinates agree with exported/mapped coordinates? | Correct docking pose or binding. |
 | Synthetic numerical checks | Do generic attention calculations agree with an independent reference, and how do precision, compilation and process restarts affect them? | Full-model geometry, pose recovery, gradients or memory requirements. |
-| Current fixed-input forward controls | Do the updated model paths produce valid, consistently mapped structures, and how repeatable are their outputs? | Improved confidence, reduced pose RMSD or successful binder redesign. |
+| Current fixed-input forward controls | Do the updated model paths produce valid, consistently mapped structures, and how repeatable are their outputs? | Improved confidence, reduced pose RMSD or successful designed chain redesign. |
 
 The corrected H200 synthetic archive completed **360/360 workers** and passed
 **14,760/14,760 independently recomputed FP32 numerical checks**. All within-process
 comparisons were identical, but small differences persisted across fresh
-processes, including on the same GPU. See the [independent review](../results/synthetic_end_to_end_review_20261002_220213/REVIEW.md).
+processes, including on the same GPU. See the [independent review](../../results/synthetic_end_to_end_review_20261002_220213/REVIEW.md).
 This supports the tested synthetic calculations; it neither proves nor disproves
 that numerical effects caused the earlier full-model structure failures.
 
@@ -83,7 +83,7 @@ passed.** All 10 workers completed, all 20 outputs passed independently
 recomputed backbone checks, and all 16 JAX outputs passed raw-to-mapped
 coordinate checks. Stable aggregation made both within-worker repeats bitwise
 identical in every tested JAX worker; original aggregation did so in none. See
-the [independent review](../results/forward_p17_review_20261003/REVIEW.md) of
+the [independent review](../../results/forward_p17_review_20261003/REVIEW.md) of
 archive `forward_p17.tar.gz` (run `p17_forward_validation_20261002_234527_1459862`).
 
 | Control group | Workers | Outputs | Geometry | Mapping | Exact repeats |
@@ -147,7 +147,7 @@ The recorded local verification is **73 focused CPU tests, 14 small GPU tests,
 and one separate real CPU featurizer comparison**, plus lint, shell syntax and
 launcher dry-run checks. The GPU tests used an RTX 4090 and small kernels;
 these were not full-model predictions. The featurizer comparison loaded no
-model checkpoint. See [the detailed numerical-fix record](P17_JN1.md#1713-numerical-fixes-and-the-next-forward-only-cluster-control--2026-10-01).
+model checkpoint. See [the detailed numerical-fix record](../P17_JN1.md#1713-numerical-fixes-and-the-next-forward-only-cluster-control--2026-10-01).
 
 A repeatability defect was reproduced in the original averaging kernel and
 removed in the tested small kernels. Its contribution to whole-model variation
@@ -282,7 +282,7 @@ and D as a feasibility ordering only. Read the diagnostic's measured influence
 rather than assuming the weight transferred.
 
 A passing gate establishes interpretable measurement and detectable proposal
-influence. It does not establish improved pose, binding or affinity. The
+influence. It does not establish improved pose or any measured property. The
 reference remains modeled, so pose RMSD measures agreement with an assumed
 arrangement. Fresh-process reproducibility, full backward correctness and the
 paired Alpha control remain open after this run.
@@ -324,7 +324,7 @@ control or reproduce the complete historical confidence/pose comparison above.
 The retained workflow uses frozen OpenDDE and AbLang2. Gradient-based proposals
 and separate forward scoring are implemented. Independent trajectories and local
 population competition are experimental policies; current results do not establish
-which is better. Confidence, pose error and affinity are distinct quantities.
+which is better. Confidence, pose error and measured fitness are distinct quantities.
 The earlier empirical record also found that lower composite loss could accompany
 worse experimental agreement; see [OpenDDE validation history](opendde_validation_history.md).
 
@@ -332,18 +332,18 @@ worse experimental agreement; see [OpenDDE validation history](opendde_validatio
 
 | Item | Role |
 |---|---|
-| [Setup](../SETUP.md) | Environment checks and OpenDDE documentation entry point |
-| [Detailed project record](P17_JN1.md) | Historical results, implementation decisions and references |
+| [Setup](../../SETUP.md) | Environment checks and OpenDDE documentation entry point |
+| [Detailed project record](../P17_JN1.md) | Historical results, implementation decisions and references |
 | [Literature review](protein_search_policy_review.md) | Search-policy papers and limits of the review |
 | [Earlier empirical evidence](opendde_validation_history.md) | OpenDDE findings retained from the mixed experiment log |
-| [Cluster launcher](../examples/run_p17_pose_experiment_cluster.sh) | Single entry point: preflight, patches, caches, then the gated run at the validated settings |
-| [Pose geometry tests](../tests/test_pose_rmsd_geometry.py) | CPU orientation/shape separation and Kabsch alignment-derivative checks |
-| [Pose experiment](../examples/p17_pose_experiment.py) | Stage barriers, bounded GPU workers and comparison summaries |
-| [Forward review](../results/forward_p17_review_20261003/REVIEW.md) | Independent verification of the post-fix forward controls |
-| [Default forward launcher](../examples/run_p17_forward_validation.sh) | Fixed-input JN.1 validation with geometry/mapping exit checks |
-| [Numerical launcher](../examples/run_p17_numerical_validation.sh) | Underlying forward-only validation preset |
-| [WT validator](../examples/p17_wt_validation.py) | Forward-path controls, artifact export and repeat comparisons |
-| [Structure audit](../examples/p17_structure_audit.py) | Named-backbone mapping and geometry checks |
-| [Numerical helpers](../src/mosaic/opendde_numerics.py) / [padding helpers](../src/mosaic/opendde_padding.py) | Averaging and masking implementation |
-| [Test notes](../tests/README.md) | Checkpoint-free regression checks |
-| [Presentation figure](figures/p17_optimization_slide.pdf) | Conceptual model/search flow, not evidence of validation |
+| [Cluster launcher](../../examples/run_p17_pose_experiment_cluster.sh) | Single entry point: preflight, patches, caches, then the gated run at the validated settings |
+| [Pose geometry tests](../../tests/test_pose_rmsd_geometry.py) | CPU orientation/shape separation and Kabsch alignment-derivative checks |
+| [Pose experiment](../../examples/p17_pose_experiment.py) | Stage barriers, bounded GPU workers and comparison summaries |
+| [Forward review](../../results/forward_p17_review_20261003/REVIEW.md) | Independent verification of the post-fix forward controls |
+| [Default forward launcher](../../examples/run_p17_forward_validation.sh) | Fixed-input JN.1 validation with geometry/mapping exit checks |
+| [Numerical launcher](../../examples/run_p17_numerical_validation.sh) | Underlying forward-only validation preset |
+| [WT validator](../../examples/p17_wt_validation.py) | Forward-path controls, artifact export and repeat comparisons |
+| [Structure audit](../../examples/p17_structure_audit.py) | Named-backbone mapping and geometry checks |
+| [Numerical helpers](../../src/mosaic/opendde_numerics.py) / [padding helpers](../../src/mosaic/opendde_padding.py) | Averaging and masking implementation |
+| [Test notes](../../tests/README.md) | Checkpoint-free regression checks |
+| [Presentation figure](../figures/p17_optimization_slide.pdf) | Conceptual model/search flow, not evidence of validation |

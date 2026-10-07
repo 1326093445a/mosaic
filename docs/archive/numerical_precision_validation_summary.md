@@ -23,8 +23,8 @@ The [project handoff](p17_status_and_next_steps.md) contains historical forward 
 
 ## 2. Why we investigated precision
 
-The original project concern was confidence and target-aligned binder pose RMSD
-for the same P17 binder against Alpha versus JN.1. Later audits found invalid
+The original project concern was confidence and target-aligned designed-chain pose RMSD
+for the same P17 designed chain against Alpha versus JN.1. Later audits found invalid
 backbone geometry in some full-model outputs, making numerical and structural
 validation necessary before interpreting those metrics. The
 [project objective and test rationale](p17_status_and_next_steps.md#objective-and-baseline-comparison)
@@ -48,9 +48,9 @@ An earlier code inspection also found that a wrapper-level FP32 setting could pr
 
 These were tightly bounded numerical fixtures, not realistic structure-quality or production-memory benchmarks.
 
-- The first archived toy backward batch completed its calls and produced finite, nonzero gradients. Its original numerical acceptance checks did not pass consistently. See the [first review](../results/opendde_toy_review/review.json).
-- The second audit separated numerical probes and collected **304 model calls**. Forward scalar repetitions were stable, while gradient repetitions and finite-difference comparisons still raised questions. See the [second review](../results/opendde_toy2_review/review.json).
-- Setup arrays differed across fresh CPU processes despite a fixed evaluation key. Controlling host-side setup randomness restored matching setup hashes, gradient arrays, observations, and finite-difference tables in the tested CPU runs. See the [fresh-process CPU comparison](../results/opendde_toy_cpu_repro_20261002_073822_787839/comparison.json).
+- The first archived toy backward batch completed its calls and produced finite, nonzero gradients. Its original numerical acceptance checks did not pass consistently. See the [first review](../../results/opendde_toy_review/review.json).
+- The second audit separated numerical probes and collected **304 model calls**. Forward scalar repetitions were stable, while gradient repetitions and finite-difference comparisons still raised questions. See the [second review](../../results/opendde_toy2_review/review.json).
+- Setup arrays differed across fresh CPU processes despite a fixed evaluation key. Controlling host-side setup randomness restored matching setup hashes, gradient arrays, observations, and finite-difference tables in the tested CPU runs. See the [fresh-process CPU comparison](../../results/opendde_toy_cpu_repro_20261002_073822_787839/comparison.json).
 - Restoring repeatability did **not** resolve the derivative-correctness question.
 
 The older finite-difference results must be read with the reporting limitations below. A lack of observed-range overlap is not, by itself, a failed derivative-correctness test.
@@ -68,7 +68,7 @@ The updated schema reports:
 - observed repeatability separately;
 - descriptive derivative gaps separately.
 
-The reporting change did not fix a derivative or change acceptance thresholds. The audit still has no independently justified full-model correctness criterion. See [the audit implementation](../examples/opendde_toy_numerical_audit.py) and [its regression tests](../tests/test_toy_numerical_audit.py).
+The reporting change did not fix a derivative or change acceptance thresholds. The audit still has no independently justified full-model correctness criterion. See [the audit implementation](../../examples/opendde_toy_numerical_audit.py) and [its regression tests](../../tests/test_toy_numerical_audit.py).
 
 ### 4.2 Observed-range overlap is not a correctness criterion
 
@@ -87,7 +87,7 @@ For a scalar BF16 round-trip at `x = 1` with perturbation `±0.001`, both JAX an
 | Autodiff derivative | 1 |
 | Central finite difference | 0 |
 
-Both perturbed values rounded to the same BF16 value. This demonstrates why the disagreement alone cannot diagnose a framework-specific backward defect. See [the scalar evidence](../results/generic_precision_check_20261002.json) and [the smooth-function comparison](../results/generic_audit_chain_check_20261002.json).
+Both perturbed values rounded to the same BF16 value. This demonstrates why the disagreement alone cannot diagnose a framework-specific backward defect. See [the scalar evidence](../../results/generic_precision_check_20261002.json) and [the smooth-function comparison](../../results/generic_audit_chain_check_20261002.json).
 
 ## 5. Independent synthetic attention experiment on CPU
 
@@ -110,7 +110,7 @@ The corrected CPU experiment passed **19 reference/finite-gradient checks** and 
 | Mixed BF16, eager JAX | 4.8e-8 |
 | Mixed BF16, compiled JAX | 3.09e-3, or 0.309% |
 
-An initial version of this new test accidentally promoted FP32 queries to FP64 through a NumPy scaling constant. That test bug was corrected with an explicitly typed constant and a dtype guard. The preliminary artifact is marked superseded; use the [corrected CPU results](../results/synthetic_attention_20261002_081413_799197/summary.json).
+An initial version of this new test accidentally promoted FP32 queries to FP64 through a NumPy scaling constant. That test bug was corrected with an explicitly typed constant and a dtype guard. The preliminary artifact is marked superseded; use the [corrected CPU results](../../results/synthetic_attention_20261002_081413_799197/summary.json).
 
 The mixed-BF16 protocol uses FP32 projections/scaling, selected BF16 boundaries/matrix multiplications, an explicitly FP32 softmax, and an FP32 final loss. It is not an “everything BF16” test or a reproduction of every model kernel.
 
@@ -137,11 +137,11 @@ On the original CPU fixture, relative input-gradient differences between compile
 | Output multiplication only | 0.015% |
 | Original mixed BF16 | 0.309% |
 
-A separate isolated matrix multiplication demonstrated a specific CPU mechanism: eager execution materialized BF16 product rounding, while the compiled BF16-matmul-to-FP32 expression returned the unrounded FP32 product in that example. The maximum output difference was `0.0004386753`. Saved compiler output and [the isolated result](../results/synthetic_attention_stages_20261002_082813_802222/isolated_matmul_rounding.json) support that observation.
+A separate isolated matrix multiplication demonstrated a specific CPU mechanism: eager execution materialized BF16 product rounding, while the compiled BF16-matmul-to-FP32 expression returned the unrounded FP32 product in that example. The maximum output difference was `0.0004386753`. Saved compiler output and [the isolated result](../../results/synthetic_attention_stages_20261002_082813_802222/isolated_matmul_rounding.json) support that observation.
 
 Exposing intermediate outputs and adding zero-valued probes changed some compiled results. The diagnostic therefore retains the original output-only calculation and measures the instrumentation effect. An apparent “first divergent stage” in an instrumented graph cannot automatically be assigned to the original graph.
 
-This CPU mechanism is not a universal statement about GPU execution or a proof of incorrect autodiff. See [the CPU stage report](../results/synthetic_attention_stages_20261002_082813_802222/summary.json).
+This CPU mechanism is not a universal statement about GPU execution or a proof of incorrect autodiff. See [the CPU stage report](../../results/synthetic_attention_stages_20261002_082813_802222/summary.json).
 
 ## 7. H200 synthetic cluster batch: verified evidence
 
@@ -223,7 +223,7 @@ Recorded JAX allocation high-water marks were approximately **128–130 MiB per 
 4. Finite-difference disagreement can arise from rounding and does not automatically identify a backward bug.
 5. Within-process repeatability was strong in this batch; exact fresh-process reproducibility was not universal.
 6. Cross-framework comparisons include a hardware difference because PyTorch ran on CPU.
-7. None of these findings certify full-model gradients, structure quality, affinity, or realistic memory requirements.
+7. None of these findings certify full-model gradients, structure quality, any measured property, or realistic memory requirements.
 
 The evidence does **not** establish that all-BF16 execution is the right solution, that JAX must be replaced, or that a precision setting which passes the synthetic checks is sufficient for an end-to-end model workflow.
 
@@ -240,7 +240,7 @@ The new launcher implements a **same-GPU, same-version fresh-process repeatabili
 
 A software-version comparison is a separate experiment; changing version and GPU assignment together would complicate attribution again. Keeping the current environment fixed for a diagnostic comparison does not turn an out-of-range dependency version into a supported configuration.
 
-**The original queue remains available. The new `--fixed-devices` option replicates fixtures onto each requested device and pins every fresh-process round to that device.** The new [end-to-end synthetic launcher](../examples/run_synthetic_end_to_end.sh) enables this mode and an independent artifact audit:
+**The original queue remains available. The new `--fixed-devices` option replicates fixtures onto each requested device and pins every fresh-process round to that device.** The new [end-to-end synthetic launcher](../../examples/run_synthetic_end_to_end.sh) enables this mode and an independent artifact audit:
 
 ```bash
 bash examples/run_synthetic_end_to_end.sh --devices 0,1,2,3,4,5,6,7
@@ -281,7 +281,7 @@ This check can characterize numerical variation. It cannot, by itself, finish fu
 
 ### 9.1 Corrected H200 suite: verified result
 
-Archive: `synthetic_end_to_end_20261002_220213_1118482.tar.gz`. The independent [review](../results/synthetic_end_to_end_review_20261002_220213/REVIEW.md) and [machine-readable evidence](../results/synthetic_end_to_end_review_20261002_220213/review.json) record these findings:
+Archive: `synthetic_end_to_end_20261002_220213_1118482.tar.gz`. The independent [review](../../results/synthetic_end_to_end_review_20261002_220213/REVIEW.md) and [machine-readable evidence](../../results/synthetic_end_to_end_review_20261002_220213/review.json) record these findings:
 
 - **360/360 workers completed** in approximately 15.3 minutes on eight H200 GPUs.
 - All **4,713 manifest-listed hashes** matched, with exact file coverage. All six archived synthetic source files match the local scripts. No archived code was executed.
@@ -300,15 +300,15 @@ Recorded software remained JAX/JAXLIB 0.11.0 and PyTorch 2.7.1+cpu; the prior de
 
 | Item | Purpose |
 |---|---|
-| [Synthetic attention numerics](../examples/synthetic_attention_numerics.py) | Independent analytic reference, CPU precision comparisons, finite-difference curves |
-| [Stage diagnostic](../examples/synthetic_attention_stages.py) | Stage precision variants, original/instrumented comparison, CPU/CUDA selection |
-| [Cluster shell launcher](../examples/run_synthetic_attention_cluster.sh) | Starts the bounded synthetic sweep |
-| [Cluster scheduler](../examples/synthetic_attention_cluster.py) | Preflight, eight-device scheduling, logs, tables, archive creation |
-| [Verified H200 review](../results/synthetic_attention_cluster_review_20261002_094433/review.json) | Integrity checks, raw-array recomputation, exact findings and limitations |
-| [H200 aggregate comparisons](../results/synthetic_attention_cluster_review_20261002_094433/comparison_summary.csv) | Maxima by precision policy and configuration, with worker identifiers |
-| [Independent reference comparison](../results/synthetic_attention_cluster_review_20261002_094433/independent_reference.csv) | Recomputed gradients and explicitly labeled instrumented outputs |
-| [CPU attention tests](../tests/test_synthetic_attention_numerics.py) | Componentwise check of the independent derivative |
-| [Runner tests](../tests/test_synthetic_attention_cluster.py) | Plans, backend policy, cleanup, and failure archives |
+| [Synthetic attention numerics](../../examples/synthetic_attention_numerics.py) | Independent analytic reference, CPU precision comparisons, finite-difference curves |
+| [Stage diagnostic](../../examples/synthetic_attention_stages.py) | Stage precision variants, original/instrumented comparison, CPU/CUDA selection |
+| [Cluster shell launcher](../../examples/run_synthetic_attention_cluster.sh) | Starts the bounded synthetic sweep |
+| [Cluster scheduler](../../examples/synthetic_attention_cluster.py) | Preflight, eight-device scheduling, logs, tables, archive creation |
+| [Verified H200 review](../../results/synthetic_attention_cluster_review_20261002_094433/review.json) | Integrity checks, raw-array recomputation, exact findings and limitations |
+| [H200 aggregate comparisons](../../results/synthetic_attention_cluster_review_20261002_094433/comparison_summary.csv) | Maxima by precision policy and configuration, with worker identifiers |
+| [Independent reference comparison](../../results/synthetic_attention_cluster_review_20261002_094433/independent_reference.csv) | Recomputed gradients and explicitly labeled instrumented outputs |
+| [CPU attention tests](../../tests/test_synthetic_attention_numerics.py) | Componentwise check of the independent derivative |
+| [Runner tests](../../tests/test_synthetic_attention_cluster.py) | Plans, backend policy, cleanup, and failure archives |
 
 The earlier CPU-reference backend update passed **16 focused tests**, lint, and a local CPU end-to-end check. See §9 for the later audit corrections and current validation. Those software checks are distinct from the 48-worker H200 experiment and its control outcomes.
 

@@ -2,15 +2,15 @@
 
 **Follow-up, 2026-09-22:** The latest user constraints, three-policy shortlist,
 Germinal discussion, evolutionary-search follow-up, and paper index
-are now in [the project handoff](P17_JN1.md#10-search-policy-handoff-for-claude--2026-09-22)
-and [its references](P17_JN1.md#813-sources). That handoff supersedes the
+are now in [the project handoff](../P17_JN1.md#10-search-policy-handoff-for-claude--2026-09-22)
+and [its references](../P17_JN1.md#813-sources). That handoff supersedes the
 initial priority ranking below. The current P17 MCMC implementation is an
 unfinished prototype, not a validated baseline. The first proposed comparison
-retains frozen OpenDDE + AbLang2 guidance, fixed framework/CDRs, and requires no
+retains frozen OpenDDE + AbLang2 guidance, fixed framework/designable regions, and requires no
 additional model training.
 
 The subsequent index includes 26 papers plus a pinned BindCraft2 implementation
-reference. [§12 of the handoff](P17_JN1.md#12-first-implementation-and-response-to-claude--2026-09-22)
+reference. [§12 of the handoff](../P17_JN1.md#12-first-implementation-and-response-to-claude--2026-09-22)
 records the first coded harness, review corrections, and CPU validation; real-model
 GPU validation remains pending.
 
@@ -28,7 +28,7 @@ The choice is larger than continuous hallucination versus beam search. It helps 
 4. **Evaluation allocation:** which proposals receive cheap scoring, expensive prediction, or repeated evaluation.
 5. **Feedback:** whether new evaluations update only an archive, the parent population, a surrogate, or a generative policy.
 
-These choices are composable. A population search can use gradient proposals and a Bayesian acquisition rule. A surrogate can predict an expensive computational score rather than an experimental measurement, but then its learned target remains computational confidence, not binding affinity.
+These choices are composable. A population search can use gradient proposals and a Bayesian acquisition rule. A surrogate can predict an expensive computational score rather than an experimental measurement, but then its learned target remains computational confidence, not a measured property.
 
 My revised interpretation is that search and objective quality should be studied together. Existing results can reveal proxy failures, while controlled search comparisons reveal whether the current policy explores too narrowly. Neither question must be completely resolved before investigating the other.
 
@@ -36,7 +36,7 @@ My revised interpretation is that search and objective quality should be studied
 
 | Work | Search mechanism and evidence | Relevance and limitation for this project |
 |---|---|---|
-| [LaMBO-2 / NOS, NeurIPS 2023](https://proceedings.neurips.cc/paper_files/paper/2023/file/29591f355702c3f4436991335784b503-Paper-Conference.pdf) | Guided discrete diffusion with Bayesian optimization, edit constraints, and saliency-based position selection; includes experimental antibody optimization. | One of the closest problem matches. Its low-edit ablation finds position selection particularly consequential. It uses learned property models and experimental feedback, so its performance cannot be assumed with OpenDDE scores substituted. |
+| [LaMBO-2 / NOS, NeurIPS 2023](https://proceedings.neurips.cc/paper_files/paper/2023/file/29591f355702c3f4436991335784b503-Paper-Conference.pdf) | Guided discrete diffusion with Bayesian optimization, edit constraints, and saliency-based position selection; includes experimental sequence optimization. | One of the closest problem matches. Its low-edit ablation finds position selection particularly consequential. It uses learned property models and experimental feedback, so its performance cannot be assumed with OpenDDE scores substituted. |
 | [PEX, ICML 2022](https://proceedings.mlr.press/v162/ren22a/ren22a.pdf) | Proximal exploration trades predicted fitness against distance from the starting sequence and explores near the resulting frontier. Benchmarked on measured protein landscapes. | Directly addresses improvement with few mutations. Its learned fitness models differ from this project's structural oracle. A hard mutation cap alone does not reproduce its exploration policy. |
 | [Plug & Play Directed Evolution / EvoProtGrad, 2023](https://arxiv.org/pdf/2212.09925) | Gradient-informed discrete MCMC composes functional predictors and sequence priors as a product of experts; evaluates multistep proposals with forward/reverse probabilities. | Closest algorithmic relative of the existing discrete search. The paper discusses, but does not demonstrate, additional hard edit and region constraints. Adapting constrained proposals still requires care. |
 | [AdaLead, 2020](https://arxiv.org/pdf/2010.02141) | Adaptive evolutionary search retains promising parents and uses mutation/recombination rollouts. Its FLEXS comparisons show simple search can be a strong baseline. | A useful population baseline before attributing gains to elaborate search machinery. It is not equivalent to retaining the top sequences in a beam. |
@@ -57,10 +57,10 @@ These papers suggest three distinct questions for P17: whether good combinations
 | [Fast SeqProp, 2020 manuscript](https://arxiv.org/abs/2005.11275) | Differentiable optimization through discrete samples addresses limitations of continuous sequence relaxation. | Relevant to the soft-to-discrete transition; the abstract alone does not establish superiority to APGM here. Abstract-level review. |
 | [Language-model-guided antibody evolution, 2023](https://www.nature.com/articles/s41587-023-01763-2) | Experimentally tests proposals based on evolutionary plausibility, without target-specific input to the language model. | Supports language-model proposals as a meaningful baseline, not a guarantee of target-specific improvement. |
 | [EVOLVEpro, Science 2025](https://doi.org/10.1126/science.adr6006) | Combines protein-language-model representations with few-shot active learning and experimental feedback. | Relevant when measured functional data are available; labels derived from structural confidence would define a different task. Publisher abstract-level review; full text was not accessible in this pass. |
-| [BindCraft, Nature 2025](https://www.nature.com/articles/s41586-025-09429-6) | Structure-predictor backpropagation plus sequence refinement and filtering; experimentally validated de novo binders. | Useful continuous/discrete refinement precedent, but its complete pipeline and published success rates do not transfer to an optimizer function with a fixed scaffold and strict edit cap. |
-| [EasyNano, June 2026 preprint](https://arxiv.org/html/2606.12772v1) | CDR-restricted distogram optimization with epitope and structural-pose objectives. | Closest structural-objective match; explicitly reports proxy/full-model divergence, dependence on initial pose, and absence of experimental validation. |
+| [BindCraft, Nature 2025](https://www.nature.com/articles/s41586-025-09429-6) | Structure-predictor backpropagation plus sequence refinement and filtering; experimentally validated de novo designed chains. | Useful continuous/discrete refinement precedent, but its complete pipeline and published success rates do not transfer to an optimizer function with a fixed scaffold and strict edit cap. |
+| [EasyNano, June 2026 preprint](https://arxiv.org/html/2606.12772v1) | designable-restricted distogram optimization with specified site and structural-pose objectives. | Closest structural-objective match; explicitly reports proxy/full-model divergence, dependence on initial pose, and absence of experimental validation. |
 | [Proteina-Complexa, ICLR 2026](https://arxiv.org/html/2603.27950v1) | Compares best-of-N, beam search, Feynman–Kac steering, MCTS, and generative-plus-hallucination refinement under compute budgets. | Its structured search operates on generative denoising trajectories. It supports evaluating search policies, not assuming mutation-space beam search inherits its advantage. |
-| [RosettaSearch, 2026 preprint](https://arxiv.org/abs/2604.17175) | LLM-assisted multi-objective inference-time search for backbone-conditioned sequence design, evaluated computationally. | Shows another search representation; not evidence for constrained antibody binding recovery. Abstract-level review. |
+| [RosettaSearch, 2026 preprint](https://arxiv.org/abs/2604.17175) | LLM-assisted multi-objective inference-time search for backbone-conditioned sequence design, evaluated computationally. | Shows another search representation; not evidence for constrained interface formation recovery. Abstract-level review. |
 | [Why risk matters for protein binder design, 2025 workshop paper](https://arxiv.org/html/2504.00146v1) | Compares BO model configurations using campaign performance, cost, and downside-risk metrics. | Concerns variation in optimization campaigns, not repeated structure-prediction seeds for one candidate. |
 
 RL-style approaches and GFlowNets learn proposal policies; BO learns an objective surrogate and chooses evaluations. These are different ways of using previous evaluations. Neither removes the need for a useful reward or trustworthy labels. For this project, their training costs and data requirements matter as much as their expressivity.
@@ -69,7 +69,7 @@ RL-style approaches and GFlowNets learn proposal policies; BO learns an objectiv
 
 **The BO-EVO numbers exist, but their scope is narrower than stated.** The paper reports an 11% and 21% increase in round-five success ratio against its MCMC and AdaLead baselines, respectively. This is a specific benchmark result, not an expected improvement over mosaic's current policy. The paper's AdaLead baseline should be named rather than described only as generic pure evolution. [BO-EVO](https://academic.oup.com/bib/article/24/1/bbac570/6958505)
 
-**The risk paper does not validate the proposed seed-variance ranking.** It examines optimization-campaign risk and reports no added benefit from risk-aware model ranking in its tested setting because optimization stochasticity obscures it. Its findings can motivate careful repeated benchmarking, but cannot be cited as proof that low variance across structural seeds identifies better binders. [Risk paper](https://arxiv.org/html/2504.00146v1)
+**The risk paper does not validate the proposed seed-variance ranking.** It examines optimization-campaign risk and reports no added benefit from risk-aware model ranking in its tested setting because optimization stochasticity obscures it. Its findings can motivate careful repeated benchmarking, but cannot be cited as proof that low variance across structural seeds identifies better designed chains. [Risk paper](https://arxiv.org/html/2504.00146v1)
 
 **EasyNano is methodological precedent, not biological validation.** It explicitly acknowledges that distogram improvement may diverge from full-model confidence, especially for poor initial poses, and that designed sequences have not been experimentally validated. The inspected version also contains a placeholder repository URL and an unresolved archive DOI. That limits reproducibility from the paper's links. [EasyNano, Discussion and Code availability](https://arxiv.org/html/2606.12772v1)
 

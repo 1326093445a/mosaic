@@ -4,7 +4,7 @@ Why this exists. BindCraft and Germinal both anneal the *sequence
 parameterisation* -- logits, then soft, then straight-through, then one-hot --
 rather than jumping straight to discrete moves, and the research review found
 that this, not geometric loss weights, is what AF-design pipelines actually
-schedule (research_notes/Epitope targeting in binder design/README.md). The
+schedule (docs/literature_review/README.md). The
 confidence-search harness does discrete single substitutions from a fixed
 start and has no continuous phase at all. `src/mosaic/optimizers.py` has
 carried `bindcraft_design` and `colabdesign_stage` since before this project
@@ -38,7 +38,7 @@ sys.path.insert(0, str(REPO / "examples"))
 METHODS = ("apgm", "bindcraft", "colabdesign")
 
 
-def project_to_budget(relaxed_logits, parent_tokens, designable_idx, budget):
+def project_to_budget(relaxed, parent_tokens, designable_idx, budget):
     """Keep the `budget` designable substitutions the optimizer wanted most.
 
     Ranks candidate positions by the relaxed objective's own margin -- the
@@ -47,7 +47,7 @@ def project_to_budget(relaxed_logits, parent_tokens, designable_idx, budget):
     pushed hardest for, not an arbitrary subset. Returns tokens plus the
     per-position margins, since the ranking is the part worth auditing.
     """
-    relaxed = np.asarray(relaxed_logits)
+    relaxed = np.asarray(relaxed)
     preferred = relaxed.argmax(-1)
     margins = []
     for pos in designable_idx:
@@ -130,28 +130,49 @@ def main(argv=None):
 
     print(f"Running {args.method} over {n_designable} designable positions...",
           flush=True)
+    # The three optimizers have DIFFERENT return arities, which is a real trap:
+    # without a `trajectory_fn`, `bindcraft_design` and `colabdesign_stage`
+    # return a bare (N, 20) array while `simplex_APGM` returns
+    # (x, best_x). Unpacking a bare array as a 2-tuple raises "too many values
+    # to unpack", which is how the bc_ cells failed on 2026-10-06 after
+    # completing all 125 optimization steps. All of them are in probability
+    # space, not logits, so the margins below are probability differences.
+    def first_array(result):
+        """The relaxed sequence, whatever shape the optimizer wrapped it in."""
+        if isinstance(result, tuple):
+            return result[0]
+        return result
+
     if args.method == "bindcraft":
-        logits, _ = bindcraft_design(
+        relaxed = first_array(bindcraft_design(
             loss_function=variable_only_loss, x=x0, lr=args.lr, key=run_key,
-        )
+        ))
     elif args.method == "colabdesign":
-        logits, _ = colabdesign_stage(
+        relaxed = first_array(colabdesign_stage(
             loss_function=variable_only_loss, x=x0,
             n_steps=args.steps or 120, soft_start=0.0, soft_end=1.0,
             temp_start=1.0, temp_end=0.01, hard=False, lr=args.lr, key=run_key,
-        )
+        ))
     else:
-        logits, _ = simplex_APGM(
+        relaxed = first_array(simplex_APGM(
             loss_function=variable_only_loss,
             x=jax.nn.softmax(x0, -1), n_steps=args.steps or 200,
             stepsize=APGM_STEPSIZE, momentum=APGM_MOMENTUM, scale=APGM_SCALE,
             key=run_key,
+        ))
+    relaxed = np.asarray(relaxed)
+    if relaxed.shape != (n_designable, 20):
+        raise ValueError(
+            f"{args.method} returned shape {relaxed.shape}, expected "
+            f"({n_designable}, 20); the return convention may have changed"
         )
 
     # Scatter the designable-only result back into full-length logits.
-    full = np.full((len(parent), 20), -1e4, dtype=np.float32)
-    full[np.arange(len(parent)), parent] = 0.0
-    full[designable_idx] = np.asarray(logits)
+    # Non-designable rows are pinned to the parent residue, so argmax there
+    # can only return the parent whatever scale the optimizer used.
+    full = np.zeros((len(parent), 20), dtype=np.float32)
+    full[np.arange(len(parent)), parent] = 1.0
+    full[designable_idx] = np.asarray(relaxed)
 
     tokens, margins, kept = project_to_budget(full, parent, designable_idx,
                                               args.edit_budget)

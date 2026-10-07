@@ -1,4 +1,4 @@
-# Site-restricted and epitope-restricted interface confidence metrics
+# Site-restricted and site-restricted interface confidence metrics
 
 Scope note: all source code quoted below was read directly from the upstream repositories during this
 session (2026-10-05). Where a fact comes from a paper abstract or a search-engine summary rather than
@@ -14,7 +14,7 @@ ipSAE is a per-residue, PAE-cutoff-masked, d0-renormalised pTM over cross-chain 
 by **max over the aligned residue index** and then **max over the two chain directions**. The published
 implementation (`ipsae.py`, v4, 3 Jan 2026) takes exactly four positional arguments and has **no option
 to restrict scoring to a specified residue subset** — but the subset hook is a single boolean matrix
-(`valid_pairs_matrix`) and is trivial to intersect with an epitope mask.
+(`valid_pairs_matrix`) and is trivial to intersect with a specified site mask.
 
 ### Cited Findings
 
@@ -50,7 +50,7 @@ to restrict scoring to a specified residue subset** — but the subset hook is a
   **There is no `min` variant in the published implementation** (see Inferences).
 - The CLI is strictly four positional arguments — `pae_file_path = sys.argv[1]; pdb_path = sys.argv[2];
   pae_cutoff = float(sys.argv[3]); dist_cutoff = float(sys.argv[4])`, guarded by `if len(sys.argv) < 5`.
-  No `argparse`, no chain-selection flag, no residue-list flag, no epitope file —
+  No `argparse`, no chain-selection flag, no residue-list flag, no specified site file —
   [ipsae.py L38-59](https://raw.githubusercontent.com/DunbrackLab/IPSAE/main/ipsae.py)
 - README examples use PAE cutoffs of both 15 (AF2) and 10 (AF3, Boltz); the script does not hard-code a
   recommendation — [IPSAE README L12-23](https://raw.githubusercontent.com/DunbrackLab/IPSAE/main/README.md)
@@ -77,24 +77,24 @@ to restrict scoring to a specified residue subset** — but the subset hook is a
 
 - **ipSAE is max-pooled twice and is therefore structurally the worst possible site-agnostic metric.**
   `asym` takes `argmax` over *all* chain1 residues; `max` then takes the better of the two directions.
-  A binder that forms one confident contact patch anywhere on the target saturates the score. This is the
+  A designed chain that forms one confident contact patch anywhere on the target saturates the score. This is the
   exact mechanism behind the reported failure mode (0.77 vs a true-complex 0.795 while docked 14-27 Å away),
-  and it also explains why a permuted-epitope negative control can score *higher* than the real target:
+  and it also explains why a permuted-specified site negative control can score *higher* than the real target:
   nothing in the formula references the intended site.
 - The project description says "minimum over the two chain directions". That is **not** what `ipsae.py`
   does — it takes the maximum. Taking the min is a stricter, defensible modification (it requires both
   directions to be confident), but it is a local variant and should not be cited as "ipSAE" without
   qualification. Worth double-checking which the project's code actually computes.
-- **Restricting ipSAE to an epitope is a one-line change.** Replace
+- **Restricting ipSAE to a specified site is a one-line change.** Replace
   `valid_pairs_matrix = np.outer(chains==chain1, chains==chain2) & (pae_matrix < pae_cutoff)`
-  with `... & epitope_col_mask[None, :]` (and, if the binder side should also be constrained,
+  with `... & epitope_col_mask[None, :]` (and, if the designed chain side should also be constrained,
   `& binder_row_mask[:, None]`). Everything downstream — `n0res`, `d0res`, the per-residue mean, the asym
-  and max aggregations — then operates only over (binder residue, epitope residue) pairs. Call the result
+  and max aggregations — then operates only over (designed-chain residue, specified-site residue) pairs. Call the result
   `ipSAE@epitope`. Note that this also shrinks `n0res`, hence shrinks `d0res`, hence makes the score
-  *harsher* (smaller d0 means the PAE must be lower to score the same) — so an epitope-restricted ipSAE
+  *harsher* (smaller d0 means the PAE must be lower to score the same) — so a site-restricted ipSAE
   is not directly comparable in absolute value to the unrestricted one and needs its own reference scale.
-- A cheap complementary guard: replace the `max_i` with a sum/mean over epitope residues, or require a
-  minimum `n0res` within the epitope, so a single lucky residue cannot carry the score.
+- A cheap complementary guard: replace the `max_i` with a sum/mean over specified-site residues, or require a
+  minimum `n0res` within the specified site, so a single lucky residue cannot carry the score.
 
 ### Gaps
 
@@ -103,7 +103,7 @@ to restrict scoring to a specified residue subset** — but the subset hook is a
   table showing `n0chn=1571, n0dom=553, n0res=290`). I did **not** resolve the paper's own equation
   numbering; the source-code definitions above should be treated as authoritative and the PDF extraction
   as unreliable.
-- I found no published ipSAE variant, fork, or issue thread that adds epitope/residue-subset restriction.
+- I found no published ipSAE variant, fork, or issue thread that adds specified site/residue-subset restriction.
   If one exists it is not discoverable by the searches run here.
 
 ---
@@ -116,7 +116,7 @@ ipTM is already a *max over aligned-residue index i* of a weighted average over 
 and the AlphaFold implementation exposes both a 1-D `residue_weights` vector and (in the ColabFold fork)
 a full 2-D `pair_residue_weights` matrix. **actifpTM is exactly a residue-subset-restricted ipTM** — it
 restricts the residue set to the predicted contact interface. The published code therefore already
-contains the machinery to restrict ipTM to an *arbitrary user-specified* epitope; only the residue-set
+contains the machinery to restrict ipTM to an *arbitrary user-specified* specified site; only the residue-set
 selection step would need changing.
 
 ### Cited Findings
@@ -158,7 +158,7 @@ selection step would need changing.
 - `get_pairwise_iptm(result, asym_id, start_i, end_i, start_j, end_j)` — "This will calculate ipTM as
   usual, just between given chains" — sets `seq_mask = 1` on the two chains' index ranges only. This is a
   **ready-made residue-range-restricted ipTM**, currently driven by chain boundaries
-  (`get_chain_indices(asym_id)`) rather than by a user epitope list —
+  (`get_chain_indices(asym_id)`) rather than by a user specified site list —
   [extra_ptm.py L206-221, L29-39](https://raw.githubusercontent.com/sokrypton/ColabFold/main/colabfold/alphafold/extra_ptm.py)
 - Activation in ColabFold: `calc_extra_ptm: bool = False` flag; `extra_ptm.get_chain_and_interface_metrics(result, input_features['asym_id'], ...)`;
   outputs `result['actifptm']`, `pairwise_actifptm`, `pairwise_iptm`, `per_chain_ptm`, plus a pairwise plot
@@ -181,11 +181,11 @@ selection step would need changing.
 
 - **actifpTM is the closest published template for what the project needs**, and the gap is one function
   call wide. `get_actifptm_contacts` picks the residue subset from `cmap >= 0.6`; swapping that for a
-  user-supplied epitope index list (and keeping the binder's own residues in `seq_mask`) yields
-  **"epitope-restricted ipTM"** directly, with zero new maths. Equivalently, use the probability-weighted
-  path and set `pair_residue_weights = cmap ⊙ (binder_mask ⊗ epitope_mask)` so only binder↔epitope pairs
+  user-supplied site index list (and keeping the designed chain's own residues in `seq_mask`) yields
+  **"site-restricted ipTM"** directly, with zero new maths. Equivalently, use the probability-weighted
+  path and set `pair_residue_weights = cmap ⊙ (binder_mask ⊗ epitope_mask)` so only designed chain↔specified site pairs
   carry weight.
-- Because `d0` is derived from the *full* array length rather than the subset, an epitope-restricted ipTM
+- Because `d0` is derived from the *full* array length rather than the subset, a site-restricted ipTM
   built this way keeps the same d0 as the unrestricted ipTM, so values stay on a comparable scale — the
   opposite of the ipSAE case. This is an advantage for interpretability: `actifpTM@epitope` can be compared
   against the unrestricted `actifpTM` for the same complex, and their ratio is a clean "is the confident
@@ -205,7 +205,7 @@ selection step would need changing.
   `get_chain_and_interface_metrics` tail (lines beyond 290 were not read). `get_per_chain_ptm` uses
   `.max()`, and stock ipTM uses max, so max is the strong presumption — but this should be verified
   before relying on it.
-- No published "epitope-restricted ipTM" / "site-specific ipTM" metric was found under any of the search
+- No published "site-restricted ipTM" / "site-specific ipTM" metric was found under any of the search
   terms tried. This appears to be a genuine gap in the literature as of 2026.
 
 ---
@@ -214,11 +214,11 @@ selection step would need changing.
 
 ### Takeaway
 
-i_pAE is a plain masked mean of the interface PAE block divided by 31; it is restrictable to an epitope by
+i_pAE is a plain masked mean of the interface PAE block divided by 31; it is restrictable to a specified site by
 construction (the mask is an outer product of two residue-weight vectors) and is differentiable. **i_pDAE
 is the single most important finding here: it is ipSAE with the `PAE < cutoff` mask replaced by a
 geometric `CA-CA ≤ 8 Å` contact mask**, implemented as a plain boolean matrix — so intersecting it with an
-epitope column mask gives an epitope-restricted, ipSAE-grade score in one line.
+specified site column mask gives a site-restricted, ipSAE-grade score in one line.
 
 ### Cited Findings
 
@@ -261,7 +261,7 @@ epitope column mask gives an epitope-restricted, ipSAE-grade score in one line.
   residue has no contacts —
   [BindCraft2 filters.py L143-162](https://raw.githubusercontent.com/PacesaLab/BindCraft2/main/bindcraft/filters.py)
 - `Interface_Residues` is reported as a metric: `binder_assembly_contact_masks(..., cutoff=4.0)` returns
-  per-residue boolean contact masks for **both** binder and target, and the metric is the binder-side count
+  per-residue boolean contact masks for **both** designed chain and target, and the metric is the designed chain-side count
   — [BindCraft2 filters.py L101-116](https://raw.githubusercontent.com/PacesaLab/BindCraft2/main/bindcraft/filters.py)
 - Reported BindCraft2 defaults, from search summary of the BindCraft2 docs (not verified against the
   primary file, which 404'd at the `docs/reference.md` path): "i_pDAE is a distance-masked interface
@@ -272,23 +272,23 @@ epitope column mask gives an epitope-restricted, ipSAE-grade score in one line.
 
 ### Inferences
 
-- **i_pDAE is the best off-the-shelf starting point for an epitope-restricted score**, better than ipSAE,
+- **i_pDAE is the best off-the-shelf starting point for a site-restricted score**, better than ipSAE,
   for three reasons: (1) the mask is geometric (`CA-CA ≤ 8 Å`) rather than confidence-based, so it cannot
   be satisfied by confident-but-distant pairs; (2) the mask is an explicit boolean matrix passed as an
   argument, so `contact & epitope_mask[None, :]` is a legitimate one-line restriction; (3) a per-residue
-  track already exists, so per-epitope-residue reporting is free.
-- Restricting i_pDAE: pass `contact_restricted = contact & epitope_mask[None, :]` in the binder→target
+  track already exists, so per-specified site-residue reporting is free.
+- Restricting i_pDAE: pass `contact_restricted = contact & epitope_mask[None, :]` in the designed chain→target
   direction (and `& epitope_mask[:, None]` in the transposed direction). Because `partner_counts` then
-  counts only epitope partners, `d0` shrinks and the score hardens — same caveat as for ipSAE. If a
+  counts only specified site partners, `d0` shrinks and the score hardens — same caveat as for ipSAE. If a
   stable scale matters, freeze `partner_counts` at the unrestricted value and only restrict the summation.
 - **The `max` in i_pDAE has the same site-agnosticism failure as ipSAE.** `anchored_interface_tm_scores(...).max()`
-  over both directions means one good residue suffices. For epitope targeting, replace with a mean (or a
-  soft-max at low temperature) over the epitope residues, and additionally require a minimum number of
-  epitope residues in contact.
+  over both directions means one good residue suffices. For site targeting, replace with a mean (or a
+  soft-max at low temperature) over the specified-site residues, and additionally require a minimum number of
+  specified-site residues in contact.
 - i_pAE's hard `/31.0` is just the PAE head's max bin, used to map PAE into [0,1]; it carries no
   site information and should not be expected to discriminate sites.
 - A useful composite the code already supports: report `i_pDAE@epitope / i_pDAE` as a *site fidelity ratio*.
-  Near 1 means the confident interface is the intended one; near 0 means the binder found a different patch.
+  Near 1 means the confident interface is the intended one; near 0 means the designed chain found a different patch.
 
 ### Gaps
 
@@ -300,14 +300,14 @@ epitope column mask gives an epitope-restricted, ipSAE-grade score in one line.
 
 ---
 
-## Q4. LIS, pDockQ, pDockQ2, DockQ — restrictability to a specified epitope
+## Q4. LIS, pDockQ, pDockQ2, DockQ — restrictability to a specified specified site
 
 ### Takeaway
 
 pDockQ2 and LIS are both plain masked averages over an interface block and are therefore naturally
-restrictable to an epitope sub-block; pDockQ is restrictable in principle but its fitted sigmoid breaks
+restrictable to a specified site sub-block; pDockQ is restrictable in principle but its fitted sigmoid breaks
 down because the contact count enters logarithmically. DockQ cannot be restricted to a user-specified
-epitope in any useful way for design, because it requires a reference complex — Fnat is already a
+specified site in any useful way for design, because it requires a reference complex — Fnat is already a
 *native-interface* recall, not an *arbitrary-site* recall.
 
 ### Cited Findings
@@ -351,26 +351,26 @@ epitope in any useful way for design, because it requires a reference complex �
   1. **LIS** — trivially restrictable. The mask is `(chains[:,None]==chain1) & (chains[None,:]==chain2)`;
      AND with `epitope_mask[None,:]`. The score is a mean over survivors with no length-dependent
      normalisation at all, so the restricted value stays on the same 0-1 scale and is directly comparable
-     to the unrestricted one. For a quick, interpretable "LIS@epitope" this is the lowest-effort option in
+     to the unrestricted one. For a quick, interpretable "LIS@specified site" this is the lowest-effort option in
      the whole set.
   2. **pDockQ2** — restrictable, and "naturally restrictable" is correct: it is already per-interface-pair,
      `d0` is a fixed 10 Å (so no length renormalisation artefact), and both factors (`mean_ptm` over
      interface PAEs, `mean_plddt` over interface residues) are plain averages over an index set. Restrict
-     by taking `pae_list` over binder×epitope pairs only and `mean_plddt` over the epitope residues in
+     by taking `pae_list` over designed chain×specified site pairs only and `mean_plddt` over the specified-site residues in
      contact. Caveat: the logistic constants (1.31, -0.075, 84.733, 0.005) were fitted on *whole*
      interfaces, so a restricted pDockQ2 is no longer calibrated to DockQ and should be used as a rank
      statistic, not as a probability.
   3. **pDockQ** — restrictable but ill-advised. `x = mean_plddt * log10(npairs)` makes the score grow with
-     interface size; restricting to an epitope shrinks `npairs` and drags `x` down mechanically,
+     interface size; restricting to a specified site shrinks `npairs` and drags `x` down mechanically,
      confounding "wrong site" with "small site". It also uses no PAE at all, which is why pDockQ2 exists.
   4. **DockQ** — not restrictable in a design-relevant way. It needs a reference complex; `Fnat` is
-     defined against the *native* contact set. For de novo or redesigned binders against a specified
-     epitope with no experimental complex, DockQ is simply unavailable. Its `--mapping` is chain-level.
+     defined against the *native* contact set. For de novo or redesigned designed chains against a specified
+     specified site with no experimental complex, DockQ is simply unavailable. Its `--mapping` is chain-level.
 - The right way to borrow from DockQ is to borrow **Fnat's shape, not DockQ itself**: define
   `Fnat_epitope = |predicted contacts ∩ (binder × epitope)| / |binder × epitope contacts possible|`, or
-  more usefully the epitope-recall form in Q5.
+  more usefully the specified site-recall form in Q5.
 - Because LIS, pDockQ2 and i_pDAE all restrict cleanly while ipSAE and ipTM carry normalisation artefacts,
-  a pragmatic recommendation is: use **LIS@epitope** or **i_pDAE@epitope** as the restricted confidence
+  a pragmatic recommendation is: use **LIS@specified site** or **i_pDAE@specified site** as the restricted confidence
   term, and keep unrestricted ipSAE as a sanity check that *some* confident interface exists at all.
 
 ### Gaps
@@ -381,15 +381,15 @@ epitope in any useful way for design, because it requires a reference complex �
 
 ---
 
-## Q5. Epitope-specific / site-specific scoring in antibody-antigen prediction benchmarks
+## Q5. Specified site-specific / site-specific scoring in antibody-antigen prediction benchmarks
 
 ### Takeaway
 
 Benchmarks do report site-agreement measures, but they are **structure-comparison** measures (DockQ,
-epitope shift, antibody displacement) or **classification** measures (epitope precision/recall/F1 over
+specified site shift, antibody displacement) or **classification** measures (specified site precision/recall/F1 over
 antigen surface residues) — not confidence metrics. No benchmark in 2024-2026 that I found defines an
-epitope-restricted *confidence* score. The closest named quantities are "epitope recall / EpiRec",
-"epitope shift", and the interface-residue precision/recall/MCC family from AsEP.
+site-restricted *confidence* score. The closest named quantities are "specified site recall / EpiRec",
+"specified site shift", and the interface-residue precision/recall/MCC family from AsEP.
 
 ### Cited Findings
 
@@ -398,8 +398,8 @@ epitope-restricted *confidence* score. The closest named quantities are "epitope
   "Predicted Aligned Error and Interface Predicted Template Modeling score"; "maximum recall of 53% at 100
   inference seeds"; "an innate false positive rate of approximately 3%"; AF3 "hallucinate[s] plausible
   binding interfaces across the surface of decoy targets while avoiding disordered regions"; site
-  correctness assessed with **"DockQ, epitope shift, and antibody displacement"**; and "approximately 34%
-  of false negatives retained correct epitope location despite poor structural alignment" —
+  correctness assessed with **"DockQ, specified site shift, and antibody displacement"**; and "approximately 34%
+  of false negatives retained correct specified site location despite poor structural alignment" —
   [bioRxiv 2026.07.30.741792](https://www.biorxiv.org/content/10.64898/2026.07.30.741792v1);
   [PubMed 42620036](https://pubmed.ncbi.nlm.nih.gov/42620036/)
 - **AsEP** (NeurIPS 2024 Datasets & Benchmarks) curates 1723 non-redundant antibody-antigen complexes and
@@ -409,8 +409,8 @@ epitope-restricted *confidence* score. The closest named quantities are "epitope
 - Illustrative precision/recall trade-off on AsEP: WALLE at 0.926 recall / 0.114 precision vs EpiFormer at
   0.720 recall / 0.363 precision — [search summary of EpiFormer, arXiv:2606.04154](https://arxiv.org/pdf/2606.04154)
   (**numbers taken from a search-result summary, not verified against the primary table**)
-- **CHIMERA-Bench: "A Benchmark Dataset for Epitope-Specific Antibody Design"** defines
-  **Epitope Recall (EpiRec)** as "the fraction of true epitope residues that the design contacts" —
+- **CHIMERA-Bench: "A Benchmark Dataset for Specified site-Specific Antibody Design"** defines
+  **Specified site Recall (EpiRec)** as "the fraction of true specified-site residues that the design contacts" —
   [arXiv:2603.13431](https://arxiv.org/pdf/2603.13431) (**definition from a search-result summary; the
   primary PDF was not read**)
 - DockQ's own documentation names `fnat` as "Fraction of retrieved native contacts (same as Recall or
@@ -419,24 +419,24 @@ epitope-restricted *confidence* score. The closest named quantities are "epitope
 - A 2025 AlphaFold/TCR-antibody benchmarking review exists and is the right place to look for
   consolidated site-agreement definitions — [PMC13370930](https://pmc.ncbi.nlm.nih.gov/articles/PMC13370930/)
   (**listed as a lead; not read in this session**)
-- In binder design practice, the site is specified on the *input* side rather than scored on the output
+- In sequence optimization practice, the site is specified on the *input* side rather than scored on the output
   side. BindCraft1: `af_model.prep_inputs(..., hotspot=target_hotspot_residues, ...)` —
   [BindCraft colabdesign_utils.py L36](https://raw.githubusercontent.com/martinpacesa/BindCraft/main/functions/colabdesign_utils.py).
   BindCraft2 README: `"hotspots": "54,56,66-70"` "using residue numbers from your structure"; chain-prefixed
-  hotspots `"A54,B12-16"`; `coldspots` to "Keep a target region free"; and `--forced-targeting` /
-  `"forced_targeting": true` for a "**Focused epitope** — concentrate binding on named hotspots", with
+  anchor residues `"A54,B12-16"`; `coldspots` to "Keep a target region free"; and `--forced-targeting` /
+  `"forced_targeting": true` for a "**Focused specified site** — concentrate binding on named anchor residues", with
   "the method and acceptance criteria" documented under "targeting options" —
   [BindCraft2 README L65, L134-155](https://raw.githubusercontent.com/PacesaLab/BindCraft2/main/README.md)
 - BindCraft2's forced-targeting mechanism is structural, not metric-based: `bindcraft/epitope_targeting.py`
   defines `epitope_residues(atoms, atom_mask, hotspot_residues, epitope_cutoff)` as all residues whose
-  minimum atom-atom distance to any hotspot atom is `<= epitope_cutoff`, then `lysinate_target()` mutates
-  every surface-exposed residue **outside** that epitope to lysine
+  minimum atom-atom distance to any anchor residue atom is `<= epitope_cutoff`, then `lysinate_target()` mutates
+  every surface-exposed residue **outside** that specified site to lysine
   (`lysinated_residues = surface_exposed_residues(...) & ~epitope_residue_mask & (sequence != K)`), raising
   `ValueError('Epitope-focused design needs target hotspots to define the region kept at wild type')` if no
-  hotspots are set, and logging
+  anchor residues are set, and logging
   `f'forced targeting epitope={...} lysinated={...} residues={...}'` —
   [BindCraft2 epitope_targeting.py L21-83](https://raw.githubusercontent.com/PacesaLab/BindCraft2/main/bindcraft/epitope_targeting.py)
-- Hotspot specification is standard across pipelines: "Hotspots are residues that should be targeted on the
+- Anchor residue specification is standard across pipelines: "Anchor residues are residues that should be targeted on the
   target protein and can be defined according to residue numbering, either individually or as residue
   ranges, or left empty to let the pipeline determine an optimal binding site" —
   [BindCraft wiki](https://github.com/martinpacesa/BindCraft/wiki/De-novo-binder-design-with-BindCraft)
@@ -444,21 +444,21 @@ epitope-restricted *confidence* score. The closest named quantities are "epitope
 ### Inferences
 
 - The field's answer to "did it bind the right site?" is currently **geometry-vs-reference** (DockQ,
-  epitope shift) or **set-overlap** (epitope recall / precision), never a confidence metric. The project's
+  specified site shift) or **set-overlap** (specified site recall / precision), never a confidence metric. The project's
   problem — a confidence score that is high only when the confident interface is at specified residues —
   is not a solved, named, published quantity. The honest framing for a write-up is: this is a gap, and the
   nearest publishable precedent is actifpTM's `pair_residue_weights` generalised from
-  "predicted contacts" to "specified epitope".
+  "predicted contacts" to "specified specified site".
 - The AF3 benchmark's ~3% false-positive rate on 23798 decoys and its finding that AF3 "hallucinate[s]
   plausible binding interfaces across the surface of decoy targets" is a strong, citable independent
-  confirmation of the project's permuted-epitope negative-control result. It also means the project's
+  confirmation of the project's permuted-specified site negative-control result. It also means the project's
   observation (control scoring ~2× the real target) is consistent with a known model pathology, not an
   artefact of the local pipeline.
-- The AF3 benchmark's "~34% of false negatives retained correct epitope location despite poor RMSD" is the
-  mirror-image warning: site correctness and pose accuracy are partly decoupled, so an epitope-overlap
+- The AF3 benchmark's "~34% of false negatives retained correct specified site location despite poor RMSD" is the
+  mirror-image warning: site correctness and pose accuracy are partly decoupled, so a specified site-overlap
   metric and an RMSD/DockQ metric are **not** substitutes. The project should carry both.
 - BindCraft2's `coldspot` / `coldspot_repel` / forced-targeting design is informative: the authors chose to
-  enforce the site through the *input* (hotspot contact losses, coldspot repulsion, lysinating the rest of
+  enforce the site through the *input* (anchor residue contact losses, coldspot repulsion, lysinating the rest of
   the surface) rather than through a site-restricted confidence score. That is evidence the metric gap is
   real and that practitioners route around it.
 
@@ -466,43 +466,43 @@ epitope-restricted *confidence* score. The closest named quantities are "epitope
 
 - Neither the CHIMERA-Bench nor the EpiFormer primary PDFs were read, so the EpiRec definition and the
   precision/recall figures are second-hand. These should be verified before being quoted in a report.
-- No formal definition of "epitope shift" was found. A targeted search for the term returned nothing with a
+- No formal definition of "specified site shift" was found. A targeted search for the term returned nothing with a
   formal metric definition; the AF3 benchmark uses the term without an abstract-level definition. Likely
-  defined as the distance between predicted and native epitope centroids, but **this is unverified**.
-- The AF3 benchmark's cutoffs for calling an epitope "correct" were not recoverable from the abstract.
+  defined as the distance between predicted and native specified site centroids, but **this is unverified**.
+- The AF3 benchmark's cutoffs for calling a specified site "correct" were not recoverable from the abstract.
 
 ---
 
-## Q6. Metrics that directly measure overlap between a predicted interface and a specified epitope
+## Q6. Metrics that directly measure overlap between a predicted interface and a specified specified site
 
 ### Takeaway
 
 These are set-comparison statistics over residue sets, not confidence metrics: recall (EpiRec / Fnat-style),
-precision, F1 and Jaccard over {predicted target-side interface residues} vs {specified epitope residues}.
+precision, F1 and Jaccard over {predicted target-side interface residues} vs {specified specified-site residues}.
 They are cheap, require no reference complex, and the contact masks needed to compute them are already
 produced by BindCraft2 and ColabFold code. They are inherently hard-thresholded, hence non-differentiable
 as written, but each has an obvious soft relaxation via the distogram contact probability.
 
 ### Cited Findings
 
-- Let `P` = set of target residues in contact with the binder in the prediction, and `E` = the specified
-  epitope. The field's named forms are:
-  - **Recall / EpiRec** = `|P ∩ E| / |E|` — "the fraction of true epitope residues that the design
+- Let `P` = set of target residues in contact with the designed chain in the prediction, and `E` = the specified
+  specified site. The field's named forms are:
+  - **Recall / EpiRec** = `|P ∩ E| / |E|` — "the fraction of true specified-site residues that the design
     contacts" — [arXiv:2603.13431, CHIMERA-Bench](https://arxiv.org/pdf/2603.13431) (search summary)
   - **Fnat** = "Fraction of retrieved native contacts (same as Recall or TPR)" — the contact-pair rather
     than residue version — [DockQ README](https://raw.githubusercontent.com/bjornwallner/DockQ/master/README.md)
   - **Precision** and **Recall** over antigen surface residues, as the standard AsEP reporting pair for
-    epitope prediction treated as "binary classification over antigen surface residues" —
+    specified site prediction treated as "binary classification over antigen surface residues" —
     [arXiv:2407.18184](https://arxiv.org/html/2407.18184)
 - The target-side predicted interface set `P` is already computed in BindCraft2:
   `binder_target_contact_masks(binder, target, cutoff=4.0)` builds
   `contact = (pairwise_atom_distances(binder_atoms, target_atoms) <= cutoff) & binder_atom_mask[:,None] & target_atom_mask[None,:]`
-  and returns `(contact.any(-1)...any(-1), contact.any(0)...any(-1))` — the binder-side and **target-side**
-  per-residue boolean masks. `binder_assembly_contact_masks` unions this over binder copies —
+  and returns `(contact.any(-1)...any(-1), contact.any(0)...any(-1))` — the designed chain-side and **target-side**
+  per-residue boolean masks. `binder_assembly_contact_masks` unions this over designed chain copies —
   [BindCraft2 filters.py L101-110](https://raw.githubusercontent.com/PacesaLab/BindCraft2/main/bindcraft/filters.py)
-- The specified epitope set `E` can be expanded from hotspots by the same code used for forced targeting:
+- The specified specified site set `E` can be expanded from anchor residues by the same code used for forced targeting:
   `epitope_residues(atoms, atom_mask, hotspot_residues, epitope_cutoff)` = residues within
-  `epitope_cutoff` of any hotspot atom —
+  `epitope_cutoff` of any anchor residue atom —
   [BindCraft2 epitope_targeting.py L25-29](https://raw.githubusercontent.com/PacesaLab/BindCraft2/main/bindcraft/epitope_targeting.py)
 - BindCraft1 has an equivalent helper imported as `hotspot_residues` from `biopython_utils`, used as
   `binder_contacts = hotspot_residues(model_pdb_path)` —
@@ -511,7 +511,7 @@ as written, but each has an obvious soft relaxation via the distogram contact pr
   `get_contact_map(outputs, dist=8.0) = (jax.nn.softmax(dist_logits) * (dist_bins < dist)).sum(-1)` —
   [ColabDesign loss.py L223-230](https://raw.githubusercontent.com/sokrypton/ColabDesign/main/colabdesign/af/loss.py)
   and identically in [ColabFold extra_ptm.py L22-27](https://raw.githubusercontent.com/sokrypton/ColabFold/main/colabfold/alphafold/extra_ptm.py)
-- The AF3 antibody benchmark pairs site-overlap reasoning with structural measures ("DockQ, epitope shift,
+- The AF3 antibody benchmark pairs site-overlap reasoning with structural measures ("DockQ, specified site shift,
   and antibody displacement") rather than using overlap alone —
   [bioRxiv 2026.07.30.741792](https://www.biorxiv.org/content/10.64898/2026.07.30.741792v1)
 
@@ -519,31 +519,31 @@ as written, but each has an obvious soft relaxation via the distogram contact pr
 
 - Definitions the project can adopt directly, with the citations above as precedent:
   - `EpiRecall = |P ∩ E| / |E|`
-  - `EpiPrecision = |P ∩ E| / |P|` (penalises binders that also smear over off-epitope surface)
+  - `EpiPrecision = |P ∩ E| / |P|` (penalises designed chains that also smear over off-specified site surface)
   - `EpiF1 = 2·EpiPrecision·EpiRecall / (EpiPrecision + EpiRecall)`
   - `EpiJaccard = |P ∩ E| / |P ∪ E|`
   - `EpiCoverageFraction` — the contact-weighted version: `(Σ_{j∈E} c_j) / (Σ_{j∈target} c_j)` where
-    `c_j = Σ_i cmap[i,j]` over binder residues i. This is the natural soft analogue and is differentiable.
+    `c_j = Σ_i cmap[i,j]` over designed-chain residues i. This is the natural soft analogue and is differentiable.
 - **A clean two-factor filter is the right shape for the project's problem**: one factor says "the
   interface is confident" (ipSAE / i_pDAE / LIS), the other says "the interface is here"
   (EpiJaccard or EpiCoverageFraction), and the product or the min of the two is the selection score. This
   is strictly more informative than any single restricted metric, because it separates the two failure
   modes the project is seeing (confident-but-wrong-site vs right-site-but-unconfident). It also makes the
-  permuted-epitope control a natural sanity check: a permuted epitope should drive the overlap factor to
+  permuted-specified site control a natural sanity check: a permuted specified site should drive the overlap factor to
   ~chance while leaving the confidence factor unchanged.
 - The hard-threshold versions are post-hoc-only. The soft versions (`cmap`-weighted coverage, or
-  `Σ_{i,j∈E} cmap[i,j]` as a "soft epitope contact count") are smooth in the distogram logits and can be
-  used as a gradient objective — this is exactly what BindCraft's `i_con` with hotspots already does
+  `Σ_{i,j∈E} cmap[i,j]` as a "soft specified site contact count") are smooth in the distogram logits and can be
+  used as a gradient objective — this is exactly what BindCraft's `i_con` with anchor residues already does
   (see Q7).
 
 ### Gaps
 
-- I found no paper that reports a **Jaccard** index specifically for predicted-interface vs specified-epitope
+- I found no paper that reports a **Jaccard** index specifically for predicted-interface vs specified-specified site
   agreement under that name; precision/recall/F1 dominate. The Jaccard form is a reasonable construction
   but should be presented as the project's own, not as a cited standard.
 - No standard cutoff convention emerged for defining `P`. The codebases read here use 4.0 Å atom-atom
   (BindCraft2 `Interface_Residues`), 8.0 Å CA-CA (BindCraft2 i_pDAE), and 8.0 Å CB-CB (pDockQ, actifpTM).
-  Any epitope-overlap metric must state its cutoff; results will not be comparable across the three.
+  Any specified site-overlap metric must state its cutoff; results will not be comparable across the three.
 
 ---
 
@@ -554,13 +554,13 @@ as written, but each has an obvious soft relaxation via the distogram contact pr
 The hard `PAE < cutoff` mask in ipSAE/LIS and the hard distance mask in i_pDAE are piecewise-constant in
 the model outputs and give zero gradient through the mask, so none of the published *scores* is a usable
 objective as written. But the **site-restricted differentiable objectives already exist**: ColabDesign's
-`i_pae` with the `hotspot` option is an epitope-restricted interface-PAE loss, and BindCraft2's
-`interface_contacts` and `target_plddt` losses are hotspot-masked. These are the production-grade answer
+`i_pae` with the `hotspot` option is a site-restricted interface-PAE loss, and BindCraft2's
+`interface_contacts` and `target_plddt` losses are anchor residue-masked. These are the production-grade answer
 to the differentiability question.
 
 ### Cited Findings
 
-- **ColabDesign already implements an epitope-restricted differentiable interface-PAE loss.** In
+- **ColabDesign already implements a site-restricted differentiable interface-PAE loss.** In
   `_loss_binder`:
   ```python
   binder_id = zeros.at[-bL:].set(mask[-bL:])
@@ -573,8 +573,8 @@ to the differentiability question.
   ...
   "i_pae":   get_pae_loss(outputs, mask_1d=binder_id, mask_1b=target_id),
   ```
-  — when `hotspot` is supplied, `target_id` **is** the hotspot mask, so `i_pae` becomes a mean of
-  `PAE/31` over (binder residue × hotspot residue) pairs only —
+  — when `hotspot` is supplied, `target_id` **is** the anchor residue mask, so `i_pae` becomes a mean of
+  `PAE/31` over (designed-chain residue × anchor residue) pairs only —
   [ColabDesign loss.py L35-58](https://raw.githubusercontent.com/sokrypton/ColabDesign/main/colabdesign/af/loss.py)
 - The masked mean is smooth: `mask_loss(x, mask) = (x*mask).sum() / (1e-8 + mask.sum())`, with an optional
   straight-through variant `jax.lax.stop_gradient(x.mean() - x_masked) + x_masked` —
@@ -593,12 +593,12 @@ to the differentiability question.
   **differentiable soft contact probability**; the `dist_bins < dist` comparison is on fixed bin centres,
   not on model output, so it does not break the gradient —
   [ColabDesign loss.py L223-230](https://raw.githubusercontent.com/sokrypton/ColabDesign/main/colabdesign/af/loss.py)
-- **BindCraft2 has hotspot-masked differentiable losses.** `target_plddt_loss` uses
+- **BindCraft2 has anchor residue-masked differentiable losses.** `target_plddt_loss` uses
   `hotspot_mask = has_residue_flag(..., ResidueFlags.HOTSPOT)` and
   `_masked_mean(1 - plddt[target_slice], jnp.where(hotspot_mask.any(), hotspot_mask, real_residue_mask(...)))`
-  — a hotspot-restricted target-pLDDT objective with a graceful fallback when no hotspots are set —
+  — an anchor residue-restricted target-pLDDT objective with a graceful fallback when no anchor residues are set —
   [BindCraft2 loss.py L193-197](https://raw.githubusercontent.com/PacesaLab/BindCraft2/main/bindcraft/loss.py)
-- `interface_contacts_loss` is explicitly epitope-restricted when hotspots exist:
+- `interface_contacts_loss` is explicitly site-restricted when anchor residues exist:
   `hotspot_mask = expand_chain_residue_mask(residue_count, chain_slices[target], has_residue_flag(..., ResidueFlags.HOTSPOT))`;
   `hotspot_contacts = mean_selected_contact_loss(pair_loss, contacts_per_residue, contact_residue_count, hotspot_mask, hotspot_mask[:,None] & binder_mask[None,:])`;
   `return jnp.where(hotspot_mask.any(), hotspot_contacts, surface_contacts)` —
@@ -637,18 +637,18 @@ to the differentiability question.
   |---|---|---|---|
   | ipSAE (`d0res`) | Not in the released code; one-line change to `valid_pairs_matrix`; d0 shrinks so scale shifts | `ipsae.py` v4, PyPI `ipsae`, Neurosnap, vendored in ColabFold | No — NumPy, hard `PAE < cutoff` mask, double `argmax` |
   | ipSAE `d0chn` / `d0dom` | Same as above; `d0chn` is the most scale-stable of the three under restriction | same | No |
-  | ipTM | Yes, via `residue_weights`/`seq_mask`; no published epitope variant | AF2/AF3/ColabFold/ColabDesign/BindCraft2 | Yes (in-graph, `use_jnp=True`) |
+  | ipTM | Yes, via `residue_weights`/`seq_mask`; no published specified site variant | AF2/AF3/ColabFold/ColabDesign/BindCraft2 | Yes (in-graph, `use_jnp=True`) |
   | pTM | Yes, same mechanism (`get_per_chain_ptm` already slices) | ColabFold `extra_ptm.py` | Yes |
   | actifpTM | **Yes — it is literally a residue-subset-restricted ipTM**, but the subset is auto-chosen from `cmap >= 0.6`, not user-specified | ColabFold `extra_ptm.py`, `--calc_extra_ptm`; AlphaPulldown2 | Probability path yes (jnp + soft cmap); binary path no |
-  | i_pAE (interface PAE/31) | Yes — mask is `mask_1d[:,None]*mask_1b[None,:]`, and `mask_1b` can be the epitope | ColabDesign `get_pae_loss`, BindCraft1/2 `chain_pair_pae_loss` | **Yes** |
-  | i_pAE with `hotspot` | **Already epitope-restricted today** | ColabDesign `_loss_binder` | **Yes** |
+  | i_pAE (interface PAE/31) | Yes — mask is `mask_1d[:,None]*mask_1b[None,:]`, and `mask_1b` can be the specified site | ColabDesign `get_pae_loss`, BindCraft1/2 `chain_pair_pae_loss` | **Yes** |
+  | i_pAE with `hotspot` | **Already site-restricted today** | ColabDesign `_loss_binder` | **Yes** |
   | i_pDAE | Yes — `contact & epitope_mask`; best geometric grounding of the set | BindCraft2 `filters.py`, plus a per-residue track | No as written (hard 8 Å mask, `.max()`); soft version straightforward |
   | LIS | Yes, trivially; no length renormalisation so scale is preserved | `ipsae.py`; original Kim et al. code | No (hard `PAE < 12`); soft version straightforward |
   | pDockQ | In principle; `log10(npairs)` confounds site with size | `ipsae.py`, Elofsson lab | No (fitted sigmoid on hard contact counts) |
   | pDockQ2 | Yes — per-chain-pair by construction, fixed `d0 = 10 Å`, both factors are plain means | `ipsae.py`, ColabFold, Elofsson lab | No (hard 8 Å contacts); the PAE factor alone is |
   | DockQ / Fnat | No — needs a reference complex; `--mapping` is chain-level only | `bjornwallner/DockQ` | No |
   | EpiRecall / EpiPrecision / EpiF1 / EpiJaccard | Yes by definition | Masks exist in BindCraft1/2; metric itself must be written | No as written; soft `cmap`-weighted coverage is |
-  | Hotspot `i_con` contact loss | **Already epitope-restricted today** | ColabDesign `get_con_loss(mask_1d=hotspot)`; BindCraft2 `interface_contacts_loss` | Yes, a.e. (`jnp.sort`/`argsort` top-k is piecewise differentiable; BindCraft2 stops gradient through the ranking) |
+  | Anchor residue `i_con` contact loss | **Already site-restricted today** | ColabDesign `get_con_loss(mask_1d=hotspot)`; BindCraft2 `interface_contacts_loss` | Yes, a.e. (`jnp.sort`/`argsort` top-k is piecewise differentiable; BindCraft2 stops gradient through the ranking) |
 
 - **The non-smooth `PAE < cutoff` problem has a standard fix in this codebase family**: replace the
   indicator `1[PAE_ij < c]` with `sigmoid((c - PAE_ij)/T)`, exactly as BindCraft2 does for distance
@@ -656,16 +656,16 @@ to the differentiability question.
   `w_ij = sigmoid((c - PAE_ij)/T) · epitope_j · binder_i`;
   `n0res(i) = Σ_j w_ij`; `d0(i) = max(1, 1.24·(max(26, n0res(i)) - 15)^{1/3} - 1.8)`;
   `score_i = Σ_j w_ij · 1/(1 + (PAE_ij/d0(i))²) / Σ_j w_ij`; and replace the outer `max_i` with a
-  temperature-controlled soft-max or a mean over epitope-contacting binder residues. Every term is smooth;
+  temperature-controlled soft-max or a mean over specified site-contacting designed-chain residues. Every term is smooth;
   the only remaining discontinuity (the `max(26, ·)` and `max(1, ·)` clamps) is piecewise-linear and
   gradient-safe away from the kink.
 - **Practical recommendation, strongest first:**
   1. For a *post-hoc filter* that fixes the reported failure: compute `i_pDAE@epitope` (or `LIS@epitope`)
      **and** `EpiJaccard`, and gate on both. `LIS@epitope` is the cheapest to implement and the only one
      whose absolute scale survives restriction unchanged.
-  2. For a *gradient objective*: use ColabDesign/BindCraft2's existing hotspot-restricted `i_pae` and
-     `i_con` rather than inventing a differentiable ipSAE. They are production-tested, and the hotspot path
-     through `target_id` makes `i_pae` an epitope-restricted PAE loss with no code change.
+  2. For a *gradient objective*: use ColabDesign/BindCraft2's existing anchor residue-restricted `i_pae` and
+     `i_con` rather than inventing a differentiable ipSAE. They are production-tested, and the anchor residue path
+     through `target_id` makes `i_pae` a site-restricted PAE loss with no code change.
   3. If a *restricted ipSAE-like* score is specifically wanted for continuity with existing numbers, build
      it on actifpTM's `pair_residue_weights` interface, because that keeps `d0` tied to the full sequence
      length and therefore keeps the restricted and unrestricted values on one scale.
@@ -673,15 +673,15 @@ to the differentiability question.
   (ipSAE's `d0res`/`d0dom`, i_pDAE's `tm_score_distance_scale`) becomes *harsher* when restricted, because
   a smaller `d0` demands lower PAE for the same score. Thresholds learned on unrestricted scores (e.g. a
   0.795 "true complex" reference) will not transfer. Re-derive the reference by computing the restricted
-  metric on the true complex with the same epitope definition.
+  metric on the true complex with the same site definition.
 
 ### Gaps
 
-- I did not find any published work that defines or evaluates a *differentiable, epitope-restricted
+- I did not find any published work that defines or evaluates a *differentiable, site-restricted
   interface confidence* score under a name. The components all exist; the composite does not appear in the
   literature I could reach.
 - I did not read BindCraft2's `nonbinding_residue_repulsion_loss` or `mean_selected_contact_loss` bodies,
-  so the exact smoothing used in the coldspot and hotspot contact losses is unverified beyond the
+  so the exact smoothing used in the coldspot and anchor residue contact losses is unverified beyond the
   `best_contact_mean` helper quoted above.
 - The `ipsae` PyPI package and the Neurosnap reimplementation may expose options the reference script does
   not; I checked only the reference `ipsae.py`. Worth a direct look at `pip show -f ipsae` before

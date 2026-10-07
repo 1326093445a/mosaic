@@ -60,7 +60,7 @@ the pipeline. Its experimental results evaluate that complete system.
 | Representation | Discrete candidates | Continuous relaxation followed by discrete refinement |
 | Objective composition | Composite loss with clipping | Normalized gradients; weighted or conflict-aware composition |
 | Candidate history | Competition among active parents | Staged trajectories and downstream filtering |
-| Sequence setting | Restricted neighborhood of a starting sequence | De novo CDR generation with framework bias |
+| Sequence setting | Restricted neighborhood of a starting sequence | De novo designable region generation with framework bias |
 | Evidence | Predictor confidence and reference-pose measurements | Computational assessments plus experimental validation |
 
 Germinal changes language-model influence across optimization phases. This is
@@ -116,10 +116,10 @@ a trajectory.
 
 | Measurement or claim | What it addresses | What does not follow automatically |
 |---|---|---|
-| Independently aligned binder RMSD | Internal shape similarity after removing rigid placement | Correct placement relative to the target |
-| Target-aligned binder RMSD | Agreement with a specified relative arrangement | Experimental correctness of the reference arrangement |
+| Independently aligned designed chain RMSD | Internal shape similarity after removing rigid placement | Correct placement relative to the target |
+| Target-aligned designed chain RMSD | Agreement with a specified relative arrangement | Experimental correctness of the reference arrangement |
 | Design-to-refolding RMSD | Whether another prediction reproduces a generated design | Recovery of an independently chosen reference pose |
-| Interface confidence | A predictor's assessment of an interaction | Measured affinity or agreement with a particular pose |
+| Interface confidence | A predictor's assessment of an interaction | A measured property, or agreement with a particular pose |
 | Experimental complex structure | Structural evidence for the measured complex | General success across all generated candidates |
 
 The docking literature explicitly separates reference-contact recovery,

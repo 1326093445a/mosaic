@@ -1,6 +1,6 @@
 ## Functional, multi-objective protein design using continuous relaxation.
 
-For the OpenDDE work in this checkout, start with [current status and next steps](docs/p17_status_and_next_steps.md), [setup](SETUP.md), and the [detailed project record](docs/P17_JN1.md). The post-fix fixed-input forward controls have completed and passed; the gated pose experiment is the next run. The general Mosaic reference follows.
+For the OpenDDE work in this checkout, start with [current status and next steps](docs/archive/p17_status_and_next_steps.md), [setup](SETUP.md), and the [detailed project record](docs/P17_JN1.md). The post-fix fixed-input forward controls have completed and passed; the gated pose experiment is the next run. The general Mosaic reference follows.
 
 
 > **WARNING**: Unlike [BindCraft](https://www.nature.com/articles/s41586-025-09429-6) (which is a well-tested and well-tuned method for generic binder design), `mosaic` may require substantial hand-holding (tuning learning rates, etc), often produces proteins that fail simple in-silico tests, should be combined with standard filtering methods, etc. This is not for the faint of heart: the intent is to provide a framework in which to implement custom objective functions and optimization algorithms for your application. You can read about some applications in [our blog](https://blog.escalante.bio).
