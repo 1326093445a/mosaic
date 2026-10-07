@@ -14,7 +14,7 @@ in [`archive/`](archive/).
 
 | Document | What it is |
 |---|---|
-| **[P17_JN1.md](P17_JN1.md)** | **The project record, §§1–28.** The only document that carries results. Read its front matter, then §19 (framing and the experiment ladder), then §§20–27 in order. §27 is the newest result; §28 is a feasibility audit with no result attached. |
+| **[P17_JN1.md](P17_JN1.md)** | **The project record, §§1–30.** The only document that carries results. Read its front matter, then §19 (framing and the experiment ladder), then §§20–27 in order. **§30 is the newest result** and the first to attribute anything to the gradient: gradient-weighted proposals beat uniform ones on pose at 5.1σ, confidence did not separate, and all 240 structures remain CAPRI-incorrect. §28 is a feasibility audit and §29 is the plan §30 executed. |
 
 ## Live companions
 

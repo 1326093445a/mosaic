@@ -323,11 +323,28 @@ def search_jobs(root, policies, seeds, start_sequence, budget, args, complex_pdb
                 # own config, not only in the launcher's plan.
                 ("--weight-registry", "weight_registry"),
                 ("--registry-contact-distance", "registry_contact_distance"),
+                # Whether the edit budget is measured from the search's own
+                # start or from the reference. A continuous seeding stage has
+                # already spent budget to build that start, so `reference`
+                # keeps one budget across both stages instead of two.
+                ("--budget-anchor", "budget_anchor"),
             ):
                 value = getattr(args, attr, None)
                 if value is not None:
                     command += [flag, str(value)]
-            start = getattr(args, "start_sequence", None)
+            # One append, explicit precedence. These used to be two separate
+            # appends -- one here from the CLI flag and one at the end of the
+            # loop from the `start_sequence` parameter -- so on the `search`
+            # subcommand, where the Alpha ladder passes a rung sequence, a
+            # user-supplied --start-sequence was silently dropped by argparse
+            # taking the last occurrence. A conflict is now an error.
+            cli_start = getattr(args, "start_sequence", None)
+            if start_sequence is not None and cli_start and cli_start != start_sequence:
+                raise ValueError(
+                    "--start-sequence conflicts with the start this subcommand "
+                    "supplies itself; pass one or the other"
+                )
+            start = start_sequence if start_sequence is not None else cli_start
             if start:
                 command += ["--start-sequence", start]
             decoy = getattr(args, "_decoy_sequence", None)
@@ -340,8 +357,6 @@ def search_jobs(root, policies, seeds, start_sequence, budget, args, complex_pdb
                     "--complex", str(complex_pdb),
                     "--epitope-mode", "contact",
                 ]
-            if start_sequence is not None:
-                command += ["--start-sequence", start_sequence]
             jobs.append(dict(name=name, command=command))
     return jobs
 
@@ -927,6 +942,12 @@ def build_parser():
         # p17_confidence_search.py validates that it differs from the
         # reference only inside the designable mask.
         sub_parser.add_argument("--start-sequence", default=None)
+        sub_parser.add_argument(
+            "--budget-anchor", choices=["start", "reference"], default=None,
+            help="None leaves p17_confidence_search.py's own default ('start') "
+            "alone. 'reference' shares one edit budget between the seeding "
+            "stage that produced --start-sequence and this search.",
+        )
         sub_parser.add_argument(
             "--registry-contact-distance", type=float, default=None
         )

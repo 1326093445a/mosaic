@@ -64,6 +64,54 @@ def project_to_budget(relaxed, parent_tokens, designable_idx, budget):
     return tokens, margins, kept
 
 
+def relaxed_array(result):
+    """The relaxed sequence, whatever shape the optimizer wrapped it in.
+
+    The three optimizers have DIFFERENT return arities, which is a real trap:
+    without a `trajectory_fn`, `bindcraft_design` and `colabdesign_stage`
+    return a bare (N, 20) array while `simplex_APGM` returns (x, best_x).
+    Unpacking a bare array as a 2-tuple raises "too many values to unpack",
+    which is how the bc_ cells failed on 2026-10-06 after completing all 125
+    optimization steps. All of them are in probability space, not logits, so
+    the margins in `project_to_budget` are probability differences.
+    """
+    if isinstance(result, tuple):
+        return result[0]
+    return result
+
+
+def anchored_logits(parent_tokens, designable_idx, scale, noise):
+    """Logits for the designable rows whose softmax concentrates on the parent.
+
+    Pure noise initialization discards the one thing this project starts with:
+    a parent sequence that the frozen predictor already scores. It also starts
+    the optimizer outside its own feasible set. With 29 designable positions
+    and `softmax` over 20 tokens, noise logits give the parent about 1/20 of
+    the mass at every position, so the `EditBudget` expectation
+    `E(s) = sum_pos (1 - p_parent)` opens at roughly 29 x 0.95 = 27.6 against a
+    budget of 5 -- a hinge of `5.0 * relu(27.6 - 5) = 113`, which dwarfs the
+    roughly 34 carried by every other term combined. The first many steps then
+    spend their gradient walking back toward the parent.
+
+    Adding `scale` to the parent column instead opens at `p_parent =
+    e^scale / (e^scale + 19)`. At the default 5.0 that is 0.886, so
+    `E(s) = 29 x 0.114 = 3.3`, inside the budget, and the hinge is inactive at
+    step 0. Larger scales are more feasible but more saturated: the softmax
+    Jacobian goes as `p(1 - p)`, which is 0.10 at scale 5 and 0.04 at scale 6.
+
+    `noise` is supplied by the caller so this stays deterministic and testable.
+    """
+    noise = np.asarray(noise, dtype=np.float32)
+    if noise.shape != (len(designable_idx), 20):
+        raise ValueError(
+            f"noise has shape {noise.shape}, expected ({len(designable_idx)}, 20)"
+        )
+    x = noise.copy()
+    parent_rows = np.asarray(parent_tokens)[np.asarray(designable_idx)]
+    x[np.arange(len(designable_idx)), parent_rows] += scale
+    return x
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--method", choices=METHODS, required=True)
@@ -78,9 +126,15 @@ def main(argv=None):
     parser.add_argument("--registry-contact-distance", type=float, default=8.0)
     parser.add_argument("--weight-pose", type=float, default=1.0)
     parser.add_argument("--lr", type=float, default=0.1)
+    parser.add_argument("--init", choices=["parent", "noise"], default="parent",
+                        help="anchor the start at the parent one-hot (default) "
+                             "or use the pure-noise start the optimizers ship with")
+    parser.add_argument("--init-logit-scale", type=float, default=5.0,
+                        help="mass added to the parent column when --init=parent")
     args = parser.parse_args(argv)
 
     import jax
+    import jax.numpy as jnp
     from mosaic.common import TOKENS
     from mosaic.models.opendde import OpenDDEModelAbag
     from mosaic.optimizers import bindcraft_design, colabdesign_stage, simplex_APGM
@@ -125,36 +179,31 @@ def main(argv=None):
     key = jax.random.key(args.seed)
     init_key, run_key = jax.random.split(key)
     n_designable = len(designable_idx)
-    # BindCraft's own initialization; the other methods tolerate it too.
-    x0 = 0.01 * jax.random.normal(init_key, (n_designable, 20))
+    noise = 0.01 * np.asarray(jax.random.normal(init_key, (n_designable, 20)))
+    if args.init == "parent":
+        # Start inside the edit budget, at the sequence the predictor already
+        # scores, rather than at BindCraft's de-novo noise start. See
+        # `anchored_logits` for why the hinge makes that start expensive here.
+        x0 = jnp.asarray(anchored_logits(
+            parent, designable_idx, args.init_logit_scale, noise
+        ))
+    else:
+        x0 = jnp.asarray(noise)
 
     print(f"Running {args.method} over {n_designable} designable positions...",
           flush=True)
-    # The three optimizers have DIFFERENT return arities, which is a real trap:
-    # without a `trajectory_fn`, `bindcraft_design` and `colabdesign_stage`
-    # return a bare (N, 20) array while `simplex_APGM` returns
-    # (x, best_x). Unpacking a bare array as a 2-tuple raises "too many values
-    # to unpack", which is how the bc_ cells failed on 2026-10-06 after
-    # completing all 125 optimization steps. All of them are in probability
-    # space, not logits, so the margins below are probability differences.
-    def first_array(result):
-        """The relaxed sequence, whatever shape the optimizer wrapped it in."""
-        if isinstance(result, tuple):
-            return result[0]
-        return result
-
     if args.method == "bindcraft":
-        relaxed = first_array(bindcraft_design(
+        relaxed = relaxed_array(bindcraft_design(
             loss_function=variable_only_loss, x=x0, lr=args.lr, key=run_key,
         ))
     elif args.method == "colabdesign":
-        relaxed = first_array(colabdesign_stage(
+        relaxed = relaxed_array(colabdesign_stage(
             loss_function=variable_only_loss, x=x0,
             n_steps=args.steps or 120, soft_start=0.0, soft_end=1.0,
             temp_start=1.0, temp_end=0.01, hard=False, lr=args.lr, key=run_key,
         ))
     else:
-        relaxed = first_array(simplex_APGM(
+        relaxed = relaxed_array(simplex_APGM(
             loss_function=variable_only_loss,
             x=jax.nn.softmax(x0, -1), n_steps=args.steps or 200,
             stepsize=APGM_STEPSIZE, momentum=APGM_MOMENTUM, scale=APGM_SCALE,
@@ -189,6 +238,7 @@ def main(argv=None):
         method=args.method, seed=args.seed, edit_budget=args.edit_budget,
         weight_registry=args.weight_registry, weight_pose=args.weight_pose,
         sampling_steps=args.sampling_steps, opendde_dtype=args.opendde_dtype,
+        init=args.init, init_logit_scale=args.init_logit_scale,
         parent_sequence=binder_seq, seed_sequence=sequence,
         hamming_from_parent=hamming, edits=edits,
         candidate_substitutions_considered=len(margins),

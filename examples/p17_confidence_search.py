@@ -321,6 +321,18 @@ def build_parser():
         "reference's own. The recovery control passes a damaged sequence "
         "here; edit counts and the WT-relative cap are measured against it.",
     )
+    parser.add_argument(
+        "--budget-anchor",
+        choices=["start", "reference"],
+        default="start",
+        help="Which sequence the edit budget is measured from. 'start' (the "
+        "default, and what every run before 2026-10-07 used) anchors to the "
+        "search's own origin, which is right when that origin is a given "
+        "degraded sequence. 'reference' anchors to the reference while still "
+        "starting the search at --start-sequence, so a producer that already "
+        "spent budget to build that start -- a continuous seeding stage -- "
+        "shares one budget with the search instead of each getting its own.",
+    )
     return parser
 
 
@@ -560,6 +572,45 @@ def main(argv=None):
         )
         binder_seq = start_seq
     wt = np.array([TOKENS.index(aa) for aa in binder_seq], dtype=np.int32)
+
+    # Where the edit budget is measured from, which is not always where the
+    # search begins. Under `--budget-anchor reference` the search still starts
+    # at `--start-sequence`, but `wt` becomes the reference, so the hard cap in
+    # `_moves` and the soft `EditBudget` hinge both count drift from the
+    # reference and a reverted position returns to the reference. That is what
+    # keeps a continuous seeding stage and this search from spending
+    # `--edit-budget` each: the seed's own edits are already on the meter.
+    # Swapping the loss anchor is safe because the validation above rejects a
+    # start sequence that differs outside the designable mask, so the fixed
+    # scaffold `SetPositions` pins is identical either way -- only the
+    # `EditBudget` parent changes.
+    budget_anchor_seq = binder_seq
+    search_initial_tokens = None
+    if args.budget_anchor == "reference":
+        if args.start_sequence is None:
+            parser.error(
+                "--budget-anchor reference needs --start-sequence; without one "
+                "the start already is the reference"
+            )
+        budget_anchor_seq = reference_binder_seq
+        search_initial_tokens = wt
+        wt = np.array(
+            [TOKENS.index(aa) for aa in reference_binder_seq], dtype=np.int32
+        )
+        spent = int((search_initial_tokens != wt).sum())
+        if spent > args.edit_budget:
+            parser.error(
+                f"--start-sequence is {spent} edits from the reference, over "
+                f"--edit-budget {args.edit_budget}; under --budget-anchor "
+                "reference the producer of that start and this search share "
+                "one budget"
+            )
+        print(
+            f"Edit budget anchored to the reference: {spent} of "
+            f"{args.edit_budget} edits already spent by the start sequence, "
+            f"{args.edit_budget - spent} left for the search",
+            flush=True,
+        )
     outputs = SearchOutputs(args.output_dir, binder_ca, target_ca)
 
     metadata = dict(
@@ -571,6 +622,8 @@ def main(argv=None):
         reference_details=reference_info,
         start_sequence=binder_seq,
         start_differs_from_reference=args.start_sequence is not None,
+        budget_anchor=args.budget_anchor,
+        budget_anchor_sequence=budget_anchor_seq,
         decoy_target=decoy_target,
         config=asdict(config),
         arguments={
@@ -752,7 +805,7 @@ def main(argv=None):
         reference_distances=references,
         reference_binder_ca=binder_ca,
         reference_target_ca=target_ca,
-        binder_seq=binder_seq,
+        binder_seq=budget_anchor_seq,
         designable_idx=designable_idx,
         epitope_idx=epitope_idx,
         edit_budget=args.edit_budget,
@@ -1051,6 +1104,11 @@ def main(argv=None):
             result = run_gradient_search(
                 wt=wt,
                 designable_mask=mask,
+                initial_sequences=(
+                    None
+                    if search_initial_tokens is None
+                    else np.repeat(search_initial_tokens[None], config.width, axis=0)
+                ),
                 gradient_fn=gradient_fn,
                 confidence_fn=confidence_fn,
                 config=config,
