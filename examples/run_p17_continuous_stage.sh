@@ -188,10 +188,22 @@ REPLICATES=$(seq 0 $((SEED_REPLICATES - 1)) | tr '\n' ' ')
 
 has_stage() { [[ " $STAGES " == *" $1 "* ]]; }
 
-# The seed each stage-search cell starts from. `parent` is the control and
-# supplies none, so the harness starts at the reference and the budget anchor
-# is left at its own default.
-cell_seed_json() { echo "$SEED_DIR/${1}_r0.json"; }
+# The seed each stage-search cell starts from: the lowest-numbered replicate
+# that actually exists. `parent` is the control and supplies none, so the
+# harness starts at the reference and the budget anchor is left at its default.
+#
+# It reads any replicate rather than `_r0` specifically because on 2026-10-08
+# nine seeding runs over eight GPUs put two on device 0, both of those died,
+# and one of them was `apgm_r0` -- which skipped the whole apgm cell while
+# `apgm_r1` and `apgm_r2` sat finished and unused.
+cell_seed_json() {
+    local r
+    for r in $REPLICATES; do
+        [[ -f "$SEED_DIR/${1}_r${r}.json" ]] && { echo "$SEED_DIR/${1}_r${r}.json"; return 0; }
+    done
+    echo "$SEED_DIR/${1}_r0.json"   # nothing exists; the caller reports it missing
+    return 1
+}
 
 echo "P17 continuous stage -- JN.1 only"
 echo "  devices:        $DEVICES (${#DEV[@]})"
@@ -340,6 +352,13 @@ if has_stage seed; then
     echo
     echo "################ stage seed ################"
     mkdir -p "$SEED_DIR"
+    n_runs=$(( $(echo "$METHODS" | wc -w) * SEED_REPLICATES ))
+    if (( n_runs > ${#DEV[@]} )); then
+        echo "  ⚠️  $n_runs runs over ${#DEV[@]} GPUs: $(( n_runs - ${#DEV[@]} )) device(s)"
+        echo "      will host two OpenDDE instances at once. On 2026-10-08 both"
+        echo "      runs on the doubled-up device died. --seed-replicates"
+        echo "      $(( ${#DEV[@]} / $(echo "$METHODS" | wc -w) )) keeps one run per GPU."
+    fi
     i=0
     pids=()
     for m in $METHODS; do
@@ -442,7 +461,7 @@ if has_stage search; then
         mkdir -p "$OUT_ROOT/$c"
         extra=()
         if [[ "$c" != parent ]]; then
-            seed_json="$(cell_seed_json "$c")"
+            seed_json="$(cell_seed_json "$c" || true)"
             if [[ ! -f "$seed_json" ]]; then
                 SUMMARY+=("$c: SKIPPED (no seed at $seed_json)")
                 echo "  no seed JSON at $seed_json; skipping cell $c" >&2

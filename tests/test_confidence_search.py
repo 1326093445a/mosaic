@@ -818,7 +818,7 @@ def test_winner_loader_deduplicates_and_preserves_source_ids(runner, tmp_path):
     (directory / "summary.json").write_text(
         json.dumps(dict(best_sequence="VA", best_id=7, best_score=0.2))
     )
-    with pytest.raises(ValueError, match="constraints"):
+    with pytest.raises(ValueError, match="outside the designable mask"):
         load_candidates(batch)
 
 

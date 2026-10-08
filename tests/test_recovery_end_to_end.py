@@ -45,10 +45,25 @@ def mutate(sequence, positions, replacement="W"):
     return "".join(residues)
 
 
-def write_search_run(root, name, *, start, winner, target, budget, reference=None):
-    """A search run directory exactly as `p17_confidence_search.py` leaves one."""
+def write_search_run(root, name, *, start, winner, target, budget, reference=None,
+                     budget_anchor=None):
+    """A search run directory exactly as `p17_confidence_search.py` leaves one.
+
+    `budget_anchor` is "reference" for a run launched by the continuous stage
+    under `--budget-anchor reference`, which starts at a seed but counts its
+    edits from the reference. Left None, the archive looks like every run
+    written before that flag existed and the two anchors coincide.
+    """
     run = root / "search" / name
     (run / "tables").mkdir(parents=True)
+    anchor_extras = {}
+    if budget_anchor is not None:
+        anchor_extras = dict(
+            budget_anchor=budget_anchor,
+            budget_anchor_sequence=(
+                (reference or start) if budget_anchor == "reference" else start
+            ),
+        )
     (run / "config.json").write_text(
         json.dumps(
             dict(
@@ -56,6 +71,7 @@ def write_search_run(root, name, *, start, winner, target, budget, reference=Non
                 binder_sequence=start,
                 reference_binder_sequence=reference if reference else start,
                 start_differs_from_reference=start != (reference or start),
+                **anchor_extras,
                 target_sequence=target,
                 checkpoint="opendde_abag.pt",
                 recycling_steps=4,
@@ -115,7 +131,62 @@ def test_load_candidates_rejects_a_winner_outside_the_recorded_budget(tmp_path):
         start=damaged, winner=too_far, target=TARGET_ALPHA, budget=2,
         reference=REFERENCE_BINDER,
     )
-    with pytest.raises(ValueError, match="violates recorded sequence constraints"):
+    with pytest.raises(ValueError, match="over the recorded edit_budget"):
+        load_candidates(tmp_path / "search")
+
+
+def test_load_candidates_counts_the_budget_from_the_recorded_anchor(tmp_path):
+    """The continuous-stage shape, and the bug that killed every held-out shard
+    of the bindcraft cell on 2026-10-08.
+
+    Under `--budget-anchor reference` the search starts at a seed but counts
+    edits from the reference. A winner at the budget from the reference can sit
+    one edit FURTHER from the seed, because reverting the seed's own edit is
+    itself a difference from the seed. Counting against the start therefore
+    rejected a run that never broke its budget.
+    """
+    seed = mutate(REFERENCE_BINDER, DESIGNABLE[:1])
+    winner = mutate(REFERENCE_BINDER, DESIGNABLE[1:6])
+    assert sum(a != b for a, b in zip(REFERENCE_BINDER, winner)) == 5, "at budget"
+    assert sum(a != b for a, b in zip(seed, winner)) == 6, "over budget from the seed"
+
+    write_search_run(
+        tmp_path, "population_seed0",
+        start=seed, winner=winner, target=TARGET_JN1, budget=5,
+        reference=REFERENCE_BINDER, budget_anchor="reference",
+    )
+    candidates, links, baseline = load_candidates(tmp_path / "search")
+    assert [c["sequence"] for c in candidates] == [seed, winner]
+    assert candidates[0]["sequence"] == seed, "candidate 0 stays the run's start"
+    assert baseline["budget_anchor_sequence"] == REFERENCE_BINDER
+    assert links[0]["candidate_id"] == 1
+
+
+def test_load_candidates_still_rejects_a_winner_over_the_anchored_budget(tmp_path):
+    """The anchor relaxes where the budget is measured from, not how big it is."""
+    seed = mutate(REFERENCE_BINDER, DESIGNABLE[:1])
+    winner = mutate(REFERENCE_BINDER, DESIGNABLE[1:8])
+    assert sum(a != b for a, b in zip(REFERENCE_BINDER, winner)) == 7
+    write_search_run(
+        tmp_path, "population_seed0",
+        start=seed, winner=winner, target=TARGET_JN1, budget=5,
+        reference=REFERENCE_BINDER, budget_anchor="reference",
+    )
+    with pytest.raises(ValueError, match="over the recorded edit_budget"):
+        load_candidates(tmp_path / "search")
+
+
+def test_load_candidates_rejects_anchored_drift_outside_the_designable_mask(tmp_path):
+    """The mask check must cover drift from the start as well as from the
+    anchor, so swapping the anchor cannot smuggle a fixed-position change in."""
+    seed = mutate(REFERENCE_BINDER, DESIGNABLE[:1])
+    winner = mutate(seed, [0])  # position 0 is not designable
+    write_search_run(
+        tmp_path, "population_seed0",
+        start=seed, winner=winner, target=TARGET_JN1, budget=5,
+        reference=REFERENCE_BINDER, budget_anchor="reference",
+    )
+    with pytest.raises(ValueError, match="outside the designable mask"):
         load_candidates(tmp_path / "search")
 
 

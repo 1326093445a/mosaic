@@ -165,12 +165,36 @@ def load_candidates(source):
                 a not in "ARNDCQEGHILKMFPSTWYV" for a in winner
             ):
                 raise ValueError("invalid winner sequence")
-            edits = {i for i, (a, b) in enumerate(zip(wt, winner)) if a != b}
-            if (
-                not edits <= set(config["designable_positions_0idx"])
-                or len(edits) > config["config"]["edit_budget"]
-            ):
-                raise ValueError("winner violates recorded sequence constraints")
+            # The budget has to be counted from the anchor the SEARCH used, not
+            # from the sequence it started at. Under `--budget-anchor reference`
+            # those are different: the search starts at a seed produced by the
+            # continuous stage but counts its edits from the reference, so a
+            # winner 5 edits from the reference can be 6 from the seed once the
+            # seed's own edit is reverted. Checking against the start then
+            # rejects a run that never broke its budget, which is what failed
+            # all eight held-out shards of the bindcraft cell on 2026-10-08.
+            # Archives written before `budget_anchor_sequence` existed fall back
+            # to the start sequence, where the two anchors coincide.
+            anchor = config.get("budget_anchor_sequence") or wt
+            if len(anchor) != len(winner):
+                raise ValueError(
+                    f"archived budget anchor is {len(anchor)} aa but the winner "
+                    f"is {len(winner)} aa"
+                )
+            edits = {i for i, (a, b) in enumerate(zip(anchor, winner)) if a != b}
+            drift = {i for i, (a, b) in enumerate(zip(wt, winner)) if a != b}
+            if not (edits | drift) <= set(config["designable_positions_0idx"]):
+                outside = sorted((edits | drift) - set(config["designable_positions_0idx"]))
+                raise ValueError(
+                    f"winner differs from the archived run outside the "
+                    f"designable mask at 0-indexed positions {outside}"
+                )
+            if len(edits) > config["config"]["edit_budget"]:
+                raise ValueError(
+                    f"winner is {len(edits)} edits from the recorded budget "
+                    f"anchor ({config.get('budget_anchor', 'start')}), over the "
+                    f"recorded edit_budget of {config['config']['edit_budget']}"
+                )
             links.append(
                 dict(
                     candidate_id=register(winner),
