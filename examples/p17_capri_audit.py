@@ -39,6 +39,16 @@ import statistics as st
 # DockQ's own published classification thresholds.
 CAPRI_BOUNDS = ((0.80, "high"), (0.49, "medium"), (0.23, "acceptable"))
 
+# THIS PROJECT'S OWN BAR, which is not CAPRI's. Set by the user on 2026-10-07
+# and reaffirmed on 2026-10-08: a candidate counts when its interface RMSD is
+# at or under this, because the designed chain is allowed to shift relative to
+# the original interface and reproducing exact native contacts is not the goal.
+# fnat and DockQ are still reported and still do not gate. Anything written for
+# a reader outside this project must label this threshold explicitly, since a
+# docking audience will assume CAPRI's acceptable class (<= 4 A, DockQ >= 0.23)
+# and read the same table to the opposite conclusion.
+IRMSD_THRESHOLD = 10.0
+
 
 def capri_class(dockq):
     for bound, name in CAPRI_BOUNDS:
@@ -138,7 +148,21 @@ def discover(screen_root, cells):
     return found
 
 
-def summarize(rows, label):
+def per_candidate_irmsd(rows):
+    """Mean iRMSD per candidate, which is the independent unit.
+
+    The held-out structural seeds of one candidate are three predictions of the
+    same sequence and are correlated; they are not three measurements. Counting
+    structures against the bar inflates n threefold and lets one lucky seed of
+    one candidate carry a cell.
+    """
+    byc = defaultdict(list)
+    for r in rows:
+        byc[(r.get("cell"), r.get("candidate_id"))].append(r["iRMSD"])
+    return {k: st.mean(v) for k, v in byc.items()}
+
+
+def summarize(rows, label, threshold=IRMSD_THRESHOLD):
     if not rows:
         print(f"{label:12s} no structures")
         return
@@ -155,7 +179,17 @@ def summarize(rows, label):
     worst_first = ", ".join(
         f"{n} {c}" for c, n in sorted(classes.items(), key=lambda kv: -kv[1])
     )
-    print(f"{label:12s} n={len(rows):3d}  DockQ {dq[0]:.3f}/{dq[1]:.3f}/{dq[2]:.3f}  "
+    # The project's own bar, per candidate. Reported first because it is the
+    # criterion this work is actually judged against; the CAPRI classes stay
+    # because they carry information the bar does not -- candidates have
+    # cleared 10 A with fnat 0.000, so the bar can be met by placement alone.
+    cand = per_candidate_irmsd(rows)
+    hits = sum(1 for v in cand.values() if v <= threshold)
+    mean_c = st.mean(cand.values())
+    sem_c = (st.stdev(cand.values()) / len(cand) ** 0.5) if len(cand) > 1 else 0.0
+    print(f"{label:12s} iRMSD<={threshold:g}A {hits:3d}/{len(cand):<3d} candidates   "
+          f"mean {mean_c:5.2f} +- {sem_c:4.2f}   best {min(cand.values()):5.2f}")
+    print(f"{'':12s} n={len(rows):3d}  DockQ {dq[0]:.3f}/{dq[1]:.3f}/{dq[2]:.3f}  "
           f"fnat {fn[0]:.3f}/{fn[1]:.3f}/{fn[2]:.3f}  "
           f"iRMSD {ir[0]:5.2f}/{ir[1]:5.2f}/{ir[2]:5.2f}  "
           f"LRMSD {lr[0]:6.2f}/{lr[1]:6.2f}/{lr[2]:6.2f}  [{worst_first}]")
@@ -173,6 +207,10 @@ def main(argv=None):
     parser.add_argument("--dockq-bin", default=None,
                         help="DockQ executable (default: the one on PATH)")
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1))
+    parser.add_argument("--irmsd-threshold", type=float, default=IRMSD_THRESHOLD,
+                        help="this project's acceptance bar in angstroms "
+                             "(default: %(default)s). Candidates are counted "
+                             "against it per candidate, not per structure.")
     parser.add_argument("--include-wt", action="store_true",
                         help="keep the unmodified start in the per-cell summary; "
                              "it is always written to the CSV")
@@ -227,8 +265,9 @@ def main(argv=None):
           + ("" if args.include_wt else ", excluding the unmodified start"))
     scored = rows if args.include_wt else [r for r in rows if not r["is_wt"]]
     for cell in sorted({r["cell"] for r in scored}):
-        summarize([r for r in scored if r["cell"] == cell], cell)
-    summarize(scored, "ALL")
+        summarize([r for r in scored if r["cell"] == cell], cell,
+                  args.irmsd_threshold)
+    summarize(scored, "ALL", args.irmsd_threshold)
     print(f"\nwrote {out}")
     return 0
 

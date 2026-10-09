@@ -518,15 +518,16 @@ Post-hoc and GPU-free:
 
   python examples/p17_capri_audit.py $OUT_ROOT/<cell>/run --out capri.csv
       fnat / iRMSD / LRMSD / DockQ on the held-out structures, via the DockQ
-      CLI. Section 30.2's audit of the section 29 screen graded all 240 non-WT
-      structures CAPRI-incorrect at best DockQ 0.174, so read iRMSD and LRMSD
-      as the sensitive columns and DockQ as a floor, not a grade.
+      CLI. It reports this project's own bar first: candidates at or under
+      10 A iRMSD, counted per candidate rather than per structure. On the
+      section 29 screen that was gradient 16/40 against uniform 4/40, best
+      6.66 A. Every structure is CAPRI-incorrect at best DockQ 0.174, which is
+      a stricter standard than this project's, so read DockQ as a floor.
 
 Scale bar (section 19.1): P17+Alpha measured ipSAE 0.795 and pose 1.98-2.96 A;
 P17+JN.1 ipSAE 0.000-0.163 and pose 22-58 A. The section 29 screen's grad_pop
 cell -- the nominal configuration of the \`parent\` control here -- reached mean
-ipSAE 0.567 and mean pose 29.3 A, iRMSD 12.5 A, with every structure
-CAPRI-incorrect.
+ipSAE 0.567 and put 7 of 20 candidates inside the 10 A iRMSD bar, best 6.66 A.
 
 A null here confirms section 30.3's synthetic prediction. It does not establish
 that relaxation cannot help, only that it did not help at this budget with this

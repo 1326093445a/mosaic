@@ -52,6 +52,7 @@ DRY_RUN=false
 ALLOW_BUSY=false
 SKIP_PREP=false
 SKIP_CALIBRATION=false
+SAVE_SALIENCY=false
 
 usage() {
     cat <<'EOF'
@@ -97,6 +98,10 @@ Options:
   --max-proposals N      proposal attempts per worker (default: 320)
   --allow-busy-gpus      downgrade the GPU occupancy check to a warning
   --skip-prep            skip this script's patches and cache warm-up
+  --save-saliency        write tables/saliency.csv: the per-(position,residue)
+                         first-order delta at every gradient call. Test B
+                         (p17_saliency_rank.py) reads it, and it CANNOT be
+                         reconstructed afterwards from the event log.
   --skip-calibration     reuse an existing calibrate/ stage in --output-dir
   --output-dir PATH      default: results/p17_alpha_recovery_<timestamp>_<pid>
   --dry-run              report the plan and preflight; create no run directory
@@ -119,6 +124,7 @@ while [[ $# -gt 0 ]]; do
         --max-proposals) MAX_PROPOSALS="$2"; shift 2 ;;
         --allow-busy-gpus) ALLOW_BUSY=true; shift ;;
         --skip-prep) SKIP_PREP=true; shift ;;
+        --save-saliency) SAVE_SALIENCY=true; shift ;;
         --skip-calibration) SKIP_CALIBRATION=true; shift ;;
         --output-dir) OUTPUT_DIR="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
@@ -501,6 +507,7 @@ echo "=== Stage 3/3: recovery search and held-out rescoring ==="
 SELECT_ARGS=()
 [[ -n "$SELECT_RUNG" ]] && SELECT_ARGS+=(--select-rung "$SELECT_RUNG")
 [[ -n "$EDIT_BUDGET" ]] && SELECT_ARGS+=(--edit-budget "$EDIT_BUDGET")
+"$SAVE_SALIENCY" && SELECT_ARGS+=(--save-saliency)
 "$PYTHON_BIN" "$SCRIPT_DIR/p17_alpha_recovery.py" search \
     --ladder "$OUTPUT_DIR/ladder/ladder.json" \
     --calibration "$OUTPUT_DIR/calibrate/calibration.json" \
