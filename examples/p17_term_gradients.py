@@ -57,21 +57,21 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "examples"))
 
 
-def designable_norm(gradient, designable_idx):
+def designable_norm(gradient):
     """L2 norm over the rows the search is allowed to touch.
 
-    The full-length gradient carries rows for fixed positions too. Those rows
-    are real numbers but no move can ever use them, so including them would
-    report influence the search cannot spend.
+    The gradient handed here is already restricted to those rows: each term is
+    wrapped in `SetPositions`, which takes a soft sequence of ONLY the variable
+    positions and fills the rest from the wildtype. So the differentiated input
+    has one row per designable position and no row for a fixed one -- which is
+    also how the real objective is differentiated, so these norms are on the
+    same footing as the ones the search actually uses.
     """
-    rows = np.asarray(gradient)[np.asarray(designable_idx)]
-    return float(np.linalg.norm(rows))
+    return float(np.linalg.norm(np.asarray(gradient)))
 
 
-def cosine(a, b, designable_idx):
-    rows = np.asarray(designable_idx)
-    u = np.asarray(a)[rows].ravel()
-    v = np.asarray(b)[rows].ravel()
+def cosine(a, b):
+    u, v = np.asarray(a).ravel(), np.asarray(b).ravel()
     nu, nv = np.linalg.norm(u), np.linalg.norm(v)
     if nu == 0 or nv == 0:
         return None
@@ -209,7 +209,21 @@ def main(argv=None):
 
     wildtype = jnp.array(anchor, dtype=jnp.int32)
     designable_jnp = jnp.array(designable_idx, dtype=jnp.int32)
-    x = jax.nn.one_hot(jnp.asarray(tokens), len(TOKENS))
+    # SetPositions fills the fixed positions from `wildtype`, so a sequence
+    # that differs from the anchor OUTSIDE the designable mask would be
+    # silently evaluated as the anchor there. Refuse rather than report a
+    # gradient of a sequence nobody asked about.
+    outside = [
+        int(i) for i in np.flatnonzero(tokens != anchor) if i not in set(designable_idx)
+    ]
+    if outside:
+        parser.error(
+            "--sequence differs from the reference outside the designable mask "
+            f"at 0-indexed positions {outside}; SetPositions would evaluate the "
+            "reference residue there, so the reported gradient would not be of "
+            "the sequence that was passed"
+        )
+    x = jax.nn.one_hot(jnp.asarray(tokens), len(TOKENS))[designable_jnp]
 
     records = {name: dict(values=[], norms=[], max_abs=[]) for name in terms}
     gradients = {}
@@ -221,10 +235,8 @@ def main(argv=None):
             (value, _aux), grad = fn(x, key=key)
             grad = np.asarray(grad)
             records[name]["values"].append(float(value))
-            records[name]["norms"].append(designable_norm(grad, designable_idx))
-            records[name]["max_abs"].append(
-                float(np.abs(grad[designable_idx]).max())
-            )
+            records[name]["norms"].append(designable_norm(grad))
+            records[name]["max_abs"].append(float(np.abs(grad).max()))
             if repeat == 0:
                 gradients[name] = grad
             print(
@@ -247,7 +259,7 @@ def main(argv=None):
 
     cosines = {}
     for a, b in itertools.combinations(sorted(terms), 2):
-        cosines[f"{a}|{b}"] = cosine(gradients[a], gradients[b], designable_idx)
+        cosines[f"{a}|{b}"] = cosine(gradients[a], gradients[b])
 
     ranked = sorted(summary, key=lambda n: summary[n]["grad_norm"], reverse=True)
     spread = summary[ranked[0]]["grad_norm"] / max(

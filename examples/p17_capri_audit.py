@@ -12,7 +12,8 @@ repository and the script was not kept. This is that measurement, kept.
 
 Scores every `heldout/shard_*/structures/candidate_*/seed_*.pdb` against its
 own shard's `reference.pdb`, which is the same native the run itself measured
-against. The chain mapping is derived from residue counts rather than
+against. Takes either a screen with one subdirectory per cell or a single run
+directory with `heldout/` at its root; `run_p17_consolidated.sh` passes both. The chain mapping is derived from residue counts rather than
 hardcoded, so a renamed chain is an error rather than a silent mismatch.
 
 DockQ pins `numpy<2`, which the project environment cannot satisfy, so it is
@@ -73,25 +74,48 @@ def derive_mapping(model_path, native_path):
     Both files hold exactly two chains, a designed chain and a target. The
     files disagree on the chain *letters* -- models write A/B, the reference
     writes B/T -- so pairing them by name would compare the designed chain to
-    the target. Pairing by length is unambiguous here because the two chains
-    differ in length, and an equal-length pair raises rather than guesses.
+    the target. Pairing by length is what is left, and an equal-length pair
+    inside either file raises rather than guesses.
+
+    The counts need not match ACROSS the two files. A predicted complex is the
+    construct that was folded; a crystal reference is whatever was resolved,
+    and on P17+Alpha that is one extra binder residue and ten extra target
+    residues (123/195 against 124/205). DockQ aligns the two itself and scores
+    that pair without complaint. Requiring equality here refused the Alpha
+    run outright, which is the one task in this project with a known answer.
+
+    What is still refused is an AMBIGUOUS pairing: the rank pairing must be
+    strictly better than its swap, measured in residues. That is the hazard
+    worth erroring on, because the swap compares the designed chain to the
+    target and still produces a number.
     """
     model = chain_ca_counts(model_path)
     native = chain_ca_counts(native_path)
-    for name, chains in (("model", model), ("native", native)):
+    for label, path, chains in (("model", model_path, model),
+                                ("native", native_path, native)):
         if len(chains) != 2:
-            raise ValueError(f"{name} {model_path} has chains {chains}, expected 2")
-    if sorted(model.values()) != sorted(native.values()):
-        raise ValueError(
-            f"chain lengths differ: model {model} vs native {native}; the "
-            "native does not match this model"
-        )
-    if len(set(model.values())) != 2:
-        raise ValueError(f"model chains are the same length ({model}); mapping "
-                         "cannot be derived by length")
+            raise ValueError(f"{label} {path} has chains {chains}, expected 2")
+        if len(set(chains.values())) != 2:
+            raise ValueError(
+                f"{label} {path} chains are the same length ({chains}); the "
+                "mapping cannot be derived by length"
+            )
     m_designed, m_target = sorted(model, key=lambda c: model[c])
     n_designed, n_target = sorted(native, key=lambda c: native[c])
-    return f"{m_designed}{m_target}:{n_designed}{n_target}", model[m_designed]
+    aligned = (abs(model[m_designed] - native[n_designed])
+               + abs(model[m_target] - native[n_target]))
+    swapped = (abs(model[m_designed] - native[n_target])
+               + abs(model[m_target] - native[n_designed]))
+    if aligned >= swapped:
+        raise ValueError(
+            f"chain pairing is ambiguous: model {model} against native "
+            f"{native} costs {aligned} residues paired by rank and {swapped} "
+            "swapped, so the designed chain cannot be told from the target by "
+            "length"
+        )
+    return (f"{m_designed}{m_target}:{n_designed}{n_target}", model[m_designed],
+            native[n_designed] - model[m_designed],
+            native[n_target] - model[m_target])
 
 
 def run_dockq(dockq_bin, model_path, native_path, mapping):
@@ -112,28 +136,56 @@ def run_dockq(dockq_bin, model_path, native_path, mapping):
     return result
 
 
-def wt_candidate_ids(cell_root):
-    """Candidate ids the run itself marked as the unmodified start."""
-    table = cell_root / "run" / "tables" / "jn1_recovery.csv"
-    if not table.exists():
-        return set()
-    with open(table) as fh:
-        return {
-            int(row["candidate_id"])
-            for row in csv.DictReader(fh)
-            if row["is_wt"] == "True"
-        }
+def wt_candidate_ids(run_root):
+    """Candidate ids the run itself marked as the unmodified start.
+
+    The JN.1 driver writes `is_wt` into jn1_recovery.csv and that column is
+    authoritative. The Alpha driver's recovery.csv does not carry it, so fall
+    back to the convention that builds these candidate lists: candidate 0 is
+    the unmodified start (p17_rescore_winners.py registers it as
+    `is_wt=idx == 0`). Returning an empty set instead would quietly fold the
+    damaged start into the cell mean as if it were a design.
+    """
+    for name in ("jn1_recovery.csv", "recovery.csv"):
+        table = run_root / "tables" / name
+        if not table.exists():
+            continue
+        with open(table) as fh:
+            rows = list(csv.DictReader(fh))
+        if rows and "is_wt" in rows[0]:
+            return {int(r["candidate_id"]) for r in rows if r["is_wt"] == "True"}
+        return {0}
+    return set()
+
+
+def cell_runs(screen_root):
+    """`(cell name, run root)` for every cell under a screen.
+
+    Two layouts exist in this project and both are passed to this script.
+    A screen holds one subdirectory per cell, each with its own `run/`
+    (`explore/arity2/run/heldout`, `<consolidated>/bindcraft/run/heldout`).
+    A single run holds `heldout/` at its own root instead
+    (`run_p17_alpha_recovery.sh` makes `ladder/ calibrate/ search/ heldout/`
+    side by side). Taking a run root and finding no cells inside it used to
+    report "no held-out structures", which is true of the directory and false
+    of the run.
+    """
+    if (screen_root / "heldout").is_dir():
+        return [(screen_root.name, screen_root)]
+    return [
+        (child.name, child / "run")
+        for child in sorted(screen_root.iterdir())
+        if (child / "run" / "heldout").is_dir()
+    ]
 
 
 def discover(screen_root, cells):
     found = []
-    for cell_root in sorted(screen_root.iterdir()):
-        if not (cell_root / "run" / "heldout").is_dir():
+    for cell, run_root in cell_runs(screen_root):
+        if cells and cell not in cells:
             continue
-        if cells and cell_root.name not in cells:
-            continue
-        wt_ids = wt_candidate_ids(cell_root)
-        for shard in sorted((cell_root / "run" / "heldout").glob("shard_*")):
+        wt_ids = wt_candidate_ids(run_root)
+        for shard in sorted((run_root / "heldout").glob("shard_*")):
             native = shard / "reference.pdb"
             if not native.exists():
                 raise FileNotFoundError(f"{shard} has no reference.pdb")
@@ -141,7 +193,7 @@ def discover(screen_root, cells):
                 cid = int(cand.name.split("_")[-1])
                 for model in sorted(cand.glob("seed_*.pdb")):
                     found.append(dict(
-                        cell=cell_root.name, shard=shard.name, candidate_id=cid,
+                        cell=cell, shard=shard.name, candidate_id=cid,
                         seed=model.stem.split("_")[-1], model=model,
                         native=native, is_wt=cid in wt_ids,
                     ))
@@ -199,7 +251,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("screen_root", type=Path,
-                        help="screen directory holding one subdirectory per cell")
+                        help="a screen directory holding one subdirectory per "
+                             "cell, or a single run directory holding heldout/")
     parser.add_argument("--out", type=Path, default=None,
                         help="CSV path (default <screen_root>/capri.csv)")
     parser.add_argument("--cells", nargs="*", default=None,
@@ -228,11 +281,24 @@ def main(argv=None):
 
     jobs = discover(args.screen_root, set(args.cells) if args.cells else None)
     if not jobs:
-        parser.error(f"no held-out structures under {args.screen_root}")
-    mapping, designed_len = derive_mapping(jobs[0]["model"], jobs[0]["native"])
+        parser.error(
+            f"no held-out structures under {args.screen_root}; expected either "
+            "<screen_root>/heldout/shard_* (a single run) or "
+            "<screen_root>/<cell>/run/heldout/shard_* (a screen)"
+        )
+    mapping, designed_len, d_designed, d_target = derive_mapping(
+        jobs[0]["model"], jobs[0]["native"]
+    )
     print(f"{len(jobs)} structures, chain mapping {mapping} "
           f"(designed chain {designed_len} residues), {args.workers} workers",
           flush=True)
+    if d_designed or d_target:
+        # Not an error -- see derive_mapping -- but say it, because a large
+        # difference means the reference resolves residues the model never had
+        # and DockQ is scoring the intersection.
+        print(f"  native has {d_designed:+d} designed and {d_target:+d} target "
+              "residues relative to the model; DockQ aligns them and scores "
+              "the common interface", flush=True)
 
     def score(job):
         result = run_dockq(dockq_bin, job["model"], job["native"], mapping)

@@ -20,6 +20,21 @@
 #   explore   ~6 h, N GPUs       is the ceiling search-limited, and do pair moves help
 #   seeded    ~4-5 h, N GPUs     the continuous cells that never ran
 #
+# THE BAR IS COMPUTED, NOT LEFT AS AN INSTRUCTION. alpha, explore and seeded
+# each produce held-out structures and each ends with p17_capri_audit.py over
+# them, reporting candidates inside this project's iRMSD bar (--irmsd-bar,
+# default 10 A) per candidate rather than per structure. That step used to be a
+# line of prose in the closing text, which meant `explore` -- whose entire
+# purpose is to compare the BEST iRMSD across cells -- handed back the inputs to
+# its own headline question and stopped one command short of answering it.
+# jn1_recovery.csv carries ipSAE and pose RMSD; neither is iRMSD.
+#
+# DockQ pins numpy<2 and cannot share this environment, so it is an isolated
+# tool install (`uv tool install dockq`) that a fresh checkout will not have.
+# A missing DockQ is a SKIP naming the cause, never a stage failure, and
+# `--stages audit --output-dir <that run>` finishes the job afterwards without
+# re-running anything. `--skip-audit` turns it off.
+#
 # WHAT `explore` IS FOR, AND THE CLAIM IT CORRECTS. Section 30.3 concluded that
 # discrete search saturates its budget, and that conclusion was over-reached.
 # It is solid at budget 2, where all 147,117 feasible sequences were enumerated
@@ -155,6 +170,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-$REPO_DIR/.venv/bin/python}"
+DRIVER="$SCRIPT_DIR/p17_alpha_recovery.py"
+POLICY=population
 
 DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 DTYPE=bf16
@@ -179,19 +196,35 @@ EXPLORE_CELLS="base calls600 arity2"
 EXPLORE_SEEDS=20
 EXPLORE_DEEP_CALLS=600   # the depth cell, 3x `base`
 EXPLORE_WIDE_BUDGET=15   # the budget15 cell; off by default, see header
+IRMSD_BAR=10.0           # this project's acceptance bar, not CAPRI's
+DOCKQ_BIN="${DOCKQ_BIN:-}"
 ALL_STAGES="free norms salvage alpha explore seeded"
+# `audit` is recognised but not in the default run, because the three structure
+# stages already audit themselves. Ask for it when a first pass reported
+# `capri: SKIPPED (no DockQ ...)`, or to re-read an existing run at a different
+# bar: it needs only --output-dir and touches no GPU.
+VALID_STAGES="$ALL_STAGES audit"
 STAGES="$ALL_STAGES"
 PRIOR_RUN=""
 SEED_DIR=""
 OUT_ROOT=""
 DRY_RUN=false
+SKIP_AUDIT=false
 
 usage() {
-    sed -n '2,84p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    # The whole header, not a fixed line range: it has grown twice and a hard
+    # range truncated --help mid-sentence, dropping the section that says what
+    # this script deliberately leaves out.
+    local end
+    end=$(( $(grep -n '^set -euo' "${BASH_SOURCE[0]}" | head -1 | cut -d: -f1) - 1 ))
+    sed -n "2,${end}p" "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     cat <<EOF
 
 Options:
   --stages "a b"        subset of: $ALL_STAGES  (default: all, in that order)
+                        plus 'audit', which is not in the default run: it
+                        re-reads an existing --output-dir against the iRMSD
+                        bar and needs no GPU.
   --prior-run PATH      the 2026-10-07 continuous-stage run directory. Required
                         by \`salvage\` (its bindcraft cell) and by \`seeded\`
                         (its seeds/), and used by \`free\` for the
@@ -209,6 +242,9 @@ Options:
   --deep-calls N        score calls for the depth cell (default: $EXPLORE_DEEP_CALLS)
   --edit-budget N       WT-relative edit cap for every stage (default: $EDIT_BUDGET)
   --wide-budget N       edit cap for the opt-in budget15 cell (default: $EXPLORE_WIDE_BUDGET)
+  --irmsd-bar A         acceptance bar in angstroms (default: $IRMSD_BAR)
+  --dockq-bin PATH      DockQ executable (default: PATH, else ~/.local/bin/DockQ)
+  --skip-audit          do not run the iRMSD audit after a structure stage
   --output-dir PATH     default: results/p17_consolidated_<timestamp>
   --dry-run             print the plan; create nothing, load nothing
 EOF
@@ -230,7 +266,10 @@ while [[ $# -gt 0 ]]; do
         --deep-calls) EXPLORE_DEEP_CALLS="$2"; shift 2 ;;
         --edit-budget) EDIT_BUDGET="$2"; shift 2 ;;
         --wide-budget) EXPLORE_WIDE_BUDGET="$2"; shift 2 ;;
-        --output-dir) OUT_ROOT="$2"; shift 2 ;;
+        --irmsd-bar) IRMSD_BAR="$2"; shift 2 ;;
+        --dockq-bin) DOCKQ_BIN="$2"; shift 2 ;;
+        --skip-audit) SKIP_AUDIT=true; shift ;;
+        --output-dir) OUT_ROOT="$2"; OUT_ROOT_GIVEN=true; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -244,11 +283,20 @@ SEEDS=$(seq 0 $((SEEDS_PER_CELL - 1)) | tr '\n' ' ')
 EXPLORE_SEED_LIST=$(seq 0 $((EXPLORE_SEEDS - 1)) | tr '\n' ' ')
 [[ -z "$SEED_DIR" && -n "$PRIOR_RUN" ]] && SEED_DIR="$PRIOR_RUN/seeds"
 
+if [[ -z "$DOCKQ_BIN" ]]; then
+    DOCKQ_BIN="$(command -v DockQ || true)"
+    [[ -z "$DOCKQ_BIN" ]] && DOCKQ_BIN="$HOME/.local/bin/DockQ"
+fi
+
 has_stage() { [[ " $STAGES " == *" $1 "* ]]; }
 
 for s in $STAGES; do
-    [[ " $ALL_STAGES " == *" $s "* ]] || { echo "Unknown stage: $s" >&2; exit 2; }
+    [[ " $VALID_STAGES " == *" $s "* ]] || { echo "Unknown stage: $s" >&2; exit 2; }
 done
+if has_stage audit && [[ -z "${OUT_ROOT_GIVEN:-}" ]]; then
+    echo "Stage 'audit' re-reads an existing run, so it needs --output-dir." >&2
+    exit 2
+fi
 if (has_stage salvage || has_stage seeded) && [[ -z "$PRIOR_RUN" ]]; then
     echo "Stages 'salvage' and 'seeded' need --prior-run (the 2026-10-07 run)." >&2
     exit 2
@@ -277,7 +325,7 @@ EOF
     has_stage norms && cat <<EOF
 
   [norms]  ~2 min, 1 GPU
-    $PYTHON_BIN $SCRIPT_DIR/p17_term_gradients.py --out $OUT_ROOT/norms/at_parent.json --weight-registry $NORMS_REGISTRY_WEIGHT --repeats $NORMS_REPEATS ...
+    $PYTHON_BIN $SCRIPT_DIR/p17_term_gradients.py --out $OUT_ROOT/norms/at_reference.json --weight-registry $NORMS_REGISTRY_WEIGHT --repeats $NORMS_REPEATS ...
     and again at the best JN.1 winner, since a gradient is a local object
 EOF
     has_stage salvage && cat <<EOF
@@ -287,7 +335,7 @@ EOF
 EOF
     has_stage alpha && cat <<EOF
 
-  [alpha]  ~2-4 h  <- THE CONTROL
+  [alpha]  ~2-4 h  <- THE CONTROL (then the $IRMSD_BAR A iRMSD audit)
     bash $SCRIPT_DIR/run_p17_alpha_recovery.sh --output-dir $OUT_ROOT/alpha \\
         --select-rung $ALPHA_RUNG --edit-budget $ALPHA_RUNG \\
         --search-seeds "$ALPHA_SEEDS" --save-saliency ...
@@ -301,6 +349,7 @@ EOF
     arity2    arity 2, $SCORE_CALLS calls          every feasible position-disjoint pair
     budget15  arity 1, budget $EXPLORE_WIDE_BUDGET          opt-in; changes the PROBLEM, not the method
     cells: $EXPLORE_CELLS   seeds/cell: $EXPLORE_SEEDS
+    then: p17_capri_audit.py $OUT_ROOT/explore --irmsd-threshold $IRMSD_BAR
     read the BEST iRMSD, not the mean: the question is whether the ceiling moves
 EOF
     has_stage seeded && cat <<EOF
@@ -309,6 +358,7 @@ EOF
     per cell in $SEEDED_CELLS: p17_alpha_recovery.py jn1 --start-sequence <seed>
         --budget-anchor reference --search-seeds $SEEDS ...
     seeds read from $SEED_DIR
+    then: p17_capri_audit.py $OUT_ROOT --cells $SEEDED_CELLS --irmsd-threshold $IRMSD_BAR
 EOF
     echo
     echo "No directory was created and no model was loaded."
@@ -325,6 +375,62 @@ export PYTHONUNBUFFERED=1
 
 SUMMARY=()
 note() { SUMMARY+=("$1"); }
+
+# The 10 A bar, computed rather than left as an instruction in the closing
+# text. All three structure stages produce held-out PDBs and iRMSD is this
+# project's acceptance criterion -- but jn1_recovery.csv carries ipSAE and pose
+# RMSD, not iRMSD, so without this step each stage hands back the inputs to its
+# own headline question and stops one command short of answering it. `explore`
+# is the clearest case: its whole purpose is to compare the BEST iRMSD across
+# cells.
+#
+# A missing DockQ is a SKIP with its reason, never a stage failure. DockQ pins
+# numpy<2 and cannot share this environment, so it lives in an isolated tool
+# install that a fresh cluster checkout will not have; the searches and the
+# structures are the expensive part and they are already on disk by the time
+# this runs. The skip note carries the exact command to finish the job later.
+#
+# Usage: capri_audit <label> <root> <out.csv> [extra args for the audit]
+capri_audit() {
+    local label="$1" root="$2" out="$3"; shift 3
+    local log="${out%.csv}.log"
+    if "$SKIP_AUDIT"; then
+        note "$label/capri: SKIPPED (--skip-audit)"
+        return 0
+    fi
+    if [[ ! -d "$root" ]]; then
+        note "$label/capri: SKIPPED (no $root)"
+        return 0
+    fi
+    # The two layouts p17_capri_audit.py accepts. A root with neither holds no
+    # held-out structures at all, which is a skip -- the stage may have been
+    # excluded or may have failed before its held-out step.
+    if ! compgen -G "$root/heldout/shard_*" >/dev/null \
+       && ! compgen -G "$root/*/run/heldout/shard_*" >/dev/null; then
+        note "$label/capri: SKIPPED (no held-out structures under $root)"
+        return 0
+    fi
+    if [[ ! -x "$DOCKQ_BIN" ]]; then
+        echo "  no DockQ executable at $DOCKQ_BIN -- skipping the iRMSD audit." >&2
+        echo "  install it isolated:  uv tool install dockq" >&2
+        echo "  then audit everything this run produced, without re-running it:" >&2
+        echo "    bash $0 --stages audit --output-dir $OUT_ROOT" >&2
+        note "$label/capri: SKIPPED (no DockQ; afterwards: --stages audit --output-dir $OUT_ROOT)"
+        return 0
+    fi
+    echo
+    echo "-- iRMSD audit of $label against this project's $IRMSD_BAR A bar"
+    echo "   per candidate, not per structure: the held-out seeds of one"
+    echo "   candidate are correlated and are not three measurements."
+    if "$PYTHON_BIN" "$SCRIPT_DIR/p17_capri_audit.py" "$root" \
+        --out "$out" --dockq-bin "$DOCKQ_BIN" \
+        --irmsd-threshold "$IRMSD_BAR" "$@" \
+        2>&1 | tee "$log"; then
+        note "$label/capri: PASSED ($out)"
+    else
+        note "$label/capri: FAILED (see $log)"
+    fi
+}
 
 ############################ stage: free ############################
 if has_stage free; then
@@ -557,6 +663,10 @@ if has_stage alpha; then
     done
     [[ -f "$OUT_ROOT/alpha/testb.log" ]] && note "alpha/testb: read" \
         || note "alpha/testb: no saliency.csv was written"
+
+    # run_p17_alpha_recovery.sh puts heldout/ at its own root rather than under
+    # a cell, which is the single-run layout p17_capri_audit.py accepts.
+    capri_audit alpha "$OUT_ROOT/alpha" "$OUT_ROOT/alpha/capri.csv"
 fi
 
 ############################ stage: explore ############################
@@ -660,6 +770,11 @@ for log in sorted(Path(sys.argv[1]).glob("*/run/search/*/logs/events.jsonl")):
     print(f"  {cell:<10} {run:<20} {parts}")
 PY
     fi
+
+    # One call for every cell, so the per-cell BEST iRMSD values -- the number
+    # the ceiling question turns on -- land in one printout next to each other
+    # and in one CSV, with the pooled ALL row underneath.
+    capri_audit explore "$OUT_ROOT/explore" "$OUT_ROOT/explore/capri.csv"
 fi
 
 ############################ stage: seeded ############################
@@ -718,6 +833,22 @@ if has_stage seeded; then
             note "seeded/$c: FAILED (see $c/run.log)"
         fi
     done
+
+    # The seeded cells sit directly under OUT_ROOT beside free/ norms/ alpha/
+    # explore/, none of which match <cell>/run/heldout, but name the cells
+    # anyway rather than relying on that.
+    capri_audit seeded "$OUT_ROOT" "$OUT_ROOT/seeded_capri.csv" --cells $SEEDED_CELLS
+fi
+
+############################ stage: audit ############################
+if has_stage audit; then
+    echo
+    echo "################ stage audit (minutes, no GPU) ################"
+    echo "  Re-reading $OUT_ROOT against the $IRMSD_BAR A bar. Reads structures,"
+    echo "  runs no model, and overwrites only capri.csv and capri.log."
+    capri_audit alpha "$OUT_ROOT/alpha" "$OUT_ROOT/alpha/capri.csv"
+    capri_audit explore "$OUT_ROOT/explore" "$OUT_ROOT/explore/capri.csv"
+    capri_audit seeded "$OUT_ROOT" "$OUT_ROOT/seeded_capri.csv" --cells $SEEDED_CELLS
 fi
 
 echo
@@ -735,20 +866,24 @@ Read in this order, because each one changes how the next reads:
       Compare against at_winner.json: a term quiet at the parent and loud five
       edits out is a different story from one that is quiet throughout.
 
-  $OUT_ROOT/alpha/tables/recovery.csv
+  $OUT_ROOT/alpha/tables/recovery.csv  +  alpha/capri.log
       THE CONTROL. Did the machinery recover a damaged binder when the answer
       exists and the predictor can see it? Everything else in this project is
-      conditional on this.
+      conditional on this. recovery.csv gives ipSAE and pose RMSD; capri.log
+      gives the iRMSD bar, and on the Alpha rung the two should agree -- a
+      recovered binder that misses the bar would mean the confidence readout
+      and the interface disagree on a task with a known answer.
 
   $OUT_ROOT/alpha/testb_*.json
       Whether the first-order ranking ever surfaced the correct residue. A high
       rank never sampled points at top-k enumeration; a low rank means a better
       sampler over the same ranking cannot help.
 
-  $OUT_ROOT/explore/*/run/tables/jn1_recovery.csv  +  explore/move_usage.txt
-      THE CEILING QUESTION. Run p17_capri_audit.py on each cell and compare the
-      BEST iRMSD, not the mean. Section 30 found the cell means 5-6 A apart and
-      the bests only 0.4 A apart, so the mean cannot answer this.
+  $OUT_ROOT/explore/capri.log  +  explore/move_usage.txt
+      THE CEILING QUESTION. capri.log prints mean/median/BEST iRMSD per cell
+      and the count inside the $IRMSD_BAR A bar, per candidate. Read the BEST,
+      not the mean: section 30 found the cell means 5-6 A apart and the bests
+      only 0.4 A apart, so the mean cannot answer this.
         calls600 beats base on BEST  ->  the ceiling is search-limited, and more
                                          depth buys reach. Section 30.3's
                                          "discrete search saturates" was over-
@@ -774,23 +909,26 @@ Read in this order, because each one changes how the next reads:
       Two cells that are the same configuration. Bounds how much of §30's
       sigma values is trajectory noise.
 
-  $OUT_ROOT/<cell>/run/tables/jn1_recovery.csv  and  $PRIOR_RUN/bindcraft/
+  $OUT_ROOT/seeded_capri.log  and  $PRIOR_RUN/bindcraft/
       The continuous hand-off, against the parent control. §30.3 predicts a
       null: discrete search alone already reached 99.9% of an exhaustive
       optimum at this budget, and every synthetic hand-off came in marginally
       worse. Aggregate per candidate, not per structure -- three held-out seeds
       of one candidate are correlated and are not three measurements.
 
+The iRMSD audit runs automatically after alpha, explore and seeded, and
+reports this project's bar FIRST: candidates with iRMSD <= $IRMSD_BAR A,
+counted per candidate rather than per structure, because the held-out seeds of
+one candidate are correlated and are not three measurements. fnat and DockQ are
+printed but do not gate. On the 2026-10-07 screen that read gradient 16/40
+against uniform 4/40, best 6.66 A. If the summary above says a capri step was
+SKIPPED for want of DockQ, install it with \`uv tool install dockq\` and re-run
+just that one command -- it reads structures and runs no model.
+
 GPU-free post-hoc, on any of the above:
 
   python examples/p17_search_trajectory.py <run>/search/*
   python examples/p17_site_gate_audit.py <run>
-  python examples/p17_capri_audit.py <run> --out capri.csv
-      Reports this project's bar FIRST: candidates with iRMSD <= 10 A, counted
-      per candidate rather than per structure, because the held-out seeds of
-      one candidate are correlated and are not three measurements. fnat and
-      DockQ are printed but do not gate. On the 2026-10-07 screen that read
-      gradient 16/40 against uniform 4/40, best 6.66 A.
 
 Scale bar (§19.1): P17+Alpha measured ipSAE 0.795 and pose 1.98-2.96 A;
 P17+JN.1 ipSAE 0.000-0.163 and pose 22-58 A. §30's gradient cells reached mean
