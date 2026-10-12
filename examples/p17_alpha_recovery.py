@@ -328,6 +328,10 @@ def search_jobs(root, policies, seeds, start_sequence, budget, args, complex_pdb
                 # already spent budget to build that start, so `reference`
                 # keeps one budget across both stages instead of two.
                 ("--budget-anchor", "budget_anchor"),
+                # Positions one proposal may change at once. 2 crosses a valley
+                # whose midpoint the accept test would reject; it does not make
+                # the first-order ranking see synergy.
+                ("--move-arity", "move_arity"),
             ):
                 value = getattr(args, attr, None)
                 if value is not None:
@@ -933,6 +937,10 @@ def build_parser():
             "gradient step; it cannot be recovered after a run.",
         )
         sub_parser.add_argument("--target-entropy", type=float, default=None)
+        # None leaves p17_confidence_search.py's own default (1) alone, so
+        # omitting it keeps a cell's operator exactly as every recorded run had
+        # it. 2 adds the position-disjoint pair moves.
+        sub_parser.add_argument("--move-arity", type=int, default=None)
         # None means "leave p17_confidence_search.py's own default alone", so
         # omitting these keeps a cell's objective exactly as it was before
         # section 26 added the term.

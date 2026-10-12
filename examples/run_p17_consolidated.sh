@@ -17,7 +17,61 @@
 #   norms     ~2 min, 1 GPU      §26.5's per-term gradient norms and cosines
 #   salvage   ~10 min, N GPUs    re-run the held-out stage the bindcraft cell lost
 #   alpha     ~2-4 h, N GPUs     THE CONTROL: 5-edit Alpha recovery
+#   explore   ~6 h, N GPUs       is the ceiling search-limited, and do pair moves help
 #   seeded    ~4-5 h, N GPUs     the continuous cells that never ran
+#
+# WHAT `explore` IS FOR, AND THE CLAIM IT CORRECTS. Section 30.3 concluded that
+# discrete search saturates its budget, and that conclusion was over-reached.
+# It is solid at budget 2, where all 147,117 feasible sequences were enumerated
+# and the search hit the exact optimum 30/30. At budget 5 the space is
+# C(29,5) x 19^5 ~= 2.9e11, so no exhaustive reference exists and the "99.9% of
+# reference" figure was measured against the best any arm found -- the same
+# circularity caught once at budget 2 and missed one budget up. Worse, 200
+# score calls over 2.9e11 sequences is about 7e-10 of the space, so "the search
+# has saturated" cannot be asserted of the real problem at all.
+#
+# Two readings are live and section 30's own numbers do not separate them:
+#
+#   structural ceiling   Both arms reach nearly the same best (6.66 A against
+#                        7.09 A) while their means differ by 5-6 A, and §21.4
+#                        found more evaluations buying confidence rather than
+#                        placement. Then ~6.6 A is the typical value of a broad
+#                        basin and no amount of exploration beats it.
+#   search-limited       We have sampled 1e-9 of the space. The apparent
+#                        ceiling is just where 200 draws land.
+#
+# THREE CELLS SEPARATE THEM, and they share a code version so the comparison is
+# not against an older archive:
+#
+#   base      arity 1, 200 score calls   the matched baseline
+#   calls600  arity 1, 600 score calls   3x the depth, same operator. If the
+#                                        BEST drops below 6.6 A the ceiling is
+#                                        search-limited; if it sits there, it is
+#                                        structural.
+#   arity2    arity 2, 200 score calls   every feasible position-disjoint pair,
+#                                        at matched compute against `base`
+#
+# WHY THE PAIR OPERATOR, AND WHAT IT DOES NOT DO. A pair move changes two
+# positions in one proposal, so the accept test never sees the intermediate
+# state: where edit A alone would be rejected and A+B would be kept, a
+# single-move walk cannot reach A+B because A is rejected first. That is the
+# mechanism, and tests/test_multi_position_moves.py demonstrates it in
+# isolation -- arity 1 never reaches the target pair, arity 2 always does,
+# across ten seeds.
+#
+# It does NOT let the gradient find combinations. The gradient is linear, so a
+# pair's predicted delta is exactly the sum of its two single deltas with no
+# interaction term, and two edits that look bad alone look bad together. Any
+# synergy is discovered by the realised score, never by the proposal ranking.
+# A gain here must not be reported as the gradient having seen an interaction.
+#
+# The operator is a strict generalisation of what already existed: the single
+# moves it offers are the same set `_moves` offers at every budget level, and
+# the exchanges `_moves` builds at the cap -- edit here, revert there -- are
+# the subset of pairs whose second edit returns a position to wt. Overhead is
+# 1.1% of model time at worst, and the entropy target is normalised by
+# log(move count), so the exploration pressure is comparable across arities
+# rather than drifting with the 551 -> 147,117 change in set size.
 #
 # WHY `alpha` IS THE ONE THAT MATTERS. Every JN.1 null so far is ambiguous
 # between two readings: the machinery does not work, or P17 cannot reach an
@@ -52,8 +106,9 @@
 # that failed -- the fourth time this project has had a contract bug between
 # stages and the fourth time the searches survived it.
 #
-# NOT IN THIS SCRIPT, DELIBERATELY. Two changes that would plausibly matter more
-# than anything above are CODE changes and have no business in a launcher:
+# NOT IN THIS SCRIPT, AND WHY. Four things remain outside it. The first two are
+# code that does not exist yet; the last two are small but unwritten. Nothing
+# here is forgotten, and a launcher is not where any of it belongs:
 #
 #   * PUTTING REGISTRY INTO RETENTION. Every arm in §§20-30 varied the proposal
 #     side; the referee has been mean directional-min ipSAE throughout. §30.2 is
@@ -70,6 +125,29 @@
 #     the argument: feasibility needs an init scale >= 4.51, the softmax
 #     Jacobian peaks at 3.0, so every feasible start is already past the
 #     gradient peak and there is no usable operating point.
+#   * THE GRADIENT BYPASS at src/mosaic/search.py's single gradient call site.
+#     Substituting a constant array makes every delta zero, hits the
+#     `scale == 0` branch and yields the same uniform distribution while
+#     leaving `gradient_calls` at zero. That is the only way to ask whether the
+#     gradient earns its 45% of wall-clock, which §29.3 is explicit that the
+#     attribution screen did NOT test, because both of its arms paid for the
+#     gradient. About five lines, still unwritten, still untested.
+#   * SPLITTING POSITION FROM IDENTITY SELECTION (§30.4 item 2). The operator
+#     samples a (position, residue) pair in one draw, so nothing separates "the
+#     gradient knows where" from "the gradient knows what". A cell that takes
+#     the position from the gradient and the residue uniformly would, and it is
+#     the cheapest remaining attribution split -- but it needs a proposal
+#     change, not a flag.
+#
+# ONE LEVER THAT IS A FLAG, AND IS OFF BY DEFAULT. `--edit-budget` is now
+# exposed, and `budget15` is a recognised explore cell that is deliberately not
+# in the default set. 5 substitutions across 29 positions is a tight corner of
+# sequence space and the search exhausts it; §27.3 tried 7 and found nothing,
+# but 7 is barely more than 5 and the honest test is 15. That CHANGES THE
+# PROBLEM rather than improving the method, so its result is not comparable to
+# the other cells on the 10 A bar, and whether to spend the compute is a scope
+# decision rather than a run. Opt in with
+# --explore-cells "base calls600 arity2 budget15".
 #
 # Establishes nothing about binding.
 set -euo pipefail
@@ -97,7 +175,11 @@ ALPHA_RUNG=5
 SEEDED_CELLS="apgm bindcraft colabdesign"
 SEEDS_PER_CELL=20
 
-ALL_STAGES="free norms salvage alpha seeded"
+EXPLORE_CELLS="base calls600 arity2"
+EXPLORE_SEEDS=20
+EXPLORE_DEEP_CALLS=600   # the depth cell, 3x `base`
+EXPLORE_WIDE_BUDGET=15   # the budget15 cell; off by default, see header
+ALL_STAGES="free norms salvage alpha explore seeded"
 STAGES="$ALL_STAGES"
 PRIOR_RUN=""
 SEED_DIR=""
@@ -122,6 +204,11 @@ Options:
   --cells "a b"         seeded cells, subset of: $SEEDED_CELLS
   --norms-repeats N     re-evaluations per term, to separate a real difference
                         from sampling noise (default: $NORMS_REPEATS)
+  --explore-cells "a b" subset of: $EXPLORE_CELLS
+  --explore-seeds N     search seeds per explore cell (default: $EXPLORE_SEEDS)
+  --deep-calls N        score calls for the depth cell (default: $EXPLORE_DEEP_CALLS)
+  --edit-budget N       WT-relative edit cap for every stage (default: $EDIT_BUDGET)
+  --wide-budget N       edit cap for the opt-in budget15 cell (default: $EXPLORE_WIDE_BUDGET)
   --output-dir PATH     default: results/p17_consolidated_<timestamp>
   --dry-run             print the plan; create nothing, load nothing
 EOF
@@ -138,6 +225,11 @@ while [[ $# -gt 0 ]]; do
         --seeds-per-cell) SEEDS_PER_CELL="$2"; shift 2 ;;
         --cells) SEEDED_CELLS="$2"; shift 2 ;;
         --norms-repeats) NORMS_REPEATS="$2"; shift 2 ;;
+        --explore-cells) EXPLORE_CELLS="$2"; shift 2 ;;
+        --explore-seeds) EXPLORE_SEEDS="$2"; shift 2 ;;
+        --deep-calls) EXPLORE_DEEP_CALLS="$2"; shift 2 ;;
+        --edit-budget) EDIT_BUDGET="$2"; shift 2 ;;
+        --wide-budget) EXPLORE_WIDE_BUDGET="$2"; shift 2 ;;
         --output-dir) OUT_ROOT="$2"; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -149,6 +241,7 @@ done
 DEVICES="${DEVICES//[[:space:]]/}"
 IFS=',' read -r -a DEV <<< "$DEVICES"
 SEEDS=$(seq 0 $((SEEDS_PER_CELL - 1)) | tr '\n' ' ')
+EXPLORE_SEED_LIST=$(seq 0 $((EXPLORE_SEEDS - 1)) | tr '\n' ' ')
 [[ -z "$SEED_DIR" && -n "$PRIOR_RUN" ]] && SEED_DIR="$PRIOR_RUN/seeds"
 
 has_stage() { [[ " $STAGES " == *" $1 "* ]]; }
@@ -199,6 +292,16 @@ EOF
         --select-rung $ALPHA_RUNG --edit-budget $ALPHA_RUNG \\
         --search-seeds "$ALPHA_SEEDS" --save-saliency ...
     then Test B again, on this run's own 5-edit rung
+EOF
+    has_stage explore && cat <<EOF
+
+  [explore]  ~6 h  <- is the ceiling search-limited, and do pair moves help
+    base      arity 1, $SCORE_CALLS calls          the matched baseline
+    calls600  arity 1, $EXPLORE_DEEP_CALLS calls          3x depth, same operator
+    arity2    arity 2, $SCORE_CALLS calls          every feasible position-disjoint pair
+    budget15  arity 1, budget $EXPLORE_WIDE_BUDGET          opt-in; changes the PROBLEM, not the method
+    cells: $EXPLORE_CELLS   seeds/cell: $EXPLORE_SEEDS
+    read the BEST iRMSD, not the mean: the question is whether the ceiling moves
 EOF
     has_stage seeded && cat <<EOF
 
@@ -456,6 +559,109 @@ if has_stage alpha; then
         || note "alpha/testb: no saliency.csv was written"
 fi
 
+############################ stage: explore ############################
+if has_stage explore; then
+    echo
+    echo "################ stage explore (~6 h) ################"
+    echo "  Does the ~6.6 A ceiling move? Three cells, one code version."
+    echo "  base     arity 1, $SCORE_CALLS calls   the matched baseline"
+    echo "  calls600 arity 1, $EXPLORE_DEEP_CALLS calls   3x depth, same operator"
+    echo "  arity2   arity 2, $SCORE_CALLS calls   position-disjoint pair moves"
+    echo
+    echo "  Read the BEST iRMSD per cell, not the mean. Section 30 found the"
+    echo "  means 5-6 A apart and the bests only 0.4 A apart, so the open"
+    echo "  question is the ceiling and the mean cannot answer it."
+    echo
+
+    EXPLORE_COMMON=(--devices "$DEVICES" --steps "$STEPS" --opendde-dtype "$DTYPE"
+                    --max-proposals "$PROPOSALS" --target-entropy "$ENTROPY"
+                    --acceptance-temperature "$ACCEPT_TEMP"
+                    --registry-contact-distance "$REGISTRY_CUTOFF" --save-saliency)
+
+    for c in $EXPLORE_CELLS; do
+        echo
+        echo "---------------- cell $c ----------------"
+        budget="$EDIT_BUDGET"
+        case "$c" in
+            base)     arity=1; calls="$SCORE_CALLS" ;;
+            calls600) arity=1; calls="$EXPLORE_DEEP_CALLS" ;;
+            arity2)   arity=2; calls="$SCORE_CALLS" ;;
+            budget15) arity=1; calls="$SCORE_CALLS"; budget="$EXPLORE_WIDE_BUDGET" ;;
+            *) echo "  unknown explore cell: $c" >&2
+               note "explore/$c: SKIPPED (unknown cell)"; continue ;;
+        esac
+        echo "  move arity $arity, $calls score calls, budget $budget, $EXPLORE_SEEDS seeds"
+        if [[ "$budget" != "$EDIT_BUDGET" ]]; then
+            echo "  NOTE: this cell changes the PROBLEM, not the method. Its result"
+            echo "  is not comparable to the other cells on the 10 A bar -- a wider"
+            echo "  budget searches a different space. Read it on its own."
+        fi
+        if [[ -f "$OUT_ROOT/explore/$c/run/tables/jn1_recovery.csv" ]]; then
+            note "explore/$c: SKIPPED (already has a table)"
+            continue
+        fi
+        mkdir -p "$OUT_ROOT/explore/$c"
+        # The gradient ceiling tracks the score ceiling. One gradient serves
+        # three to four proposals, so a depth cell that kept the old gradient
+        # cap would stop on the gradient budget instead of on the one being
+        # varied, and the comparison would measure the wrong thing.
+        if "$PYTHON_BIN" "$DRIVER" jn1 \
+            --output-dir "$OUT_ROOT/explore/$c/run" --policies "$POLICY" \
+            --edit-budget "$budget" --weight-registry "$WEIGHT_REGISTRY" \
+            --move-arity "$arity" \
+            --max-score-calls "$calls" --max-gradient-calls "$calls" \
+            --search-seeds $EXPLORE_SEED_LIST "${EXPLORE_COMMON[@]}" \
+            2>&1 | tee "$OUT_ROOT/explore/$c/run.log"; then
+            note "explore/$c: PASSED (arity $arity, $calls calls, budget $budget)"
+        else
+            note "explore/$c: FAILED (see explore/$c/run.log)"
+        fi
+    done
+
+    # Was the pair operator used, or only offered? The event log records
+    # move_positions per proposal, and that is the only way to tell -- a cell
+    # that offered 147,117 pair moves and sampled none of them would otherwise
+    # look identical to the baseline and be read as a null for the operator.
+    if [[ -d "$OUT_ROOT/explore" ]]; then
+        echo
+        echo "-- was the pair operator used?"
+        "$PYTHON_BIN" - "$OUT_ROOT/explore" <<"PY" | tee "$OUT_ROOT/explore/move_usage.txt" || true
+import json, sys
+from collections import Counter
+from pathlib import Path
+
+for log in sorted(Path(sys.argv[1]).glob("*/run/search/*/logs/events.jsonl")):
+    # explore/<cell>/run/search/<run>/logs/events.jsonl
+    cell = log.parents[4].name
+    run = log.parents[1].name
+    sizes, kept = Counter(), Counter()
+    with log.open() as handle:
+        for line in handle:
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            if event.get("event") != "proposal":
+                continue
+            size = event.get("move_positions")
+            if size is None:
+                continue
+            sizes[size] += 1
+            if event.get("accepted"):
+                kept[size] += 1
+    if not sizes:
+        continue
+    total = sum(sizes.values())
+    parts = ", ".join(
+        f"{n}-position: {sizes[n]} proposed ({100 * sizes[n] / total:.0f}%), "
+        f"{kept[n]} kept"
+        for n in sorted(sizes)
+    )
+    print(f"  {cell:<10} {run:<20} {parts}")
+PY
+    fi
+fi
+
 ############################ stage: seeded ############################
 if has_stage seeded; then
     echo
@@ -538,6 +744,31 @@ Read in this order, because each one changes how the next reads:
       Whether the first-order ranking ever surfaced the correct residue. A high
       rank never sampled points at top-k enumeration; a low rank means a better
       sampler over the same ranking cannot help.
+
+  $OUT_ROOT/explore/*/run/tables/jn1_recovery.csv  +  explore/move_usage.txt
+      THE CEILING QUESTION. Run p17_capri_audit.py on each cell and compare the
+      BEST iRMSD, not the mean. Section 30 found the cell means 5-6 A apart and
+      the bests only 0.4 A apart, so the mean cannot answer this.
+        calls600 beats base on BEST  ->  the ceiling is search-limited, and more
+                                         depth buys reach. Section 30.3's
+                                         "discrete search saturates" was over-
+                                         reached: it holds at budget 2 where
+                                         147,117 sequences were enumerated, not
+                                         at budget 5 where 200 calls sample
+                                         7e-10 of a 2.9e11 space.
+        calls600 ties base on BEST   ->  the ceiling is structural, and it is
+                                         the budget, the objective or the
+                                         predictor. Not the search.
+        arity2 beats base            ->  combination effects are real and the
+                                         accept test was blocking them. Report
+                                         it as the ACCEPT TEST never seeing the
+                                         intermediate state, NOT as the gradient
+                                         having found an interaction -- a pair's
+                                         predicted delta is the exact sum of its
+                                         parts, so the ranking cannot see synergy.
+      Check move_usage.txt first. A cell that offered 147,117 pair moves and
+      sampled none of them looks identical to the baseline, and that is an
+      unused operator rather than a null result.
 
   $OUT_ROOT/free/reproducibility.json
       Two cells that are the same configuration. Bounds how much of §30's

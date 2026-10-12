@@ -253,6 +253,17 @@ def build_parser():
     parser.add_argument("--diagnostic-max-target-rmsd", type=float, default=3.0)
     parser.add_argument("--diagnostic-min-proposal-tv", type=float, default=1e-4)
     parser.add_argument("--diagnostic-repeat-factor", type=float, default=3.0)
+    parser.add_argument(
+        "--move-arity",
+        type=int,
+        default=1,
+        help="positions one proposal may change at once (default: %(default)s, "
+        "the operator every recorded run used). 2 adds every feasible "
+        "position-disjoint pair, which lets the search cross a valley whose "
+        "midpoint the accept test would reject. It does NOT let the "
+        "first-order ranking see synergy: the gradient is linear, so a pair's "
+        "predicted delta is the sum of its parts.",
+    )
     parser.add_argument("--weight-iptm", type=float, default=0.025)
     parser.add_argument(
         "--weight-interface-pae",
@@ -353,6 +364,7 @@ def main(argv=None):
                     "target_entropy",
                     "acceptance_temperature",
                     "seed",
+                    "move_arity",
                 )
             }
         )

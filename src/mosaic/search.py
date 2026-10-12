@@ -25,6 +25,13 @@ class SearchConfig:
     target_entropy: float = 0.6
     acceptance_temperature: float = 0.02
     seed: int = 0
+    # Positions a single proposal may change at once. 1 is the operator every
+    # recorded result used and keeps `_moves` as the generator verbatim, so the
+    # RNG stream is unchanged. 2 adds every feasible position-disjoint pair,
+    # which lets the search cross a valley whose midpoint the accept test would
+    # reject -- see `_multi_moves` for why that is the mechanism and why the
+    # first-order ranking still cannot see synergy.
+    move_arity: int = 1
 
     def __post_init__(self):
         if self.policy not in ("independent", "population"):
@@ -37,10 +44,18 @@ class SearchConfig:
             ("max_gradient_calls", 1),
             ("max_proposals", 0),
             ("seed", 0),
+            ("move_arity", 1),
         ):
             value = getattr(self, name)
             if not isinstance(value, (int, np.integer)) or value < minimum:
                 raise ValueError(f"{name} must be an integer >= {minimum}")
+        if self.move_arity > 2:
+            raise ValueError(
+                "move_arity above 2 is not implemented: the triple move set is "
+                "~2.5e7 moves and would need a pruning rule, and pruning by "
+                "summed delta discards exactly the combinations a multi-position "
+                "operator exists to reach"
+            )
         if not 0 < self.target_entropy <= 1:
             raise ValueError("target_entropy must be in (0, 1]")
         if (
@@ -109,6 +124,118 @@ def _moves(sequence, wt, mask, budget, gradient):
                         )
                     )
     return moves, np.asarray(deltas, dtype=np.float64)
+
+
+def _atomic_edits(sequence, wt, mask, gradient):
+    """Every single substitution available at the parent, vectorised.
+
+    Returns `(position, residue, delta, cost)` arrays. `cost` is the change in
+    Hamming distance from `wt` that the edit causes: `+1` when it moves a
+    wt-matching position off wt, `-1` when it reverts one, and `0` when it
+    swaps one non-wt residue for another. Costs **add across distinct
+    positions**, which is the whole reason multi-position feasibility is a sum
+    rather than the case analysis `_moves` does at the cap.
+    """
+    positions = np.flatnonzero(mask)
+    alphabet = gradient.shape[1]
+    pos = np.repeat(positions, alphabet)
+    aa = np.tile(np.arange(alphabet), len(positions))
+    keep = aa != sequence[pos]
+    pos, aa = pos[keep], aa[keep]
+    delta = (gradient[pos, aa] - gradient[pos, sequence[pos]]).astype(np.float64)
+    cost = (aa != wt[pos]).astype(np.int64) - (sequence[pos] != wt[pos]).astype(
+        np.int64
+    )
+    return pos, aa, delta, cost
+
+
+def _multi_moves(sequence, wt, mask, budget, gradient, arity):
+    """Single substitutions, then every feasible position-disjoint k-tuple.
+
+    Returns `(moves, deltas, single_count)`. A move here is a tuple of
+    `(position, residue)` edits applied together, so a single substitution is
+    `((pos, aa),)` and a simultaneous pair is `((p1, a1), (p2, a2))`. The first
+    `single_count` entries are the singles, which keeps the saliency map a
+    per-(position, residue) object whatever the arity.
+
+    The single-move subset is **exactly** the set `_moves` generates without
+    exchanges, and the exchanges `_moves` builds at the cap -- edit here,
+    revert there -- are a strict subset of the pairs here, namely the ones
+    whose second edit returns a position to wt. So this generalises the
+    existing operator rather than sitting beside it.
+
+    ⚠️ **A first-order ranking cannot see synergy, and this does not change
+    that.** The gradient is linear, so a pair's predicted delta is the *sum* of
+    its two single deltas, with no interaction term. Two edits that are each
+    unfavourable alone therefore rank unfavourably together, and nothing here
+    discovers a combination from the gradient.
+
+    What a pair move does buy is that **the accept test never sees the
+    intermediate state.** Where edit A alone would be rejected and A+B would be
+    kept, a single-move walk cannot reach A+B because A is rejected first. A
+    pair move proposes A+B directly and the realised score -- not the
+    first-order ranking -- is what discovers the combination. That is the
+    mechanism, and it is worth stating precisely because a gain here must not
+    be reported as the gradient having found an interaction.
+
+    Arity is capped at 2 on purpose. Over 29 designable positions and 20
+    residues the pair set is about 1.5e5 moves, which softmaxes in
+    milliseconds; triples would be about 2.5e7, which needs a pruning rule, and
+    any shortlist by summed delta would discard precisely the combinations
+    whose components look bad alone.
+    """
+    if arity < 1:
+        raise ValueError("arity must be at least 1")
+    if arity > 2:
+        raise ValueError(
+            "arity above 2 needs a pruning rule that is not implemented; the "
+            "triple set is ~2.5e7 moves and ranking by summed delta would "
+            "discard the combinations this operator exists to reach"
+        )
+    pos, aa, delta, cost = _atomic_edits(sequence, wt, mask, gradient)
+    spent = int(np.count_nonzero(sequence != wt))
+
+    feasible = spent + cost <= budget
+    moves = [
+        ((int(p), int(a)),) for p, a in zip(pos[feasible], aa[feasible])
+    ]
+    blocks = [delta[feasible]]
+    single_count = len(moves)
+
+    if arity >= 2 and len(pos) > 1:
+        left, right = np.triu_indices(len(pos), k=1)
+        ok = (pos[left] != pos[right]) & (
+            spent + cost[left] + cost[right] <= budget
+        )
+        left, right = left[ok], right[ok]
+        moves.extend(
+            ((int(p1), int(a1)), (int(p2), int(a2)))
+            for p1, a1, p2, a2 in zip(pos[left], aa[left], pos[right], aa[right])
+        )
+        blocks.append(delta[left] + delta[right])
+
+    deltas = (
+        np.concatenate(blocks) if blocks else np.zeros(0, dtype=np.float64)
+    )
+    return moves, deltas, single_count
+
+
+def _move_edits(move, wt):
+    """The `(position, residue)` edits a move applies, for either move form.
+
+    Two forms coexist because `_moves` predates the multi-position operator and
+    is still the arity-1 path verbatim: its order sets the RNG stream for every
+    result recorded so far, and `p17_pose_diagnostics.py` compares its output
+    by equality. A legacy move is `(position, residue, reverted_or_minus_one)`;
+    a `_multi_moves` move is a tuple of `(position, residue)` pairs.
+    """
+    if isinstance(move[0], tuple):
+        return [(int(p), int(a)) for p, a in move]
+    position, residue, reverted = move
+    edits = [(int(position), int(residue))]
+    if reverted >= 0:
+        edits.append((int(reverted), int(wt[reverted])))
+    return edits
 
 
 def _proposal_distribution(deltas, target_entropy):
@@ -335,10 +462,27 @@ def run_gradient_search(
                 cheap_loss=loss,
                 gradient_calls=stats["gradient_calls"],
             )
-        moves, deltas = _moves(
-            sequence, wt, mask, config.edit_budget, gradients[parent.id]
-        )
-        if on_saliency is not None and moves:
+        if config.move_arity == 1:
+            # `_moves` verbatim, so the move order -- and therefore the RNG
+            # stream -- is identical to every result recorded before the
+            # multi-position operator existed.
+            moves, deltas = _moves(
+                sequence, wt, mask, config.edit_budget, gradients[parent.id]
+            )
+            saliency_moves, saliency_deltas = moves, deltas
+        else:
+            moves, deltas, single_count = _multi_moves(
+                sequence, wt, mask, config.edit_budget,
+                gradients[parent.id], config.move_arity,
+            )
+            # The singles are the prefix, so the saliency map stays the same
+            # per-(position, residue) object at any arity rather than becoming
+            # a map over move combinations.
+            saliency_moves = [
+                (position, residue, -1) for ((position, residue),) in moves[:single_count]
+            ]
+            saliency_deltas = deltas[:single_count]
+        if on_saliency is not None and saliency_moves:
             # Per-(position, residue) first-order delta loss, which the search
             # computes at every step and otherwise discards -- only the chosen
             # move survives into the event log. Persisting it gives a saliency
@@ -348,8 +492,8 @@ def run_gradient_search(
             on_saliency(
                 candidate_id=parent.id,
                 sequence=sequence.copy(),
-                moves=list(moves),
-                deltas=np.asarray(deltas),
+                moves=list(saliency_moves),
+                deltas=np.asarray(saliency_deltas),
                 gradient_calls=stats["gradient_calls"],
             )
         if not moves:
@@ -359,11 +503,10 @@ def run_gradient_search(
             deltas, config.target_entropy
         )
         move_index = int(rng.choice(len(moves), p=probs))
-        pos, aa, reverted = moves[move_index]
+        edits = _move_edits(moves[move_index], wt)
         proposal = sequence.copy()
-        proposal[pos] = aa
-        if reverted >= 0:
-            proposal[reverted] = wt[reverted]
+        for position, residue in edits:
+            proposal[position] = residue
         candidate, cache_hit = evaluate(validate(proposal))
         stats["proposals"] += 1
         slot = _competitor(active, candidate, parent_slot, config.policy)
@@ -410,6 +553,11 @@ def run_gradient_search(
             duplicate=duplicate,
             filling=bool(filling),
             move=list(moves[move_index]),
+            # How many positions this one proposal changed. At arity 1 it is 1,
+            # or 2 for an exchange at the cap; at arity 2 it separates the pair
+            # moves from the singles in the same log, which is what tells you
+            # whether the operator was actually used rather than merely offered.
+            move_positions=len(edits),
             predicted_loss_delta=float(deltas[move_index]),
             entropy=entropy,
             proposal_temperature=temperature,
