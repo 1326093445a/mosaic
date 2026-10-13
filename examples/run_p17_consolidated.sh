@@ -102,13 +102,22 @@
 # been listed as outstanding since §23.1 and deferred every time, including by
 # §29.6, and that deferral is what left thirty sections uninterpretable.
 #
-# WHY `free` AND `norms` COME FIRST. §26.5's per-term gradient norms now gate
-# three separate questions: §27.2's registry null (a term two orders of
-# magnitude below its neighbours was present, not tried), which term produced
-# §30.2's 5.17 A iRMSD gain, and whether the EditBudget hinge can hold at the
-# real objective's gradient scale, which §30.3 showed decides whether a relaxed
-# optimum stays inside its budget. One forward-plus-backward pass per term.
-# Running the expensive stages before this number is known is how §27 happened.
+# WHY `free` AND `norms` COME FIRST. §26.5's per-term gradient norms gate two
+# questions: §27.2's registry null (a term two orders of magnitude below its
+# neighbours was present, not tried) and which term produced §30.2's 5.17 A
+# iRMSD gain. One forward-plus-backward pass per term. Running the expensive
+# stages before this number is known is how §27 happened.
+#
+# WHAT `norms` CANNOT ANSWER, AND WHY. Not §30.4's EditBudget hinge. An earlier
+# version of this header claimed it could; that was wrong. E(s) = sum_pos
+# (1 - p_parent) equals Hamming EXACTLY at a one-hot, so 5*relu(E - budget) has
+# gradient 0 everywhere below its kink and, because relu'(0) = 0 in JAX, exactly
+# 0 AT it. The term therefore reads 0.000 at the reference (Hamming 0) and 0.000
+# at a winner five edits out (Hamming 5, sitting on the kink) -- both confirmed
+# on 2026-10-12. The hinge is structurally invisible at every one-hot with
+# Hamming <= budget, and can only be measured at an interior point of the
+# relaxed parameterisation, which is the one regime this instrument never
+# evaluates. §30.4 stays open and this stage cannot close it.
 #
 # WHAT `salvage` RECOVERS, AND WHY IT IS NOT A RE-RUN. On 2026-10-08 all eight
 # held-out shards of the continuous stage's bindcraft cell failed. The searches
@@ -861,10 +870,19 @@ Read in this order, because each one changes how the next reads:
   $OUT_ROOT/norms/at_reference.json
       Per-term gradient norms and pairwise cosines. If registry's norm is
       orders below contact's and pose's, §27.2's null was a scale artefact and
-      the term was never actually tried. If the edit term's norm is comparable
-      to the others', §30.4's hinge bind is real at the objective's own scale.
+      the term was never actually tried. The edit term reads 0.000 by
+      construction at any one-hot inside the budget, so it says nothing about
+      §30.4 either way -- do not read it as the hinge being slack.
+      Read the COSINES as carefully as the norms: two terms at cosine ~1 are one
+      direction carrying two weights, and a term's norm then overstates what it
+      contributes that its neighbour did not. On 2026-10-12 contact|registry was
+      +0.942, which is the mechanism behind §27.2's null.
       Compare against at_winner.json: a term quiet at the parent and loud five
-      edits out is a different story from one that is quiet throughout.
+      edits out is a different story from one that is quiet throughout. On
+      2026-10-12 every structure term's norm fell 4-7x from reference to winner
+      while ablang2 held flat, making the sequence prior ~37% of the gradient
+      five edits out -- i.e. the structure signal is largely spent by the time
+      the budget is.
 
   $OUT_ROOT/alpha/tables/recovery.csv  +  alpha/capri.log
       THE CONTROL. Did the machinery recover a damaged binder when the answer

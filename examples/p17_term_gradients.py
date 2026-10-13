@@ -262,8 +262,16 @@ def main(argv=None):
         cosines[f"{a}|{b}"] = cosine(gradients[a], gradients[b])
 
     ranked = sorted(summary, key=lambda n: summary[n]["grad_norm"], reverse=True)
-    spread = summary[ranked[0]]["grad_norm"] / max(
-        summary[ranked[-1]]["grad_norm"], 1e-30
+    # A term with an exactly zero gradient carries no direction, and dividing by
+    # it reports the guard floor rather than a spread. This is the normal case,
+    # not an edge one: `edit` is exactly zero at every one-hot with Hamming <=
+    # budget, which is every point this instrument evaluates.
+    nonzero = [n for n in ranked if summary[n]["grad_norm"] > 0.0]
+    zero_terms = [n for n in ranked if summary[n]["grad_norm"] <= 0.0]
+    spread = (
+        summary[nonzero[0]]["grad_norm"] / summary[nonzero[-1]]["grad_norm"]
+        if len(nonzero) > 1
+        else None
     )
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -285,7 +293,11 @@ def main(argv=None):
         terms=summary,
         pairwise_cosines=cosines,
         ranked_by_gradient_norm=ranked,
-        largest_over_smallest=float(spread),
+        largest_over_smallest=(None if spread is None else float(spread)),
+        largest_over_smallest_terms=(
+            None if spread is None else [nonzero[0], nonzero[-1]]
+        ),
+        zero_gradient_terms=zero_terms,
         interpretation=(
             "Weighted per-term gradient norms over the designable rows at one "
             "sequence. Each structure term is built through its own "
@@ -299,7 +311,17 @@ def main(argv=None):
 
     print()
     print(f"ranked by gradient norm: {' > '.join(ranked)}")
-    print(f"largest / smallest: {spread:.3g}")
+    if spread is None:
+        print("largest / smallest: n/a (fewer than two terms have a nonzero gradient)")
+    else:
+        print(
+            f"largest / smallest: {spread:.3g}  "
+            f"({nonzero[0]} / {nonzero[-1]}, over the nonzero terms only)"
+        )
+    if zero_terms:
+        print(
+            f"exactly zero gradient, excluded from the ratio: {', '.join(zero_terms)}"
+        )
     for name in ranked:
         s = summary[name]
         print(f"  {name:<9} |grad| {s['grad_norm']:>11.5f}   "
