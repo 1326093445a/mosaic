@@ -122,9 +122,16 @@ def test_a_shard_without_a_reference_is_reported_not_raised(tmp_path):
     # The stranded count is the whole point: it is what stops "N inside the
     # bar" being read as a fraction of everything that was launched.
     assert incomplete[0]["stranded"] == 4
+    assert incomplete[0]["kind"] == "data-loss"
 
 
-def test_a_shard_missing_everything_strands_zero_and_still_reports(tmp_path):
+def test_a_shard_with_nothing_assigned_is_idle_not_data_loss(tmp_path):
+    """Sharding 5 sequences over 8 devices leaves three workers idle.
+
+    Those shards write a summary saying `sequences: 0, completed: true` and no
+    reference.pdb. Calling that data loss sent me hunting a failure that had
+    not happened; only a shard holding structures it cannot score lost anything.
+    """
     heldout = tmp_path / "base" / "run" / "heldout"
     shard(heldout / "shard_0")
     (heldout / "shard_1").mkdir()
@@ -132,6 +139,7 @@ def test_a_shard_missing_everything_strands_zero_and_still_reports(tmp_path):
     assert len(jobs) == 2
     assert len(incomplete) == 1
     assert incomplete[0]["stranded"] == 0
+    assert incomplete[0]["kind"] == "idle"
 
 
 # --------------------------------------------------------------------------

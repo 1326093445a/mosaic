@@ -200,9 +200,16 @@ def discover(screen_root, cells):
             native = shard / "reference.pdb"
             if not native.exists():
                 stranded = len(list((shard / "structures").glob("candidate_*/seed_*.pdb")))
+                # An idle shard is not a problem. The held-out driver shards
+                # over its devices, so 5 sequences across 8 shards leaves three
+                # workers with `sequences: 0, completed: true` and no reference
+                # written. Reporting that as data loss sent me looking for a
+                # failure that never happened on 2026-10-12. Only a shard with
+                # structures it cannot score has actually lost something.
                 incomplete.append(dict(
                     cell=cell, shard=shard.name, path=shard,
                     reason="no reference.pdb", stranded=stranded,
+                    kind="idle" if stranded == 0 else "data-loss",
                 ))
                 continue
             for cand in sorted((shard / "structures").glob("candidate_*")):
@@ -298,18 +305,27 @@ def main(argv=None):
     jobs, incomplete = discover(
         args.screen_root, set(args.cells) if args.cells else None
     )
-    if incomplete:
+    idle = [e for e in incomplete if e["kind"] == "idle"]
+    lost = [e for e in incomplete if e["kind"] == "data-loss"]
+    if idle:
+        # One quiet line. These are workers that were allocated and had nothing
+        # assigned, which is what sharding N sequences over M > N devices does.
+        print(f"note: {len(idle)} shard(s) held no structures and were skipped "
+              f"({', '.join(e['cell'] + '/' + e['shard'] for e in idle)}); "
+              "a shard with nothing assigned is idle, not failed")
+    if lost:
         # Before the numbers, never after. A reader who sees the counts first
         # has already formed the conclusion by the time they reach the caveat.
-        total = sum(entry["stranded"] for entry in incomplete)
+        total = sum(e["stranded"] for e in lost)
         print(
-            f"WARNING: {len(incomplete)} shard(s) cannot be scored and are "
-            f"excluded, stranding {total} structure(s). Every count below is "
-            "over what remains, not over what was launched."
+            f"WARNING: {len(lost)} shard(s) hold structures that cannot be "
+            f"scored and are excluded, stranding {total} structure(s). Every "
+            "count below is over what remains, not over what was launched."
         )
-        for entry in incomplete:
+        for entry in lost:
             print(f"  {entry['cell']}/{entry['shard']}: {entry['reason']} "
                   f"({entry['stranded']} structure(s) stranded)")
+    if idle or lost:
         print()
     if not jobs:
         parser.error(
@@ -358,12 +374,12 @@ def main(argv=None):
         writer.writeheader()
         writer.writerows({k: r[k] for k in fields} for r in rows)
 
-    if incomplete:
-        # Repeated at the point of use. A reader who scrolls straight to the
-        # counts would otherwise never see the exclusion.
-        total = sum(entry["stranded"] for entry in incomplete)
-        print(f"\n({len(incomplete)} shard(s) excluded above, {total} "
-              "structure(s) stranded -- the counts below are over what remains)")
+    if lost:
+        # Repeated at the point of use, but only for real loss. A reader who
+        # scrolls straight to the counts would otherwise never see it.
+        total = sum(e["stranded"] for e in lost)
+        print(f"\n({len(lost)} shard(s) excluded above, {total} structure(s) "
+              "stranded -- the counts below are over what remains)")
     print("\nmean/median/best per cell"
           + ("" if args.include_wt else ", excluding the unmodified start"))
     scored = rows if args.include_wt else [r for r in rows if not r["is_wt"]]
