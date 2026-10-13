@@ -54,7 +54,7 @@ def test_a_screen_of_cells_is_discovered_per_cell(tmp_path):
     for cell in ("base", "arity2"):
         shard(tmp_path / cell / "run" / "heldout" / "shard_0")
     assert [c for c, _ in audit.cell_runs(tmp_path)] == ["arity2", "base"]
-    jobs = audit.discover(tmp_path, None)
+    jobs, _ = audit.discover(tmp_path, None)
     assert {j["cell"] for j in jobs} == {"base", "arity2"}
     assert len(jobs) == 4  # two cells x two candidates x one seed
 
@@ -66,7 +66,7 @@ def test_a_single_run_is_discovered_as_one_cell(tmp_path):
         (run / name).mkdir(parents=True)
     shard(run / "heldout" / "shard_0")
     assert audit.cell_runs(run) == [("alpha", run)]
-    jobs = audit.discover(run, None)
+    jobs, _ = audit.discover(run, None)
     assert jobs and {j["cell"] for j in jobs} == {"alpha"}
     # and the model paths stay relative to what was passed in, which is what
     # main() writes into the CSV
@@ -85,7 +85,7 @@ def test_a_single_run_wins_over_the_screen_walk(tmp_path):
 def test_cells_filter_applies_to_both_layouts(tmp_path):
     for cell in ("apgm", "bindcraft"):
         shard(tmp_path / cell / "run" / "heldout" / "shard_0")
-    jobs = audit.discover(tmp_path, {"bindcraft"})
+    jobs, _ = audit.discover(tmp_path, {"bindcraft"})
     assert {j["cell"] for j in jobs} == {"bindcraft"}
 
 
@@ -99,12 +99,39 @@ def test_sibling_directories_without_heldout_are_ignored(tmp_path):
     assert [c for c, _ in audit.cell_runs(tmp_path)] == ["bindcraft"]
 
 
-def test_a_shard_without_a_reference_is_an_error_not_a_skip(tmp_path):
-    root = tmp_path / "base" / "run" / "heldout" / "shard_0"
-    shard(root)
-    (root / "reference.pdb").unlink()
-    with pytest.raises(FileNotFoundError, match="reference.pdb"):
-        audit.discover(tmp_path, None)
+def test_a_shard_without_a_reference_is_reported_not_raised(tmp_path):
+    """One incomplete shard must not block the shards beside it.
+
+    This used to raise, and on 2026-10-12 that killed the audit of
+    `alpha/heldout` because shard_5 of eight had no reference.pdb. It is now
+    excluded and reported -- the thing the raise was protecting against is a
+    count that silently shrinks, so the exclusion has to be loud, not absent.
+    """
+    heldout = tmp_path / "base" / "run" / "heldout"
+    shard(heldout / "shard_0")
+    shard(heldout / "shard_1", candidates=(0, 1), seeds=(0, 1))
+    (heldout / "shard_1" / "reference.pdb").unlink()
+
+    jobs, incomplete = audit.discover(tmp_path, None)
+
+    assert {j["shard"] for j in jobs} == {"shard_0"}, "the good shard survived"
+    assert len(jobs) == 2, "both candidates of the good shard survived"
+    assert len(incomplete) == 1
+    assert incomplete[0]["shard"] == "shard_1"
+    assert incomplete[0]["reason"] == "no reference.pdb"
+    # The stranded count is the whole point: it is what stops "N inside the
+    # bar" being read as a fraction of everything that was launched.
+    assert incomplete[0]["stranded"] == 4
+
+
+def test_a_shard_missing_everything_strands_zero_and_still_reports(tmp_path):
+    heldout = tmp_path / "base" / "run" / "heldout"
+    shard(heldout / "shard_0")
+    (heldout / "shard_1").mkdir()
+    jobs, incomplete = audit.discover(tmp_path, None)
+    assert len(jobs) == 2
+    assert len(incomplete) == 1
+    assert incomplete[0]["stranded"] == 0
 
 
 # --------------------------------------------------------------------------
@@ -120,7 +147,7 @@ def test_is_wt_column_is_authoritative_when_present(tmp_path):
         dict(candidate_id=2, is_wt="True"),
     ])
     assert audit.wt_candidate_ids(run) == {0, 2}
-    jobs = audit.discover(tmp_path, None)
+    jobs, _ = audit.discover(tmp_path, None)
     assert {j["candidate_id"] for j in jobs if j["is_wt"]} == {0, 2}
 
 
@@ -137,7 +164,7 @@ def test_a_table_without_is_wt_falls_back_to_candidate_zero(tmp_path):
         dict(candidate_id=1, mean_ipsae=0.5),
     ])
     assert audit.wt_candidate_ids(run) == {0}
-    jobs = audit.discover(run, None)
+    jobs, _ = audit.discover(run, None)
     assert {j["candidate_id"] for j in jobs if j["is_wt"]} == {0}
 
 

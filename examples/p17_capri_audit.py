@@ -180,7 +180,18 @@ def cell_runs(screen_root):
 
 
 def discover(screen_root, cells):
-    found = []
+    """`(scoreable rows, unscoreable shards)` under a screen or a single run.
+
+    A shard with no `reference.pdb` has no ground truth, so nothing inside it
+    can be scored. That used to raise, which let one incomplete shard of eight
+    block the audit of the other seven -- the 2026-10-12 consolidated run died
+    on `alpha/heldout/shard_5` with seven good shards beside it. It is reported
+    instead, with the number of structures stranded in it, because the failure
+    the raise was guarding against is a count that silently shrinks: "16 of 40
+    inside the bar" must never be able to mean "of the 40 that happened to
+    finish writing".
+    """
+    found, incomplete = [], []
     for cell, run_root in cell_runs(screen_root):
         if cells and cell not in cells:
             continue
@@ -188,7 +199,12 @@ def discover(screen_root, cells):
         for shard in sorted((run_root / "heldout").glob("shard_*")):
             native = shard / "reference.pdb"
             if not native.exists():
-                raise FileNotFoundError(f"{shard} has no reference.pdb")
+                stranded = len(list((shard / "structures").glob("candidate_*/seed_*.pdb")))
+                incomplete.append(dict(
+                    cell=cell, shard=shard.name, path=shard,
+                    reason="no reference.pdb", stranded=stranded,
+                ))
+                continue
             for cand in sorted((shard / "structures").glob("candidate_*")):
                 cid = int(cand.name.split("_")[-1])
                 for model in sorted(cand.glob("seed_*.pdb")):
@@ -197,7 +213,7 @@ def discover(screen_root, cells):
                         seed=model.stem.split("_")[-1], model=model,
                         native=native, is_wt=cid in wt_ids,
                     ))
-    return found
+    return found, incomplete
 
 
 def per_candidate_irmsd(rows):
@@ -279,7 +295,22 @@ def main(argv=None):
             "project's environment)"
         )
 
-    jobs = discover(args.screen_root, set(args.cells) if args.cells else None)
+    jobs, incomplete = discover(
+        args.screen_root, set(args.cells) if args.cells else None
+    )
+    if incomplete:
+        # Before the numbers, never after. A reader who sees the counts first
+        # has already formed the conclusion by the time they reach the caveat.
+        total = sum(entry["stranded"] for entry in incomplete)
+        print(
+            f"WARNING: {len(incomplete)} shard(s) cannot be scored and are "
+            f"excluded, stranding {total} structure(s). Every count below is "
+            "over what remains, not over what was launched."
+        )
+        for entry in incomplete:
+            print(f"  {entry['cell']}/{entry['shard']}: {entry['reason']} "
+                  f"({entry['stranded']} structure(s) stranded)")
+        print()
     if not jobs:
         parser.error(
             f"no held-out structures under {args.screen_root}; expected either "
@@ -327,6 +358,12 @@ def main(argv=None):
         writer.writeheader()
         writer.writerows({k: r[k] for k in fields} for r in rows)
 
+    if incomplete:
+        # Repeated at the point of use. A reader who scrolls straight to the
+        # counts would otherwise never see the exclusion.
+        total = sum(entry["stranded"] for entry in incomplete)
+        print(f"\n({len(incomplete)} shard(s) excluded above, {total} "
+              "structure(s) stranded -- the counts below are over what remains)")
     print("\nmean/median/best per cell"
           + ("" if args.include_wt else ", excluding the unmodified start"))
     scored = rows if args.include_wt else [r for r in rows if not r["is_wt"]]
