@@ -52,39 +52,133 @@ HELDOUT_SEEDS = (101, 102, 103)
 NON_BINDING_IPSAE_CEILING = 0.1629
 
 
+def archived_selection_seeds(root):
+    """The selection seeds the ARCHIVED searches actually used, or None.
+
+    The retry stage resolves from the CLI, so an archive searched on [7, 8] was
+    described as [0, 1] and could be evaluated on seeds that overlap it. Each
+    search run records its own set in `config.json` under
+    `arguments.selection_seeds`, which is the only authority on what was
+    already selected on.
+    """
+    found = set()
+    for config in sorted((Path(root) / "search").glob("*/config.json")):
+        try:
+            payload = json.loads(config.read_text())
+        except Exception:
+            continue
+        seeds = payload.get("arguments", {}).get("selection_seeds")
+        if seeds:
+            found.add(tuple(sorted(int(s) for s in seeds)))
+    if not found:
+        return None
+    if len(found) > 1:
+        raise SystemExit(
+            f"the archived searches under {Path(root) / 'search'} used "
+            f"different selection seeds {sorted(found)}, so there is no single "
+            "set to hold anything out from."
+        )
+    return next(iter(found))
+
+
+def resolve_seed_sets(args, selection_override=None):
+    """The selection and held-out seed sets, refusing any overlap.
+
+    "Held out" is a claim about these two sets being disjoint, and nothing
+    enforced it: `--selection-seeds 0 1 --heldout-seeds 1 2` ran, reported a
+    successful held-out evaluation, and the overlap appeared nowhere. The
+    defaults are disjoint, so this only ever bites a custom invocation -- which
+    is exactly the one whose metadata a reader would not think to check.
+    """
+    selection = tuple(
+        selection_override
+        if selection_override is not None
+        else (getattr(args, "selection_seeds", None) or SELECTION_SEEDS)
+    )
+    heldout = tuple(getattr(args, "heldout_seeds", None) or HELDOUT_SEEDS)
+    shared = sorted(set(selection) & set(heldout))
+    if shared:
+        raise SystemExit(
+            f"--selection-seeds {list(selection)} and --heldout-seeds "
+            f"{list(heldout)} share {shared}. Then the evaluation is not held "
+            "out and every number downstream of it is selection-contaminated. "
+            "Refusing rather than reporting it as held out."
+        )
+    return selection, heldout
+
+
 def run_workers(jobs, devices, log_dir):
     """Run jobs at most one per device, recording exit codes.
 
     Each worker preallocates most of its GPU, so devices are not shared within
     a batch. Returns the per-job exit codes in order.
     """
+    # Distinct devices, checked here and not only in the shell launchers.
+    # `["0", "0"]` reads as two free slots and puts two OpenDDE processes on
+    # GPU 0, each preallocating most of it. The two reviewed launchers refuse
+    # duplicates, but this function is also called directly and by other
+    # wrappers, so the guard belongs where the scheduling decision is made.
+    devices = [str(d) for d in devices]
+    if not devices:
+        raise ValueError("run_workers needs at least one device")
+    duplicates = sorted({d for d in devices if devices.count(d) > 1})
+    if duplicates:
+        raise ValueError(
+            f"device list {devices} repeats {duplicates}; that would put more "
+            "than one worker on the same GPU, and each preallocates most of "
+            "it. Pass distinct devices."
+        )
     log_dir.mkdir(parents=True, exist_ok=True)
     codes = [None] * len(jobs)
     for start in range(0, len(jobs), len(devices)):
         batch = list(enumerate(jobs[start : start + len(devices)], start=start))
         running = []
-        for slot, (index, job) in enumerate(batch):
-            env = dict(os.environ)
-            env["CUDA_VISIBLE_DEVICES"] = str(devices[slot])
-            env["JAX_PLATFORMS"] = "cuda"
-            handle = (log_dir / f"{job['name']}.log").open("w")
-            print(f"  [{job['name']}] device {devices[slot]}", flush=True)
-            running.append(
-                (
-                    index,
-                    job,
-                    handle,
-                    subprocess.Popen(
-                        job["command"], env=env, stdout=handle,
-                        stderr=subprocess.STDOUT, cwd=REPO,
-                    ),
+        # Cleanup covers the WAIT as well as the launch. Two ways to leave
+        # workers running otherwise: a later Popen raising (a missing
+        # interpreter, a bad path, EMFILE) while earlier workers are already
+        # up, or a KeyboardInterrupt arriving while this process is blocked in
+        # `wait()` with jobs still pending. Each worker preallocates most of a
+        # device, so a survivor makes the next attempt fail for a reason
+        # unrelated to the first.
+        reaped = set()
+        try:
+            for slot, (index, job) in enumerate(batch):
+                env = dict(os.environ)
+                env["CUDA_VISIBLE_DEVICES"] = str(devices[slot])
+                env["JAX_PLATFORMS"] = "cuda"
+                handle = (log_dir / f"{job['name']}.log").open("w")
+                print(f"  [{job['name']}] device {devices[slot]}", flush=True)
+                running.append(
+                    (
+                        index,
+                        job,
+                        handle,
+                        subprocess.Popen(
+                            job["command"], env=env, stdout=handle,
+                            stderr=subprocess.STDOUT, cwd=REPO,
+                        ),
+                    )
                 )
-            )
-        for index, job, handle, process in running:
-            codes[index] = process.wait()
-            handle.close()
-            status = "ok" if codes[index] == 0 else f"exit {codes[index]}"
-            print(f"  [{job['name']}] {status}", flush=True)
+            for index, job, handle, process in running:
+                codes[index] = process.wait()
+                handle.close()
+                reaped.add(index)
+                status = "ok" if codes[index] == 0 else f"exit {codes[index]}"
+                print(f"  [{job['name']}] {status}", flush=True)
+        except BaseException:
+            pending = [item for item in running if item[0] not in reaped]
+            for _index, job, _handle, process in pending:
+                print(f"  [{job['name']}] terminating; this batch is abandoned",
+                      flush=True)
+                process.terminate()
+            for _index, _job, handle, process in pending:
+                try:
+                    process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                handle.close()
+            raise
     return codes
 
 
@@ -249,7 +343,7 @@ def calibrate(args):
         rungs=rungs,
         failures=failures,
         non_binding_ipsae_ceiling=args.non_binding_ceiling,
-        selection_seeds=list(SELECTION_SEEDS),
+        selection_seeds=list(resolve_seed_sets(args)[0]),
         sampling_steps=args.steps,
         opendde_dtype=args.opendde_dtype,
         recommended_rung=min((r["n_edits"] for r in usable), default=None),
@@ -422,16 +516,32 @@ def heldout(args):
         raise RuntimeError(f"no completed search runs under {root / 'search'}")
     print(f"Found {len(runs)} completed search run(s) in {root / 'search'}")
 
+    # Resolved and checked BEFORE the stage runs, and against the archive's own
+    # record rather than this invocation's defaults. Two separate bugs lived
+    # here: `run_heldout` was called without `seeds` and so evaluated
+    # HELDOUT_SEEDS while the writers below recorded whatever was requested,
+    # and the disjointness check used CLI defaults that an archive searched on
+    # other seeds does not share.
+    selection_seeds, heldout_seeds = resolve_seed_sets(
+        args, selection_override=archived_selection_seeds(root)
+    )
     complex_pdb = REPO / "P17_Alpha.pdb" if args.target == "alpha" else None
-    stage = run_heldout(root, devices, args.opendde_dtype, complex_pdb, args.suffix)
+    stage = run_heldout(
+        root, devices, args.opendde_dtype, complex_pdb, args.suffix,
+        heldout_seeds,
+    )
     if args.target == "alpha":
         calibration = json.loads(Path(args.calibration).read_text())
         selected = args.select_rung or calibration.get("recommended_rung")
         write_recovery_table(
-            root, calibration, selected, args.edit_budget or selected, stage
+            root, calibration, selected, args.edit_budget or selected, stage,
+            heldout_seeds=heldout_seeds, selection_seeds=selection_seeds,
         )
     else:
-        write_jn1_table(root, stage)
+        write_jn1_table(
+            root, stage, heldout_seeds=heldout_seeds,
+            selection_seeds=selection_seeds,
+        )
     print(f"\nCompleted. Results: {root}")
     return 0
 
@@ -445,6 +555,10 @@ def jn1(args):
     """
     devices = [d for d in args.devices.replace(" ", "").split(",") if d]
     root = Path(args.output_dir)
+    # Resolved and checked BEFORE any worker launches. The check used to run
+    # after the search finished, so an invalid configuration spent the whole
+    # search before being refused.
+    selection_seeds, heldout_seeds = resolve_seed_sets(args)
     (root / "logs").mkdir(parents=True, exist_ok=True)
 
     print(
@@ -469,16 +583,18 @@ def jn1(args):
         failed = [j["name"] for j, c in zip(jobs, codes) if c != 0]
         raise RuntimeError(f"search workers failed: {failed}; held-out stage not run")
 
-    heldout_seeds = getattr(args, "heldout_seeds", None) or HELDOUT_SEEDS
     stage = run_heldout(
         root, devices, args.opendde_dtype, None, "", heldout_seeds
     )
-    write_jn1_table(root, stage, heldout_seeds)
+    write_jn1_table(root, stage, heldout_seeds, selection_seeds)
     print(f"\nCompleted. Results: {root}")
     return 0
 
 
-def write_jn1_table(root, stage="heldout", heldout_seeds=HELDOUT_SEEDS):
+def write_jn1_table(
+    root, stage="heldout", heldout_seeds=HELDOUT_SEEDS,
+    selection_seeds=SELECTION_SEEDS,
+):
     """Held-out metrics per candidate, against this run's own WT baseline."""
     from p17_rescore_winners import merge_shard_tables
 
@@ -532,7 +648,12 @@ def write_jn1_table(root, stage="heldout", heldout_seeds=HELDOUT_SEEDS):
             dict(
                 wt_baseline=wt,
                 heldout_seeds=list(heldout_seeds),
-                selection_seeds=list(SELECTION_SEEDS),
+                # The seeds this run actually selected on, not the module
+                # default. With archived selection seeds [7, 8] this recorded
+                # [0, 1], so the context file disagreed with the run it
+                # described -- and a provenance field that can be wrong is
+                # worse than an absent one.
+                selection_seeds=list(selection_seeds),
                 alpha_binding_regime_reference=(
                     "Compare against the Alpha control's measured reference: "
                     "that run reports what this predictor assigns a complex it "
@@ -582,6 +703,9 @@ def decoy(args):
 
     devices = [d for d in args.devices.replace(" ", "").split(",") if d]
     root = Path(args.output_dir)
+    # Resolved and checked BEFORE any worker launches; the check used to run
+    # after the search finished.
+    selection_seeds, heldout_seeds = resolve_seed_sets(args)
     (root / "logs").mkdir(parents=True, exist_ok=True)
 
     real_target = reference_target_sequence(args.complex, args.target_chain)
@@ -692,11 +816,10 @@ def decoy(args):
         failed = [j["name"] for j, c in zip(jobs, codes) if c != 0]
         raise RuntimeError(f"decoy search workers failed: {failed}")
 
-    heldout_seeds = getattr(args, "heldout_seeds", None) or HELDOUT_SEEDS
     stage = run_heldout(
         root, devices, args.opendde_dtype, args.complex, "", heldout_seeds
     )
-    write_jn1_table(root, stage, heldout_seeds)
+    write_jn1_table(root, stage, heldout_seeds, selection_seeds)
     print(
         "\nCompare mean_ipsae against the real JN.1 arm. If the decoy reaches "
         "comparable confidence, that arm's gains are not about its target."
@@ -756,6 +879,10 @@ def search(args):
     calibration = json.loads(Path(args.calibration).read_text())
     devices = [d for d in args.devices.replace(" ", "").split(",") if d]
     root = Path(args.output_dir)
+    # Resolved and checked BEFORE any worker launches. The check used to run
+    # after the search finished, so an invalid configuration spent the whole
+    # search before being refused.
+    selection_seeds, heldout_seeds = resolve_seed_sets(args)
 
     selected = args.select_rung or calibration.get("recommended_rung")
     if selected is None:
@@ -800,14 +927,21 @@ def search(args):
         raise RuntimeError(f"search workers failed: {failed}; held-out stage not run")
 
     stage = run_heldout(
-        root, devices, args.opendde_dtype, REPO / "P17_Alpha.pdb"
+        root, devices, args.opendde_dtype, REPO / "P17_Alpha.pdb", "",
+        heldout_seeds,
     )
-    write_recovery_table(root, calibration, selected, budget, stage)
+    write_recovery_table(
+        root, calibration, selected, budget, stage,
+        heldout_seeds=heldout_seeds, selection_seeds=selection_seeds,
+    )
     print(f"\nCompleted. Results: {root}")
     return 0
 
 
-def write_recovery_table(root, calibration, selected, budget, stage="heldout"):
+def write_recovery_table(
+    root, calibration, selected, budget, stage="heldout",
+    heldout_seeds=HELDOUT_SEEDS, selection_seeds=SELECTION_SEEDS,
+):
     """One table placing every scored sequence against the recovery target."""
     from p17_rescore_winners import merge_shard_tables
 
@@ -856,8 +990,11 @@ def write_recovery_table(root, calibration, selected, budget, stage="heldout"):
                 edit_budget=budget,
                 reference_metrics=reference,
                 damaged_metrics=damaged,
-                heldout_seeds=list(HELDOUT_SEEDS),
-                selection_seeds=list(SELECTION_SEEDS),
+                # As in `write_jn1_table`: the seeds this run used, not the
+                # module defaults, which a custom invocation silently
+                # contradicts.
+                heldout_seeds=list(heldout_seeds),
+                selection_seeds=list(selection_seeds),
                 interpretation=(
                     "ipsae_recovery_fraction is relative to this run's own "
                     "measured reference and damaged confidence, on held-out "

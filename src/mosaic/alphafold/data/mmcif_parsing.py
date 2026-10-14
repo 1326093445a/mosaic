@@ -258,7 +258,13 @@ def parse(*,
       author_chain = mmcif_to_author_chain_id[chain_id]
       seq = []
       for monomer in seq_info:
-        code = protein_letters_3to1.get(monomer.id, 'X')
+        # `protein_letters_3to1_extended` is what this module imports, and the
+        # extended table is the one AlphaFold wants: it carries the modified
+        # residues an mmCIF entity sequence can name. The bare
+        # `protein_letters_3to1` was never defined here, so every parse raised
+        # NameError, which `parse` catches into `errors` -- so the failure was
+        # silent and `mmcif_object` came back None for every input.
+        code = protein_letters_3to1_extended.get(monomer.id, 'X')
         seq.append(code if len(code) == 1 else 'X')
       seq = ''.join(seq)
       author_chain_to_sequence[author_chain] = seq

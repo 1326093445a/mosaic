@@ -145,6 +145,21 @@ fi
 
 mkdir -p "$OUT_ROOT"
 
+# `--ignore-submodules=untracked`, because plain `git status --porcelain`
+# reports ` M OpenDDE` whenever the nested OpenDDE checkout has any untracked
+# content -- which it permanently does, since OpenDDE must never be committed
+# into this repo. Without any flag `git_dirty` is the constant `true` on a
+# perfectly clean tree, which makes the field worth nothing: it cannot tell a
+# citable run from an uncitable one, which is its entire job.
+#
+# `untracked`, NOT `all`. `all` would also hide a tracked edit inside OpenDDE
+# and a changed OpenDDE revision -- the two dependency changes most likely to
+# move a result. `untracked` drops only the untracked-file noise. And neither
+# flag says anything about the INSTALLED dependency: the five patches under
+# patches/ are applied to the site-packages copy at runtime, and nothing here
+# records what that copy was.
+DIRTY="$(git -C "$REPO_DIR" status --porcelain --ignore-submodules=untracked 2>/dev/null)"
+
 # Provenance, written BEFORE anything runs. The base-library corrections of
 # 2026-10-13 (bin centers, the interface-score broadcast, the MCMC reverse path
 # and key handling, the APGM best_x contract) all change numbers, so a result
@@ -154,7 +169,8 @@ mkdir -p "$OUT_ROOT"
     echo "{"
     echo "  \"started\": \"$(date -Iseconds)\","
     echo "  \"git_commit\": \"$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknown)\","
-    echo "  \"git_dirty\": $( [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]] && echo true || echo false ),"
+    echo "  \"git_dirty\": $( [[ -n "$DIRTY" ]] && echo true || echo false ),"
+    echo "  \"git_dirty_entries\": $( [[ -n "$DIRTY" ]] && echo "$DIRTY" | wc -l || echo 0 ),"
     echo "  \"host\": \"$(hostname)\","
     echo "  \"devices\": \"$DEVICES\","
     echo "  \"steps\": $STEPS,"
@@ -163,9 +179,10 @@ mkdir -p "$OUT_ROOT"
     echo "}"
 } > "$OUT_ROOT/provenance.json"
 echo "  provenance: $OUT_ROOT/provenance.json"
-if [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]]; then
+if [[ -n "$DIRTY" ]]; then
     echo "  NOTE: the working tree is dirty, so this run is not reproducible from" >&2
-    echo "        a commit alone. Commit first if the result is to be cited." >&2
+    echo "        a commit alone. Commit first if the result is to be cited:" >&2
+    echo "$DIRTY" | sed 's/^/          /' >&2
 fi
 echo
 

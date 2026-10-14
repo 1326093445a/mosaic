@@ -509,3 +509,299 @@ def test_alpha_heldout_requires_a_calibration_file(tmp_path):
         driver.main(
             ["heldout", "--output-dir", str(tmp_path), "--target", "alpha"]
         )
+
+
+# --------------------------------------------------------------------------
+# "Held out" is a claim about two seed sets being disjoint, and about the
+# metadata recording the sets actually used. Neither was enforced.
+# --------------------------------------------------------------------------
+
+
+class _Args:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+def test_disjoint_seed_sets_are_returned_in_order():
+    selection, heldout = driver.resolve_seed_sets(
+        _Args(selection_seeds=[7, 8], heldout_seeds=[201, 202])
+    )
+    assert selection == (7, 8)
+    assert heldout == (201, 202)
+
+
+def test_overlapping_seed_sets_are_refused():
+    """`--selection-seeds 0 1 --heldout-seeds 1 2` used to run and report a
+    successful held-out evaluation with the overlap recorded nowhere."""
+    with pytest.raises(SystemExit) as caught:
+        driver.resolve_seed_sets(_Args(selection_seeds=[0, 1], heldout_seeds=[1, 2]))
+    message = str(caught.value)
+    assert "share [1]" in message
+    assert "not held out" in message
+
+
+def test_the_defaults_are_disjoint():
+    selection, heldout = driver.resolve_seed_sets(_Args())
+    assert not set(selection) & set(heldout)
+
+
+def test_absent_attributes_fall_back_to_the_module_defaults():
+    selection, heldout = driver.resolve_seed_sets(
+        _Args(selection_seeds=None, heldout_seeds=None)
+    )
+    assert selection == tuple(driver.SELECTION_SEEDS)
+    assert heldout == tuple(driver.HELDOUT_SEEDS)
+
+
+def test_the_context_file_records_the_selection_seeds_actually_used(
+    tmp_path, monkeypatch
+):
+    """With archived selection seeds [7, 8] this recorded the constant [0, 1].
+
+    A provenance field that can disagree with its own run is worse than an
+    absent one.
+    """
+    monkeypatch.setattr(driver, "merge_shard_tables", lambda *a, **k: None,
+                        raising=False)
+    import p17_rescore_winners
+
+    monkeypatch.setattr(p17_rescore_winners, "merge_shard_tables",
+                        lambda *a, **k: None)
+    stage = tmp_path / "heldout"
+    write_predictions(stage, [(201, 0.5, 3.0)])
+    (stage / "shard_0").mkdir(parents=True, exist_ok=True)
+    driver.write_jn1_table(
+        tmp_path, "heldout", heldout_seeds=(201, 202), selection_seeds=(7, 8)
+    )
+    context = json.loads((tmp_path / "tables/jn1_context.json").read_text())
+    assert context["selection_seeds"] == [7, 8]
+    assert context["heldout_seeds"] == [201, 202]
+
+
+# --------------------------------------------------------------------------
+# A failed launch used to leave the workers it had already started running,
+# each holding most of a GPU, after this process exited with a traceback.
+# --------------------------------------------------------------------------
+
+
+def test_a_failed_launch_terminates_the_workers_already_started(
+    tmp_path, monkeypatch
+):
+    import subprocess
+
+    started = []
+    real_popen = subprocess.Popen
+
+    def flaky(command, **kw):
+        if len(started) >= 1:
+            raise OSError("cannot launch the second worker")
+        # A harmless child that would outlive this process if never cleaned up.
+        process = real_popen([sys.executable, "-c", "import time; time.sleep(60)"],
+                             **kw)
+        started.append(process)
+        return process
+
+    monkeypatch.setattr(driver.subprocess, "Popen", flaky)
+    jobs = [dict(name="a", command=["x"]), dict(name="b", command=["y"])]
+    with pytest.raises(OSError):
+        driver.run_workers(jobs, [0, 1], tmp_path / "logs")
+
+    assert len(started) == 1, "fixture should have started exactly one worker"
+    assert started[0].poll() is not None, (
+        "the worker started before the failure is still running"
+    )
+
+
+# --------------------------------------------------------------------------
+# Round 8: the seeds that were EVALUATED must be the seeds reported, the
+# archive is the authority on what was already selected on, and the check has
+# to happen before the GPUs are spent.
+# --------------------------------------------------------------------------
+
+
+def test_the_archive_supplies_the_selection_seeds(tmp_path):
+    for name, seeds in (("population_seed0", [7, 8]), ("population_seed1", [7, 8])):
+        run = tmp_path / "search" / name
+        run.mkdir(parents=True)
+        (run / "config.json").write_text(
+            json.dumps(dict(arguments=dict(selection_seeds=seeds)))
+        )
+    assert driver.archived_selection_seeds(tmp_path) == (7, 8)
+
+
+def test_an_archive_with_no_config_returns_none(tmp_path):
+    (tmp_path / "search").mkdir()
+    assert driver.archived_selection_seeds(tmp_path) is None
+
+
+def test_archived_searches_that_disagree_are_refused(tmp_path):
+    for name, seeds in (("a", [0, 1]), ("b", [7, 8])):
+        run = tmp_path / "search" / name
+        run.mkdir(parents=True)
+        (run / "config.json").write_text(
+            json.dumps(dict(arguments=dict(selection_seeds=seeds)))
+        )
+    with pytest.raises(SystemExit) as caught:
+        driver.archived_selection_seeds(tmp_path)
+    assert "different selection seeds" in str(caught.value)
+
+
+def test_the_archived_seeds_override_the_cli_defaults(tmp_path):
+    """An archive searched on [7, 8] described as [0, 1] was the bug."""
+    selection, heldout = driver.resolve_seed_sets(
+        _Args(selection_seeds=[0, 1], heldout_seeds=[201]),
+        selection_override=(7, 8),
+    )
+    assert selection == (7, 8)
+    assert heldout == (201,)
+
+
+def test_an_archive_overlapping_the_requested_heldout_seeds_is_refused():
+    """Defaults look disjoint; the archive's real seeds are not."""
+    with pytest.raises(SystemExit) as caught:
+        driver.resolve_seed_sets(
+            _Args(selection_seeds=[0, 1], heldout_seeds=[101, 102]),
+            selection_override=(101, 102),
+        )
+    assert "share [101, 102]" in str(caught.value)
+
+
+def test_every_stage_resolves_its_seeds_before_launching_workers():
+    """The JN.1 check used to run after the search finished, so an invalid
+    configuration spent the whole search before being refused."""
+    import inspect
+
+    for name in ("jn1", "decoy", "search", "heldout"):
+        source = inspect.getsource(getattr(driver, name))
+        resolve = source.index("resolve_seed_sets")
+        launches = [
+            source.index(call)
+            for call in ("run_workers(", "run_heldout(")
+            if call in source
+        ]
+        assert resolve < min(launches), (
+            f"{name}() resolves its seed sets after it launches work"
+        )
+
+
+def test_the_heldout_stage_evaluates_the_seeds_it_reports(tmp_path, monkeypatch):
+    """`run_heldout` was called without `seeds`, so it evaluated
+    HELDOUT_SEEDS while the writers recorded whatever was requested."""
+    seen = {}
+
+    def fake_run_heldout(root, devices, dtype, complex_pdb=None, suffix="",
+                         seeds=None):
+        seen["seeds"] = seeds
+        return "heldout"
+
+    recorded = {}
+
+    def fake_write(root, stage, heldout_seeds=None, selection_seeds=None):
+        recorded["heldout"] = tuple(heldout_seeds)
+        recorded["selection"] = tuple(selection_seeds)
+
+    run = tmp_path / "search" / "population_seed0"
+    run.mkdir(parents=True)
+    (run / "summary.json").write_text("{}")
+    (run / "config.json").write_text(
+        json.dumps(dict(arguments=dict(selection_seeds=[7, 8])))
+    )
+    monkeypatch.setattr(driver, "run_heldout", fake_run_heldout)
+    monkeypatch.setattr(driver, "write_jn1_table", fake_write)
+
+    driver.heldout(_Args(
+        devices="0", output_dir=str(tmp_path), opendde_dtype="bf16",
+        suffix="", target="jn1", selection_seeds=[0, 1],
+        heldout_seeds=[201, 202],
+    ))
+
+    assert seen["seeds"] == (201, 202), (
+        f"evaluated {seen['seeds']} while reporting {recorded['heldout']}"
+    )
+    assert recorded["heldout"] == (201, 202)
+    assert recorded["selection"] == (7, 8), "the archive's seeds, not the CLI's"
+
+
+def test_an_interrupt_while_waiting_also_cleans_up(tmp_path, monkeypatch):
+    """Cleanup covered the launch but not the wait.
+
+    A KeyboardInterrupt arriving while blocked in `wait()` left the pending
+    workers of that batch running, each holding most of a GPU.
+    """
+    import subprocess
+
+    real_popen = subprocess.Popen
+    started = []
+    interrupted = []
+
+    class Interruptible:
+        """A real child, whose first unbounded `wait()` is interrupted."""
+
+        def __init__(self, command, **kw):
+            self._process = real_popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"], **kw
+            )
+            started.append(self)
+
+        def wait(self, timeout=None):
+            if timeout is None and not interrupted:
+                interrupted.append(True)
+                raise KeyboardInterrupt("ctrl-c while waiting")
+            return self._process.wait(timeout=timeout)
+
+        def terminate(self):
+            self._process.terminate()
+
+        def kill(self):
+            self._process.kill()
+
+        def poll(self):
+            return self._process.poll()
+
+    monkeypatch.setattr(driver.subprocess, "Popen", Interruptible)
+    jobs = [dict(name="a", command=["x"]), dict(name="b", command=["y"])]
+    with pytest.raises(KeyboardInterrupt):
+        driver.run_workers(jobs, [0, 1], tmp_path / "logs")
+
+    assert len(started) == 2, "both workers should have launched"
+    assert interrupted, "the fixture never interrupted a wait"
+    for index, handle in enumerate(started):
+        assert handle.poll() is not None, (
+            f"worker {index} survived the interrupt and is still running"
+        )
+
+
+def test_the_scheduler_refuses_duplicate_devices(tmp_path):
+    """The shell launchers reject duplicates; this function is also called
+    directly, and `["0", "0"]` read as two free slots and put two OpenDDE
+    processes on GPU 0, each preallocating most of it."""
+    with pytest.raises(ValueError) as caught:
+        driver.run_workers(
+            [dict(name="a", command=["x"]), dict(name="b", command=["y"])],
+            ["0", "0"],
+            tmp_path / "logs",
+        )
+    assert "repeats ['0']" in str(caught.value)
+
+
+def test_the_scheduler_refuses_an_empty_device_list(tmp_path):
+    with pytest.raises(ValueError):
+        driver.run_workers([dict(name="a", command=["x"])], [], tmp_path / "logs")
+
+
+def test_distinct_devices_given_as_integers_are_accepted(tmp_path, monkeypatch):
+    """Normalisation to strings must not reject `[0, 1]`."""
+    class Done:
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            pass
+
+    monkeypatch.setattr(driver.subprocess, "Popen", lambda *a, **k: Done())
+    codes = driver.run_workers(
+        [dict(name="a", command=["x"]), dict(name="b", command=["y"])],
+        [0, 1],
+        tmp_path / "logs",
+    )
+    assert codes == [0, 0]

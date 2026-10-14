@@ -104,13 +104,24 @@
 # the real loss before the full 600-step stage is spent. See section 31.10 of
 # docs/P17_JN1.md and `bash examples/run_p17_hinge_probe.sh`.
 #
-# WHAT THE ANCHORED INIT IS FOR. `--init parent` (the default since 2026-10-07)
-# adds `--init-logit-scale` to the parent column, so the softmax opens at
-# p_parent = 0.886 and the EditBudget expectation opens at 29 x 0.114 = 3.3,
-# inside a budget of 5. The old noise init opened at roughly 27.6 against the
-# same budget -- a hinge of 5.0 * relu(27.6 - 5) = 113, dwarfing the ~34
-# carried by every other term combined, so the first many steps spent their
-# gradient walking back toward the parent. Covered by tests/test_continuous_seed.py.
+# WHAT THE ANCHORED INIT IS FOR, AND WHAT IT NO LONGER DOES. `--init parent`
+# (the default since 2026-10-07) adds `--init-logit-scale` to the parent column.
+# The old noise init opened the EditBudget expectation at roughly 27.6 against a
+# budget of 5 -- a hinge of 5.0 * relu(27.6 - 5) = 113, dwarfing the ~34 carried
+# by every other term combined, so the first many steps spent their gradient
+# walking back toward the parent.
+#
+# The arithmetic depends on the SCALE, and the numbers quoted here until
+# 2026-10-14 were scale 5.0's:
+#
+#   scale 5.0   p_parent 0.886   expectation 29 x 0.114 =  3.3   hinge   0
+#   scale 1.0   p_parent 0.125   expectation 29 x 0.875 = 25.4   hinge ~102
+#
+# So at the scale this script now configures, the anchored init does NOT open
+# inside the budget -- it opens in the same regime the noise init did. That is
+# harmless here only because SEED_EDIT_WEIGHT is 0.0. Re-enable the hinge at
+# scale 1.0 and the problem the anchored init was introduced to solve is back.
+# Covered by tests/test_continuous_seed.py.
 #
 # ⚠️ THE RISK THE SWEEP FLAGGED, AND WHAT MEASURES IT. The anchored init puts
 # the hinge at zero at step 0; it does not keep it there. In the synthetic
@@ -181,7 +192,8 @@ DRIVER="$SCRIPT_DIR/p17_alpha_recovery.py"
 SEEDER="$SCRIPT_DIR/p17_continuous_seed.py"
 
 DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
-METHODS="apgm bindcraft colabdesign"
+ALL_METHODS="apgm bindcraft colabdesign"
+METHODS="$ALL_METHODS"
 SEED_REPLICATES=3       # continuous-stage seeds per method
 SEED_STEPS=600          # see "WHY THE SEEDING DEFAULTS CHANGED" in the header
 SEED_LR=0.1
@@ -216,6 +228,7 @@ ACCEPT_TEMP=0.02        # pinned, see header
 POLICY=population
 OUT_ROOT=""
 DRY_RUN=false
+FAILURES=0
 ALL_STAGES="seed search"
 STAGES="$ALL_STAGES"
 ALL_CELLS="parent apgm bindcraft colabdesign"
@@ -264,9 +277,69 @@ done
 [[ -z "$OUT_ROOT" ]] && OUT_ROOT="$REPO_DIR/results/p17_continuous_stage_$(date +%Y%m%d_%H%M%S)"
 DEVICES="${DEVICES//[[:space:]]/}"
 IFS=',' read -r -a DEV <<< "$DEVICES"
+# Distinctness, not just count: eight entries all reading `0` passed the
+# capacity check and put every job on one GPU, which is the failure this
+# script's own refusal exists to prevent.
+for d in "${DEV[@]}"; do
+    if [[ -z "$d" || ! "$d" =~ ^[0-9]+$ ]]; then
+        echo "Refusing to start: --devices has an empty or non-numeric entry" >&2
+        echo "('$d' in '$DEVICES')." >&2
+        exit 2
+    fi
+done
+if (( $(printf '%s\n' "${DEV[@]}" | sort -u | wc -l) != ${#DEV[@]} )); then
+    echo "Refusing to start: --devices repeats a device ('$DEVICES'). Counting" >&2
+    echo "entries does not establish that many distinct GPUs, and two OpenDDE" >&2
+    echo "processes on one device is what killed apgm_r0 on 2026-10-07." >&2
+    exit 2
+fi
 SEEDS=$(seq 0 $((SEEDS_PER_CELL - 1)) | tr '\n' ' ')
 REPLICATES=$(seq 0 $((SEED_REPLICATES - 1)) | tr '\n' ' ')
 [[ -z "$SEED_DIR" ]] && SEED_DIR="$OUT_ROOT/seeds"
+
+# Absolute, BEFORE the `cd "$REPO_DIR"` further down. A relative --output-dir
+# was created in the invocation directory and then read from the repo root, so
+# launching from anywhere but the repo put the results in one place and looked
+# for them in another.
+_abs() { case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s\n' "$PWD/$1" ;; esac; }
+OUT_ROOT="$(_abs "$OUT_ROOT")"
+SEED_DIR="$(_abs "$SEED_DIR")"
+
+# Validate the selections. An unrecognised value used to select NOTHING and
+# exit 0: `--stages sead` ran no stage at all and reported success, which is
+# the worst possible response to a typo in a 6-hour job.
+_check_selection() {  # flag, allowed, selected
+    local flag="$1" allowed="$2" selected="$3" item
+    if [[ -z "${selected// /}" ]]; then
+        echo "Refusing to start: $flag is empty, which would run nothing." >&2
+        exit 2
+    fi
+    for item in $selected; do
+        if [[ " $allowed " != *" $item "* ]]; then
+            echo "Refusing to start: $flag got '$item', which is not one of:" >&2
+            echo "    $allowed" >&2
+            echo "An unrecognised value selects nothing and would exit 0." >&2
+            exit 2
+        fi
+    done
+    if (( $(printf '%s\n' $selected | sort -u | wc -l) != $(echo $selected | wc -w) )); then
+        echo "Refusing to start: $flag repeats a value ('$selected'). Duplicates" >&2
+        echo "write to the same output paths, so the runs would overwrite each" >&2
+        echo "other while the count suggested more data." >&2
+        exit 2
+    fi
+}
+_check_selection --stages  "$ALL_STAGES"  "$STAGES"
+_check_selection --cells   "$ALL_CELLS"   "$CELLS"
+_check_selection --methods "$ALL_METHODS" "$METHODS"
+
+# Re-join on single spaces, because validation word-splits on any whitespace
+# while `has_stage` does a literal `*" $1 "*` match. A tab-separated
+# "seed<TAB>search" validated as two good tokens and then matched NO stage, so
+# the script ran zero jobs and exited 0. The two must see the same tokens.
+STAGES="$(echo $STAGES)"
+CELLS="$(echo $CELLS)"
+METHODS="$(echo $METHODS)"
 
 has_stage() { [[ " $STAGES " == *" $1 "* ]]; }
 
@@ -316,8 +389,13 @@ echo
 echo "  Section 30.3 predicts a null: where discrete search saturates its"
 echo "  budget, continuous seeding had no headroom, and every synthetic"
 echo "  hand-off came in marginally worse than discrete search alone."
-echo "  Section 26.5's per-term gradient norms are still unmeasured and gate"
-echo "  the interpretation of this run. They cost one backward pass."
+echo "  Section 26.5's per-term gradient norms WERE measured on 2026-10-13"
+echo "  (section 31.6): pose 0.511 of the norm at the reference against"
+echo "  ablang2 0.085, and ablang2 0.356 at a 5-edit winner, where the"
+echo "  structure terms have collapsed 4-7x. contact|registry is +0.942 at"
+echo "  the reference. The hinge's own gradient was 0.000 at both points,"
+echo "  which is the relu'(0) = 0 result, so the synthetic sweep's coupling"
+echo "  question is NOT answered by them: it needs the hinge active."
 echo
 
 if "$DRY_RUN"; then
@@ -369,6 +447,44 @@ export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-true}"
     export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.90}"
 export PYTHONUNBUFFERED=1
 
+# A FRESH output directory. Reusing one and then failing every seed job made
+# the gate report the PREVIOUS run's JSONs as this run's result -- the worst
+# possible failure, because it is silent and it reads as data.
+if [[ -e "$OUT_ROOT" ]] && [[ -n "$(ls -A "$OUT_ROOT" 2>/dev/null)" ]]; then
+    echo "Refusing to start: $OUT_ROOT exists and is not empty. Results left by" >&2
+    echo "an earlier run would be read as this run's. Pass --output-dir with a" >&2
+    echo "fresh path. Found:" >&2
+    ls -A "$OUT_ROOT" | sed 's/^/        /' >&2
+    exit 2
+fi
+
+# `--ignore-submodules=untracked`: plain porcelain reports ` M OpenDDE` whenever
+# the nested checkout has untracked content, which it permanently does, so with
+# no flag this is the constant `true` on a clean tree. `untracked` rather than
+# `all`, which would also hide a tracked edit inside OpenDDE and a changed
+# OpenDDE revision. Neither records the INSTALLED dependency, which patches/
+# rewrites in site-packages at runtime.
+# `--seed-dir` exists to REUSE an earlier seed output with `--stages search`.
+# If stage `seed` is also running it writes into that directory, and the
+# OUT_ROOT guard above does not cover it -- so an external seed directory let
+# a run overwrite an old result and exit 0.
+if has_stage seed && [[ -n "$(ls -A "$SEED_DIR" 2>/dev/null)" ]]; then
+    echo "Refusing to start stage 'seed': $SEED_DIR is not empty, and stage" >&2
+    echo "'seed' writes into it -- this would overwrite an earlier run's seeds." >&2
+    echo "Use --stages search to reuse them, or point --seed-dir somewhere new." >&2
+    echo "Found:" >&2
+    ls -A "$SEED_DIR" | sed 's/^/        /' >&2
+    exit 2
+fi
+
+GIT_COMMIT="$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+GIT_DIRTY="$(git -C "$REPO_DIR" status --porcelain --ignore-submodules=untracked 2>/dev/null)"
+if [[ -n "$GIT_DIRTY" ]]; then
+    echo "NOTE: the working tree is dirty, so this run is not reproducible from a" >&2
+    echo "      commit alone. Commit first if the result is to be cited:" >&2
+    echo "$GIT_DIRTY" | sed 's/^/        /' >&2
+fi
+
 echo "Applying dependency patches..."
 for name in outer_product_mean structural_token_expander bf16_dtype aggregation padding; do
     "$PYTHON_BIN" "$REPO_DIR/patches/patch_jopendde_$name.py"
@@ -379,6 +495,9 @@ echo "Applied five OpenDDE patches."
 import json
 print(json.dumps(dict(
     input="P17_JN1.pdb", stages="$STAGES".split(),
+    git_commit="$GIT_COMMIT",
+    git_dirty=bool("""$GIT_DIRTY""".strip()),
+    git_dirty_entries=len([l for l in """$GIT_DIRTY""".splitlines() if l.strip()]),
     seed_stage=dict(
         methods="$METHODS".split(), replicates=$SEED_REPLICATES,
         steps=$SEED_STEPS, init="$INIT", init_logit_scale=$INIT_LOGIT_SCALE,
@@ -389,8 +508,14 @@ print(json.dumps(dict(
                              "partly a compute difference",
         init_because="noise logits open the EditBudget expectation at ~27.6 "
                      "against a budget of 5, a hinge of ~113 against the ~34 "
-                     "carried by every other term combined; the anchored start "
-                     "opens at 3.3 and the hinge is inactive at step 0",
+                     "carried by every other term combined. The anchored start "
+                     "opens at 3.3 AT INIT SCALE 5.0 (p_parent 0.886), where "
+                     "the hinge is inactive at step 0. At the configured scale "
+                     "1.0 p_parent is only 0.125, so the expectation opens at "
+                     "29 x 0.875 = 25.4 and the hinge would open at ~102 -- "
+                     "the very regime the anchored init was added to avoid. "
+                     "That is harmless only because SEED_EDIT_WEIGHT is 0.0; "
+                     "re-enabling the hinge at scale 1.0 reinstates it.",
     ),
     search_stage=dict(
         cells="$CELLS".split(), seeds_per_cell=$SEEDS_PER_CELL,
@@ -418,20 +543,28 @@ print(json.dumps(dict(
                    "one budget rather than one each",
     gate="candidate_substitutions_considered in each seed JSON. Stage 0 found "
          "no rounding gap (relaxed optima put 0.977-0.999 of their mass on one "
-         "residue) and located the failure in truncation. If this comes back "
-         "near 29, every seed is an argmax of a budget-truncated optimum and "
-         "the search stage measures the projection, not the relaxation.",
+         "residue) and located the failure in truncation. Near 29 means each "
+         "seed is an argmax of a heavily budget-truncated optimum: projection "
+         "ranks by margins the optimisation produced, so the two jointly "
+         "decide the hand-off, but most of what was wanted is discarded. At or "
+         "under the budget means no FURTHER truncation after the argmax -- not "
+         "that the argmax preserved the relaxed solution, which only section "
+         "30.3's screen speaks to. It does not gate execution: with both "
+         "stages enabled, search starts after this prints. Use --stages seed "
+         "to read it first.",
     prediction="null. Section 30.3: where discrete search saturates its "
                "budget, continuous seeding had no headroom, and every "
                "synthetic hand-off came in marginally worse than discrete "
                "search alone -- 99.8% and 99.5% of the exhaustive optimum "
                "against 99.9%, all far inside the 0.855 SEM.",
-    unmeasured_and_gating="section 26.5's per-term gradient norms and pairwise "
-                          "cosines (section 27.7 item 1). They set whether the "
-                          "EditBudget hinge holds against the other terms at "
-                          "the real objective's gradient scale, which the "
-                          "synthetic sweep showed decides whether the relaxed "
-                          "optimum stays inside the budget. One backward pass.",
+    gradient_norms="measured 2026-10-13, section 31.6. pose 0.511 of the norm "
+                   "at the reference, ablang2 0.085; at a 5-edit winner the "
+                   "structure terms have collapsed 4-7x and ablang2 holds flat "
+                   "at 0.356. contact|registry +0.942 at the reference, +0.641 "
+                   "at the winner. The EditBudget term measured 0.000 at both "
+                   "points, which is relu'(0) = 0 at a feasible one-hot -- so "
+                   "these norms do NOT settle the synthetic sweep's coupling "
+                   "question, which needs the hinge active on a relaxed input.",
     does_not_establish="that relaxation cannot help -- only whether it helped "
                        "at this budget with this projection",
 ), indent=2))
@@ -491,6 +624,7 @@ if has_stage seed; then
     for p in "${pids[@]}"; do wait "$p" || failed=$((failed + 1)); done
     if ((failed)); then
         SUMMARY+=("seed: $failed of $i runs FAILED (see $SEED_DIR/*.log)")
+        FAILURES=$((FAILURES + failed))
         echo "  $failed of $i seeding runs failed; see $SEED_DIR/*.log" >&2
     else
         SUMMARY+=("seed: $i/$i PASSED")
@@ -498,18 +632,48 @@ if has_stage seed; then
 
     echo
     echo "---- the gate: what the relaxation actually wanted ----"
-    "$PYTHON_BIN" - "$SEED_DIR" <<'PY' | tee "$SEED_DIR/gate.txt"
+    # Named files, not a glob. A glob reads whatever JSON is in the directory,
+    # so a reused output path plus a run in which every job died reported the
+    # PREVIOUS run's seeds as this run's result.
+    # name:method:seed -- presence and readability are not enough. Six
+    # correctly NAMED files reporting the wrong method and seed were accepted,
+    # because nothing compared a result's contents with the job that was
+    # supposed to produce it.
+    EXPECTED_SEEDS=()
+    for m in $METHODS; do
+        for r in $REPLICATES; do EXPECTED_SEEDS+=("${m}_r${r}.json:${m}:${r}"); done
+    done
+    # No pipe: `pipefail` plus the gate's own nonzero exit would abort the
+    # whole script inside the pipeline, so the summary and exit code below
+    # would never run.
+    gate_status=0
+    "$PYTHON_BIN" - "$SEED_DIR" "${EXPECTED_SEEDS[@]}" > "$SEED_DIR/gate.txt" 2>&1 <<'PY' || gate_status=$?
 import json, sys
 from pathlib import Path
 
-rows = []
-for p in sorted(Path(sys.argv[1]).glob("*.json")):
-    if p.name == "gate.json":
+root, specs = Path(sys.argv[1]), sys.argv[2:]
+names = [s.split(":")[0] for s in specs]
+rows, missing, broken, mismatched = [], [], [], []
+for spec in specs:
+    name, want_method, want_seed = spec.split(":")
+    p = root / name
+    if not p.exists():
+        missing.append(name)
         continue
     try:
         d = json.loads(p.read_text())
     except Exception as exc:
         print(f"  {p.name}: unreadable ({exc})")
+        broken.append(name)
+        continue
+    wrong = []
+    if str(d.get("method")) != want_method:
+        wrong.append(f"method {d.get('method')!r} != {want_method!r}")
+    if str(d.get("seed")) != want_seed:
+        wrong.append(f"seed {d.get('seed')!r} != {want_seed}")
+    if wrong:
+        print(f"  {p.name}: IDENTITY MISMATCH " + "; ".join(wrong))
+        mismatched.append(name)
         continue
     rows.append(d)
     margins = [e["margin"] for e in d["edits"]]
@@ -527,27 +691,67 @@ if rows:
     print()
     print(f"  substitutions wanted: min {min(wanted)}, max {max(wanted)}, "
           f"budget {budget}, designable 29")
+    n = len(wanted)
+    n_heavy = sum(1 for w in wanted if w >= 25)
+    n_fits = sum(1 for w in wanted if w <= budget)
+    print(f"  per-seed regimes: {n_heavy}/{n} want >= 25, "
+          f"{n_fits}/{n} fit the budget, {n - n_heavy - n_fits}/{n} between")
     if max(wanted) >= 25:
-        print("  VERDICT: truncation regime. The relaxation wants nearly every")
-        print("  designable position changed, so each seed is an argmax of a")
-        print("  budget-truncated optimum and the search stage would measure")
-        print("  the projection rather than the relaxation. This is the")
-        print("  failure mode section 30.3 isolated. Consider the masked k=budget")
-        print("  variant (section 28.5 mechanism 2) before spending the night.")
+        print(f"  VERDICT: truncation regime for {n_heavy} of {n} seeds. Those")
+        print("  seeds want nearly every designable position changed, so each")
+        print("  of THEM is an argmax of a heavily budget-truncated optimum.")
+        print("  The verdict is on the maximum, so it does not describe the")
+        print("  other seeds -- read the per-seed lines above before treating")
+        print("  this as a property of the stage. Projection ranks by margins")
+        print("  the optimisation produced, so the two jointly decide the")
+        print("  hand-off; what is discarded is most of what was wanted. This")
+        print("  is the failure mode section 30.3 isolated. Consider the masked")
+        print("  k=budget variant (section 28.5 mechanism 2) before spending")
+        print("  the night.")
     elif max(wanted) <= budget:
         print("  VERDICT: no truncation. Every wanted substitution fits the")
-        print("  budget, so the projection is an identity and the hand-off")
-        print("  carries the relaxed optimum intact. This is the regime in")
-        print("  which the stage-search comparison is clean.")
+        print("  budget, so the projection discards nothing. That is NOT the")
+        print("  same as the hand-off carrying the relaxed optimum intact:")
+        print("  the argmax itself may have lost something, and only section")
+        print("  30.3's synthetic screen speaks to that. What it does mean is")
+        print("  that no FURTHER truncation happens after the argmax.")
     else:
         print("  VERDICT: partial truncation. The projection is discarding")
-        print("  some substitutions the relaxation asked for but is not")
-        print("  swamped. The stage-search result is interpretable with the")
-        print("  margin spread above reported alongside it.")
+        print(f"  some substitutions the relaxation asked for -- for {n - n_fits}")
+        print(f"  of {n} seeds -- but is not swamped. The stage-search result is")
+        print("  interpretable with the margin spread above reported alongside")
+        print("  it, per seed rather than in aggregate.")
     print()
     print("  Unique seed sequences: "
           f"{len({d['seed_sequence'] for d in rows})} of {len(rows)} runs")
+
+if missing or broken or mismatched:
+    print()
+    if mismatched:
+        print(f"  WRONG RESULTS: {len(mismatched)} of {len(names)} seed JSONs do "
+              f"not carry the method and seed of the job that should have "
+              f"written them: {', '.join(mismatched)}")
+    if missing:
+        print(f"  INCOMPLETE: {len(missing)} of {len(names)} seed runs produced "
+              f"no JSON: {', '.join(missing)}")
+    if broken:
+        print(f"  UNREADABLE: {len(broken)} of {len(names)} seed JSONs could not "
+              f"be parsed: {', '.join(broken)}")
+    print("  The verdict above, if any, covers only the runs that finished, so")
+    print("  it is NOT the per-method comparison this stage was asked for. A")
+    print("  job can exit 0 and write nothing, which is why this is checked")
+    print("  against the expected file list rather than against exit codes.")
+if not rows:
+    print()
+    print("  NO RESULTS AT ALL. There is no gate to read.")
+if missing or broken or mismatched or not rows:
+    sys.exit(1)
 PY
+    cat "$SEED_DIR/gate.txt"
+    if (( gate_status != 0 )); then
+        FAILURES=$((FAILURES + 1))
+        SUMMARY+=("seed: the gate found no usable results")
+    fi
     echo
     echo "  Seeds in $SEED_DIR"
 fi
@@ -572,7 +776,46 @@ if has_stage search; then
             seed_json="$(cell_seed_json "$c" || true)"
             if [[ ! -f "$seed_json" ]]; then
                 SUMMARY+=("$c: SKIPPED (no seed at $seed_json)")
+                # A skipped cell is a missing arm of the comparison, so it
+                # counts. Without this, `--stages search` with no seeds on disk
+                # skips every seeded cell, runs the parent control alone, and
+                # exits 0.
+                FAILURES=$((FAILURES + 1))
                 echo "  no seed JSON at $seed_json; skipping cell $c" >&2
+                continue
+            fi
+            # The gate only runs in stage `seed`, so a seed directory reused
+            # with `--stages search` is never identity-checked there. Check it
+            # here: the cell name IS the method that should have produced the
+            # file, and a mislabelled seed would send the search off from the
+            # wrong starting sequence under the right cell's name.
+            # Method AND replicate. Checking only the method accepted
+            # `apgm_r0.json` carrying `"seed": 99` -- the right method from the
+            # wrong run, which is exactly the file a half-finished earlier
+            # directory leaves behind. The replicate is taken from the
+            # filename, which is what `cell_seed_json` selected on.
+            if ! "$PYTHON_BIN" -c '
+import json, re, sys
+path = sys.argv[1]
+want_method = sys.argv[2]
+d = json.load(open(path))
+hit = re.search(r"_r(\d+)\.json$", path)
+want_seed = hit.group(1) if hit else None
+got_method = str(d.get("method"))
+got_seed = str(d.get("seed"))
+wrong = []
+if got_method != want_method:
+    wrong.append("method " + got_method + " != " + want_method)
+if want_seed is not None and got_seed != want_seed:
+    wrong.append("seed " + got_seed + " != " + want_seed)
+if wrong:
+    sys.exit("  " + path + ": IDENTITY MISMATCH " + "; ".join(wrong))
+' "$seed_json" "$c"; then
+                SUMMARY+=("$c: FAILED (seed JSON identity does not match)")
+                FAILURES=$((FAILURES + 1))
+                echo "  cell $c: the seed JSON does not carry the method and" >&2
+                echo "  replicate of the run that should have written it, so it" >&2
+                echo "  cannot be the seed for this cell; skipping." >&2
                 continue
             fi
             seq=$("$PYTHON_BIN" -c \
@@ -595,6 +838,7 @@ if has_stage search; then
             SUMMARY+=("$c: PASSED")
         else
             SUMMARY+=("$c: FAILED (see $c/run.log)")
+            FAILURES=$((FAILURES + 1))
             echo "  cell $c failed; continuing." >&2
         fi
     done
@@ -603,6 +847,16 @@ fi
 echo
 echo "################ Done ################"
 if ((${#SUMMARY[@]})); then printf '%s\n' "${SUMMARY[@]/#/  }"; fi
+# Exit nonzero on any failure. These used to go into SUMMARY and no further, so
+# a run in which every job died still exited 0 -- and an exit code is what a
+# scheduler, a wrapper script or a tired reader actually checks.
+if ((FAILURES)); then
+    echo >&2
+    echo "FAILED: $FAILURES stage failure(s) above, so this is NOT the comparison" >&2
+    echo "the script was asked for. Fix them and re-run before reading anything" >&2
+    echo "into the numbers." >&2
+    exit 1
+fi
 cat <<EOF
 
 Read the gate first: $SEED_DIR/gate.txt

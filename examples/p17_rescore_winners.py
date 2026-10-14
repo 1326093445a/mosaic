@@ -12,6 +12,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import sys
 import tarfile
 
 import numpy as np
@@ -106,6 +107,17 @@ def check_reference_consistency(
     return scored_target
 
 
+def sibling(path, name):
+    """`name` beside `path`, as a forward-slash relative path.
+
+    Used for both branches so a tar member key and a directory-relative path
+    resolve identically. `Path.with_name` normalises away a leading "./", which
+    a tar member key may carry, and that mismatch was the KeyError.
+    """
+    head, _, _ = str(path).replace("\\", "/").rpartition("/")
+    return f"{head}/{name}" if head else name
+
+
 def load_candidates(source):
     """Read flat or organized batch results, optionally directly from a tarball."""
     source = Path(source)
@@ -119,11 +131,27 @@ def load_candidates(source):
                 return json.loads((source / path).read_text())
         else:
             archive = stack.enter_context(tarfile.open(source))
-            files = {m.name: m for m in archive.getmembers() if m.isfile()}
-            configs = {p: p for p in files if p.endswith("/config.json")}
+            # Member names are normalised before use. Two layouts failed
+            # against the equivalent unpacked directory, which loaded fine:
+            # a ROOT-level `config.json` has no "/" and was skipped by the
+            # suffix test, and a `./run/config.json` was found but its sibling
+            # lookup went through `Path(...).with_name(...)`, which drops the
+            # "./" and then missed the member key. Normalising both the key
+            # and the lookup makes the tar and directory paths agree.
+            def normalise(name):
+                return name[2:] if name.startswith("./") else name
+
+            files = {
+                normalise(m.name): m for m in archive.getmembers() if m.isfile()
+            }
+            configs = {
+                p: p
+                for p in files
+                if p == "config.json" or p.endswith("/config.json")
+            }
 
             def read(path):
-                return json.load(archive.extractfile(files[path]))
+                return json.load(archive.extractfile(files[normalise(path)]))
 
         if not configs:
             raise ValueError("no run configurations found")
@@ -158,7 +186,7 @@ def load_candidates(source):
             ):
                 if config["arguments"][field] != baseline["arguments"][field]:
                     raise ValueError(f"inconsistent batch {field}")
-            summary = read(str(Path(path).with_name("summary.json")))
+            summary = read(sibling(path, "summary.json"))
             winner = summary["best_sequence"]
             wt = baseline["binder_sequence"]
             if len(winner) != len(wt) or any(
@@ -213,9 +241,93 @@ def select_shard(candidates, num_shards, shard_index):
     return [c for c in candidates if c["candidate_id"] % num_shards == shard_index]
 
 
+def evaluation_signature(
+    seeds, sampling_steps, opendde_dtype, original=None,
+):
+    """What has to match for two shards to be parts of one evaluation.
+
+    The seed set above all: shards scored on different seeds are not slices of
+    one evaluation, and merging them produces a table whose rows are not
+    comparable with each other. Precision and sampling steps are here for the
+    same reason.
+
+    EFFECTIVE values, resolved against the archive, never the raw CLI options.
+    An earlier version read `args.sampling_steps` directly, so a shard that
+    inherited its step count recorded `null` -- two shards with *different*
+    inherited step counts then produced identical signatures and merged, while
+    one supplying 64 explicitly and one inheriting 64 were rejected as
+    incompatible. Both failures come from describing the request instead of
+    what ran.
+    """
+    if sampling_steps is None or opendde_dtype is None:
+        raise ValueError(
+            "evaluation_signature needs effective settings; got "
+            f"sampling_steps={sampling_steps!r}, opendde_dtype={opendde_dtype!r}"
+        )
+    signature = dict(
+        seeds=sorted(int(s) for s in seeds),
+        sampling_steps=int(sampling_steps),
+        opendde_dtype=str(opendde_dtype),
+    )
+    if original is not None:
+        # Matching seeds, steps and precision are not enough: shards scored
+        # under different checkpoints, recycling depths or interface cutoffs
+        # merged as one evaluation. These come from the archive, so they are
+        # available before any model loads.
+        arguments = original.get("arguments", {})
+        signature.update(
+            checkpoint=original.get("checkpoint"),
+            recycling_steps=original.get("recycling_steps"),
+            pae_cutoff=arguments.get("pae_cutoff"),
+            distance_cutoff=arguments.get("distance_cutoff"),
+            scored_target_is_decoy=original.get("decoy_target") is not None,
+        )
+    return signature
+
+
 def merge_shard_tables(root, num_shards):
-    """Build stage-level tables with file links relative to the stage directory."""
+    """Build stage-level tables with file links relative to the stage directory.
+
+    Shard compatibility is checked, not assumed. File existence, duplicate
+    detection and row counts all passed for shards evaluated on DIFFERENT seed
+    sets, and the merged stage was marked complete -- a table whose rows are
+    not comparable with each other, reported as one evaluation.
+    """
     root = Path(root)
+
+    # First pass: are these shards parts of one evaluation? Checked before any
+    # table is read, so a mismatch is reported on its own terms rather than as
+    # whatever row-level error the incompatible tables happen to raise first.
+    signatures, unsigned = {}, []
+    for index in range(num_shards):
+        summary_path = root / f"shard_{index}" / "summary.json"
+        if not summary_path.is_file():
+            continue
+        signature = json.loads(summary_path.read_text()).get("evaluation")
+        if signature is None:
+            unsigned.append(index)
+        else:
+            signatures[index] = signature
+    distinct = {json.dumps(s, sort_keys=True) for s in signatures.values()}
+    if len(distinct) > 1:
+        detail = "; ".join(
+            f"shard {i}: {json.dumps(s, sort_keys=True)}"
+            for i, s in sorted(signatures.items())
+        )
+        raise ValueError(
+            f"shards under {root} were not evaluated the same way, so merging "
+            f"them would produce a table whose rows are not comparable: "
+            f"{detail}"
+        )
+    if unsigned:
+        print(
+            f"  WARNING: shard(s) {unsigned} carry no evaluation signature, so "
+            "their compatibility with the rest cannot be checked. Shards "
+            "written before 2026-10-14 predate the field; re-run them to make "
+            "this verifiable.",
+            file=sys.stderr,
+        )
+
     merged = {
         name: [] for name in ("candidates.csv", "source_runs.csv", "predictions.csv")
     }
@@ -319,6 +431,7 @@ def main(argv=None):
     links = [row for row in links if row["candidate_id"] in selected_ids]
     steps = args.sampling_steps or original["arguments"]["sampling_steps"]
     precision = args.opendde_dtype or original["arguments"].get("opendde_dtype", "fp32")
+    signature = evaluation_signature(args.seeds, steps, precision, original)
     print(
         f"Shard {args.shard_index}/{args.num_shards}, candidate IDs {sorted(selected_ids)}: "
         f"{len(candidates)} sequences, seeds {args.seeds}: "
@@ -337,6 +450,9 @@ def main(argv=None):
                     prediction_calls=0,
                     shard_index=args.shard_index,
                     num_shards=args.num_shards,
+                    # So the merge can check the shards belong together; see
+                    # `merge_shard_tables`.
+                    evaluation=signature,
                 )
             )
             + "\n"
@@ -520,6 +636,9 @@ def main(argv=None):
                 sequences=len(candidates),
                 prediction_calls=len(candidates) * len(args.seeds),
                 predictions_table="tables/predictions.csv",
+                shard_index=args.shard_index,
+                num_shards=args.num_shards,
+                evaluation=signature,
             ),
             indent=2,
         )

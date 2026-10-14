@@ -112,6 +112,15 @@ echo "  python:   $PYTHON_BIN"
 # 1. Skip what an absent optional dependency breaks -- and only while it is
 # absent, so this needs no edit when one gets installed.
 SKIPS=()
+# Backend isolation goes BEFORE the dependency probes below, which run
+# `python -c "import <module>"` -- and importing jax, or anything that imports
+# it, initialises a backend. With the exports further down, those probes
+# inherited the ambient JAX_PLATFORMS and CUDA_VISIBLE_DEVICES, so a probe on a
+# GPU node could touch a device this script promised not to touch. Setting it
+# here costs nothing and closes the window; the --gpu branch below overrides it.
+export JAX_PLATFORMS=cpu
+export CUDA_VISIBLE_DEVICES=""
+
 declare -A DEP_SEEN=()
 for entry in "${OPTIONAL_DEPS[@]}"; do
     module="${entry%%:*}"
