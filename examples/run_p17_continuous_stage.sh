@@ -19,7 +19,9 @@
 #
 #   stage `seed`    p17_continuous_seed.py, three methods x three seeds, nine
 #                   runs over the available GPUs. Writes one JSON per run and
-#                   prints the truncation verdict below. ~25 min.
+#                   prints the truncation verdict below. ~2 h at the 600 steps
+#                   this now defaults to; the ~25 min figure in an earlier
+#                   version of this line was the old 125-step cost.
 #
 #   stage `search`  the discrete harness from each seed sequence, one cell per
 #                   method, plus a parent-start control. 20 search seeds per
@@ -187,7 +189,10 @@ INIT=parent             # see header; `noise` reproduces the pre-2026-10-07 star
 INIT_LOGIT_SCALE=1.0    # was 5.0; matches ColabDesign's own wildtype start
 SEED_EDIT_WEIGHT=0.0    # EditBudget hinge OFF during the relaxation only
 SEED_HARD_TEMP=1.0      # was 1e-2, where the straight-through gradient is ~0
-SEED_LOGIT_NORM=0       # OFF: a fixed gamma caps the softmax, see the header
+SEED_LOGIT_NORM=0       # OFF: unvalidated on the real loss, see the header.
+                        # NOT because gamma "caps the softmax" -- that claim is
+                        # withdrawn; normalisation is over the whole (29, 20)
+                        # block, so gamma bounds the aggregate, not each row.
 SEED_STOCHASTIC_HARD=0  # OFF: argmax is what ColabDesign does
 # Resolved here, not inside the stage: `set -u` is on and the --dry-run listing
 # below reads these too, so resolving them in the stage body would abort the
@@ -320,6 +325,17 @@ if "$DRY_RUN"; then
     if has_stage seed; then
         echo
         echo "  [seed] $( echo "$METHODS" | wc -w ) x $SEED_REPLICATES runs:"
+        # The real run refuses runs > devices (see stage `seed`). Say so HERE,
+        # or the plan looks fine and the launch dies two seconds in.
+        _planned=$(( $(echo "$METHODS" | wc -w) * $(echo "$REPLICATES" | wc -w) ))
+        if (( _planned > ${#DEV[@]} )); then
+            echo
+            echo "    ⚠️  THIS PLAN WILL BE REFUSED: $_planned runs over" >&2
+            echo "        ${#DEV[@]} devices. Pass --seed-replicates" >&2
+            echo "        $(( ${#DEV[@]} / $(echo "$METHODS" | wc -w) )), or --devices with at" >&2
+            echo "        least $_planned entries." >&2
+            echo >&2
+        fi
         for m in $METHODS; do
             for r in $REPLICATES; do
                 echo "    $PYTHON_BIN $SEEDER --method $m --seed $r --steps $SEED_STEPS --init $INIT --init-logit-scale $INIT_LOGIT_SCALE --edit-budget $EDIT_BUDGET --weight-edit-budget $SEED_EDIT_WEIGHT --hard-temp $SEED_HARD_TEMP $SEED_NORM_FLAG $SEED_HARD_FLAG --weight-registry $WEIGHT_REGISTRY --sampling-steps $STEPS --opendde-dtype $DTYPE --lr $SEED_LR --out $SEED_DIR/${m}_r${r}.json"
