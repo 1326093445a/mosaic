@@ -4,7 +4,7 @@
 #
 #   cd /storage/frank/mosaic
 #   bash examples/run_p17_continuous_stage.sh --dry-run
-#   bash examples/run_p17_continuous_stage.sh --stages seed      # ~25 min, cheap
+#   bash examples/run_p17_continuous_stage.sh --stages seed      # ~2 h at 600 steps
 #   bash examples/run_p17_continuous_stage.sh                    # seed + search
 #
 # WHY A CLUSTER SCRIPT. The local box is a 24 GB RTX 4090. The seeding stage is
@@ -35,6 +35,72 @@
 # comes back at or near 29, every seed is an argmax of a budget-truncated
 # optimum and stage `search` is measuring the projection, not the relaxation.
 # The script prints that number per run and refuses to guess what it means.
+#
+# WHY THE SEEDING DEFAULTS CHANGED ON 2026-10-13, AND HOW MUCH OF IT IS PROVEN.
+# The question above was never reached, because the relaxation never moved.
+# Across seven replicates of three methods the seeds came back 0, 0, 0, 0, 1, 1
+# and 2 edits from the parent on a budget of 5, and `hamming_from_parent = 0`
+# means the argmax was still the parent at all 29 designable positions.
+#
+# ONE cause has direct evidence, measured on the CPU toy loss through the same
+# `run_relaxation` that main() runs (tests/test_continuous_seed.py):
+#
+#   THE EDITBUDGET HINGE. `w * relu(E(s) - b)` with `E(s) = sum_pos (1 - p_parent)`
+#   is the expected Hamming distance, which at a one-hot equals Hamming exactly
+#   -- inert for the discrete search. On a RELAXED sequence its only route to
+#   satisfaction is driving p_parent toward 1. At scale 5.0 and 125 steps the
+#   optimizers wanted 4, 6 and 0 substitutions (bindcraft, colabdesign, apgm)
+#   with it on and 27, 29 and 29 with it off, and it decides the outcome at
+#   every step count and scale tried. `project_to_budget` already enforces the
+#   budget exactly, so `SEED_EDIT_WEIGHT=0.0` loses nothing. The DISCRETE search
+#   keeps 5.0. NOT YET TESTED ON THE REAL LOSS.
+#
+# Three more changes were made on principle and their effect is UNMEASURED:
+#
+#   THE INIT SCALE, 5.0 -> 1.0, to match ColabDesign's own wildtype start. An
+#   earlier version of this header attributed the null to a 148:1 gradient
+#   weight from the softmax chain rule; that was withdrawn the same day. It was
+#   drawn from biohub_optimizer, which this stage does not use, and the toy shows
+#   no such effect: with the hinge off the scale only changes how many steps a
+#   logit-space method needs (scale 1.0 has moved by 24 steps, 5.0 has not; by
+#   125 both have). A cluster probe (old code, hinge on, 125 steps, n=1 per
+#   cell) gave colabdesign 5/2/1/3 edits at scale 1..4 against 0 at 5, and
+#   bindcraft 0/1/2/2 against 1: mixed, and one seed.
+#   THE STRAIGHT-THROUGH STAGE. For colabdesign it never ran at all (`hard=False`
+#   for the whole stage); for bindcraft it ran 5 of 125 steps at temp 1e-2, where
+#   the estimator's gradient is a saturated softmax's Jacobian and ColabDesign's
+#   own `lr_scale = soft*temp` shrinks the step another 100x. `SEED_HARD_TEMP=1.0`
+#   fixes that, and it matters for a reason the toy loss cannot test: OpenDDE was
+#   trained on one-hot sequences, so this is the only branch that shows it an
+#   in-distribution input (Fast SeqProp, arXiv:2005.11275: "the predictive power
+#   of P may be poor on a continuous relaxation").
+#   THE STEP COUNT, 125 -> 600, and `--steps` now actually REACHES bindcraft,
+#   whose four stage lengths were hardcoded so every bindcraft run was 125 steps
+#   whatever was asked for. Fast SeqProp reports un-normalised softmax
+#   relaxation failing to converge in 20,000 updates and its normalised variant
+#   converging in 200.
+#
+# `SEED_LOGIT_NORM` and `SEED_STOCHASTIC_HARD` are OFF. Both were shipped ON
+# earlier on 2026-10-13 and both were wrong to ship that way. One real defect:
+# on a UNIFORM start the auto-calibrated gamma is 0, and normalisation then
+# multiplies every update back to exactly zero with a live gradient --
+# ColabDesign's own un-seeded start is `np.zeros` and `--init noise` has spread
+# ~0.01, so both were affected, and `project_to_budget` cannot show it because
+# it only takes an argmax. The calibration now refuses a degenerate spread
+# instead of freezing on it.
+#
+# A second argument given here at the time -- that gamma caps a 20-way softmax
+# at about p=0.125 per residue, so the relaxation could never become confident
+# -- was WRONG and is withdrawn. Normalisation is over the whole (29, 20) block,
+# so gamma fixes the GLOBAL deviation: concentrating the spread in one row
+# reaches p=0.91 at the same gamma. What gamma bounds is the aggregate, i.e.
+# every row cannot be peaked at once.
+#
+# They stay off because they are unvalidated on the real loss and because gamma
+# couples the initialisation to a standing constraint on every later iterate.
+# Only the hinge has evidence behind it, so only the hinge is on: isolate it on
+# the real loss before the full 600-step stage is spent. See section 31.10 of
+# docs/P17_JN1.md and `bash examples/run_p17_hinge_probe.sh`.
 #
 # WHAT THE ANCHORED INIT IS FOR. `--init parent` (the default since 2026-10-07)
 # adds `--init-logit-scale` to the parent column, so the softmax opens at
@@ -115,10 +181,21 @@ SEEDER="$SCRIPT_DIR/p17_continuous_seed.py"
 DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3,4,5,6,7}"
 METHODS="apgm bindcraft colabdesign"
 SEED_REPLICATES=3       # continuous-stage seeds per method
-SEED_STEPS=125          # pinned across methods, see header
+SEED_STEPS=600          # see "WHY THE SEEDING DEFAULTS CHANGED" in the header
 SEED_LR=0.1
 INIT=parent             # see header; `noise` reproduces the pre-2026-10-07 start
-INIT_LOGIT_SCALE=5.0
+INIT_LOGIT_SCALE=1.0    # was 5.0; matches ColabDesign's own wildtype start
+SEED_EDIT_WEIGHT=0.0    # EditBudget hinge OFF during the relaxation only
+SEED_HARD_TEMP=1.0      # was 1e-2, where the straight-through gradient is ~0
+SEED_LOGIT_NORM=0       # OFF: a fixed gamma caps the softmax, see the header
+SEED_STOCHASTIC_HARD=0  # OFF: argmax is what ColabDesign does
+# Resolved here, not inside the stage: `set -u` is on and the --dry-run listing
+# below reads these too, so resolving them in the stage body would abort the
+# dry run on an unbound variable without ever reaching the real command.
+SEED_NORM_FLAG=$([[ "$SEED_LOGIT_NORM" == "1" ]] \
+    && echo --logit-norm || echo --no-logit-norm)
+SEED_HARD_FLAG=$([[ "$SEED_STOCHASTIC_HARD" == "1" ]] \
+    && echo --stochastic-hard || echo --no-stochastic-hard)
 SEEDS_PER_CELL=20
 SCORE_CALLS=200
 GRADIENT_CALLS=200
@@ -245,7 +322,7 @@ if "$DRY_RUN"; then
         echo "  [seed] $( echo "$METHODS" | wc -w ) x $SEED_REPLICATES runs:"
         for m in $METHODS; do
             for r in $REPLICATES; do
-                echo "    $PYTHON_BIN $SEEDER --method $m --seed $r --steps $SEED_STEPS --init $INIT --init-logit-scale $INIT_LOGIT_SCALE --edit-budget $EDIT_BUDGET --weight-registry $WEIGHT_REGISTRY --sampling-steps $STEPS --opendde-dtype $DTYPE --lr $SEED_LR --out $SEED_DIR/${m}_r${r}.json"
+                echo "    $PYTHON_BIN $SEEDER --method $m --seed $r --steps $SEED_STEPS --init $INIT --init-logit-scale $INIT_LOGIT_SCALE --edit-budget $EDIT_BUDGET --weight-edit-budget $SEED_EDIT_WEIGHT --hard-temp $SEED_HARD_TEMP $SEED_NORM_FLAG $SEED_HARD_FLAG --weight-registry $WEIGHT_REGISTRY --sampling-steps $STEPS --opendde-dtype $DTYPE --lr $SEED_LR --out $SEED_DIR/${m}_r${r}.json"
             done
         done
     fi
@@ -359,6 +436,18 @@ if has_stage seed; then
         echo "      runs on the doubled-up device died. --seed-replicates"
         echo "      $(( ${#DEV[@]} / $(echo "$METHODS" | wc -w) )) keeps one run per GPU."
     fi
+    # Refuse rather than double up. `i % ${#DEV[@]}` silently wraps, which is
+    # how 9 seeding runs landed on 8 GPUs on 2026-10-07 with two processes on
+    # device 0; both died and took the whole apgm cell with them (see the
+    # header). The advice printed above is not enough on its own.
+    n_runs=$(( $(echo "$METHODS" | wc -w) * $(echo "$REPLICATES" | wc -w) ))
+    if (( n_runs > ${#DEV[@]} )); then
+        echo "Refusing to start stage 'seed': $n_runs runs over ${#DEV[@]} devices" >&2
+        echo "would put two processes on one GPU, which is what killed apgm_r0 on" >&2
+        echo "2026-10-07. Reduce SEED_REPLICATES to $(( ${#DEV[@]} / $(echo "$METHODS" | wc -w) ))," >&2
+        echo "or pass --devices with at least $n_runs entries." >&2
+        exit 2
+    fi
     i=0
     pids=()
     for m in $METHODS; do
@@ -370,6 +459,9 @@ if has_stage seed; then
                 --method "$m" --seed "$r" --steps "$SEED_STEPS" \
                 --init "$INIT" --init-logit-scale "$INIT_LOGIT_SCALE" \
                 --edit-budget "$EDIT_BUDGET" \
+                --weight-edit-budget "$SEED_EDIT_WEIGHT" \
+                --hard-temp "$SEED_HARD_TEMP" \
+                $SEED_NORM_FLAG $SEED_HARD_FLAG \
                 --weight-registry "$WEIGHT_REGISTRY" \
                 --registry-contact-distance "$REGISTRY_CUTOFF" \
                 --sampling-steps "$STEPS" --opendde-dtype "$DTYPE" \

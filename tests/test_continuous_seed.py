@@ -143,14 +143,19 @@ def edit_budget_expectation(probs, parent_rows):
 
 
 def test_anchored_start_lands_inside_the_edit_budget(seeder):
-    """The regression this initialization fixes.
+    """What a high init scale bought, kept for the record.
 
     `EditBudget` is a soft hinge, `5.0 * relu(E(s) - budget)`. A noise start
     puts about 1/20 of the mass on the parent at each of the 29 designable
     positions, so `E` opens near 27.6 and the hinge opens near 113 -- larger
     than every other term in the composite objective combined. Anchoring at
-    the parent opens inside the budget, so the hinge is inactive and the first
-    steps optimize the readouts instead of walking back to the parent.
+    scale 5.0 opens inside the budget, so the hinge is inactive at step 0.
+
+    This is still true and is why 5.0 was chosen. What it bought was a start
+    where the HINGE is inactive; what it cost was never measured until
+    2026-10-13, when the hinge turned out to be the thing that decides whether
+    the relaxation leaves the parent at all. See
+    `test_the_hinge_alone_decides_whether_the_relaxation_leaves_the_parent`.
     """
     rng = np.random.default_rng(0)
     parent = rng.integers(0, 20, size=120).astype(np.int32)
@@ -362,3 +367,613 @@ def test_relaxed_array_handles_both_return_conventions(seeder):
     pair = (np.ones((4, 20)), np.zeros((4, 20)))
     assert seeder.relaxed_array(bare) is bare
     assert seeder.relaxed_array(pair) is pair[0]
+
+
+# --- the 2026-10-13 defaults -----------------------------------------------
+#
+# Seven replicates of three methods returned 0, 0, 0, 0, 1, 1 and 2 edits on a
+# budget of 5, and at 0 the argmax was still the parent at all 29 designable
+# positions. These pin each of the four causes separately, because none of the
+# four fixes is sufficient alone and a regression in any one of them would look
+# like the same silent null.
+
+
+def seeder_defaults(seeder):
+    """The seeder's EFFECTIVE defaults, from an actual parse.
+
+    Not `{a.dest: a.default for a in parser._actions}`, which is what this used
+    to do and which is wrong for every `--flag` / `--no-flag` pair: the two
+    actions share one `dest`, and the `store_false` half carries an implicit
+    `default=True`, so introspection reports whichever came last. That silently
+    reported `logit_norm=True` after the default had been changed to False, and
+    the assertion built on it passed while pinning nothing.
+    """
+    import argparse, contextlib, io
+    captured = {}
+    real = argparse.ArgumentParser.parse_args
+
+    def spy(self, argv=None):
+        captured["parser"] = self
+        raise SystemExit(0)
+
+    argparse.ArgumentParser.parse_args = spy
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            with pytest.raises(SystemExit):
+                seeder.main(["--method", "apgm", "--out", "/dev/null"])
+    finally:
+        argparse.ArgumentParser.parse_args = real
+    assert "parser" in captured, (
+        "main() did not reach parse_args; it may have been restructured"
+    )
+    return vars(real(captured["parser"], ["--method", "apgm", "--out", "/dev/null"]))
+
+
+def test_the_default_init_scale_matches_colabdesigns_own(seeder):
+    """Pinned so a change is deliberate, NOT because 1.0 is shown to be better.
+
+    ColabDesign's wildtype start is `np.eye(20)[aatype]` -- value 1, no scale --
+    and the former default was 5.0. The measured effect of the difference is
+    small: on the CPU toy loss it changes only how many steps a logit-space
+    method needs once the hinge is off (see
+    `test_the_init_scale_sets_the_speed_not_the_direction`), and a cluster probe
+    on 2026-10-13 (old code, hinge on, n=1 per cell) moved colabdesign from 0
+    edits to 1-5 and left bindcraft at 0-2. An earlier version of this docstring
+    attributed the null to a 148:1 gradient-weight ratio from the softmax chain
+    rule; that was cited from `biohub_optimizer`, which the seeder does not use,
+    and the toy data do not support it.
+    """
+    assert seeder_defaults(seeder)["init_logit_scale"] == 1.0
+
+
+def test_the_hinge_is_off_during_the_relaxation_by_default(seeder):
+    """`project_to_budget` enforces the budget exactly; the hinge does not need to.
+
+    The one default with direct evidence behind it. See
+    `test_the_hinge_alone_decides_whether_the_relaxation_leaves_the_parent`.
+    """
+    assert seeder_defaults(seeder)["weight_edit_budget"] == 0.0
+
+
+def test_the_step_default_is_past_the_regime_the_paper_calls_unconverged(seeder):
+    assert seeder_defaults(seeder)["steps"] >= 200
+
+
+def test_the_straight_through_stage_is_not_run_at_a_saturated_temperature(seeder):
+    """`hard_temp` is the one shaping change kept on by default, and why.
+
+    At temp 1e-2 the estimator's gradient is a saturated softmax's Jacobian, and
+    ColabDesign's `lr_scale = (1 - soft) + soft*temp` shrinks the step by
+    another factor of temp, so the one stage that shows the frozen predictor a
+    valid one-hot could not move at all. That is a fact about the code rather
+    than a measured effect; the toy loss cannot test the reason it matters here,
+    which is that OpenDDE was trained on one-hot sequences.
+    """
+    assert seeder_defaults(seeder)["hard_temp"] == 1.0
+
+
+def test_the_unvalidated_shaping_options_are_off_by_default(seeder):
+    """Both shipped ON on 2026-10-13, and both were wrong to.
+
+    `logit_norm`: on a uniform start the auto-calibrated gamma is 0 and every
+    update is multiplied back to exactly zero with a live gradient, which
+    `project_to_budget` cannot show because it only takes an argmax. Beyond
+    that it is simply unvalidated on the real loss, and it couples the init
+    scale to a standing constraint on every later iterate. An earlier version
+    of this docstring also claimed gamma caps per-residue confidence at about
+    p=0.125; that was wrong, and
+    `test_gamma_bounds_the_aggregate_spread_not_each_row` records why.
+
+    `stochastic_hard`: the argmax is what ColabDesign does, and sampling did not
+    help on the toy.
+
+    Only `--weight-edit-budget` has direct evidence, so only it is on.
+    """
+    d = seeder_defaults(seeder)
+    assert d["logit_norm"] is False
+    assert d["stochastic_hard"] is False
+    assert d["weight_edit_budget"] == 0.0
+
+
+def test_the_discrete_search_keeps_the_hinge_at_full_weight():
+    """The seeder turning the hinge off must not reach the discrete search.
+
+    There the hinge is inert below the cap anyway (at a one-hot `E(s)` equals
+    Hamming exactly), so its weight costs nothing and changing it would move a
+    result this project has thirty sections of history on.
+    """
+    import sys
+    sys.path.insert(0, str(REPO / "examples"))
+    import inspect
+    from p17_hallucination_search import WEIGHT_EDIT_BUDGET, build_composite_losses
+
+    default = inspect.signature(build_composite_losses).parameters[
+        "edit_budget_weight"
+    ].default
+    assert default == WEIGHT_EDIT_BUDGET == 5.0
+
+
+def test_steps_reaches_bindcrafts_four_stages():
+    """`--steps` was silently dropped for bindcraft; every run was 125 steps.
+
+    The four stage lengths are hardcoded as 50:25:45:5, and the seeder called
+    `bindcraft_design` without overriding any of them, so the flag it passed
+    for the other two methods did nothing here.
+    """
+    import inspect
+    from mosaic.optimizers import bindcraft_design
+
+    assert "n_steps" in inspect.signature(bindcraft_design).parameters
+
+
+@pytest.mark.parametrize("total,expected_sum", [(125, 125), (600, 600), (37, 37)])
+def test_bindcraft_rescaling_preserves_the_total_exactly(total, expected_sum):
+    """Rounding four proportions must not lose or invent steps."""
+    counts = (50, 25, 45, 5)
+    scaled = [max(1, int(round(c * total / sum(counts)))) for c in counts]
+    drift = total - sum(scaled)
+    if drift:
+        longest = max(range(len(scaled)), key=lambda i: scaled[i])
+        scaled[longest] = max(1, scaled[longest] + drift)
+    assert sum(scaled) == expected_sum
+    assert all(n >= 1 for n in scaled), "no stage may be scaled out of existence"
+
+
+def test_bindcraft_refuses_a_total_it_cannot_split():
+    from mosaic.optimizers import bindcraft_design
+
+    with pytest.raises(ValueError, match="four stages"):
+        bindcraft_design(loss_function=None, x=np.zeros((4, 20)), n_steps=3)
+
+
+def test_logit_normalisation_is_the_identity_at_the_calibrated_scale():
+    """Gamma is calibrated to the opening spread so step 0 does not move.
+
+    A fixed gamma of 1.0 instead rescales the gap to the block's own standard
+    deviation, which for a parent-anchored start AMPLIFIES it -- a gap of 1.0
+    over 29x20 becomes about 4.6 -- re-saturating what this prevents.
+    """
+    import jax.numpy as jnp
+    from mosaic.optimizers import _layer_norm_logits
+
+    rng = np.random.default_rng(3)
+    parent = rng.integers(0, 20, size=N_DESIGNABLE)
+    x = np.zeros((N_DESIGNABLE, 20), dtype=np.float32)
+    x[np.arange(N_DESIGNABLE), parent] = 1.0
+    x = x - x.mean(-1, keepdims=True)
+
+    gamma = float(np.sqrt(((x - x.mean()) ** 2).mean()))
+    identity = np.asarray(_layer_norm_logits(jnp.asarray(x), gamma))
+    assert np.allclose(identity, x, atol=1e-5), "calibrated gamma must not move x"
+
+    amplified = np.asarray(_layer_norm_logits(jnp.asarray(x), 1.0))
+    gap_before = float(x.max(-1).mean() - x.min(-1).mean())
+    gap_after = float(amplified.max(-1).mean() - amplified.min(-1).mean())
+    assert gap_after > 3 * gap_before, (
+        f"gamma=1.0 was supposed to amplify the gap; {gap_before:.2f} -> {gap_after:.2f}"
+    )
+
+
+def test_logit_normalisation_bounds_the_spread_however_far_it_drifts():
+    import jax.numpy as jnp
+    from mosaic.optimizers import _layer_norm_logits
+
+    for drift in (1.0, 10.0, 1000.0):
+        x = drift * np.asarray(
+            np.random.default_rng(0).standard_normal((N_DESIGNABLE, 20)),
+            dtype=np.float32,
+        )
+        out = np.asarray(_layer_norm_logits(jnp.asarray(x), 0.5))
+        assert abs(float(out.mean())) < 1e-3
+        assert abs(float(out.std()) - 0.5) < 1e-3, "gamma must set the spread"
+
+
+def test_stochastic_hard_draws_a_one_hot_that_is_not_always_the_argmax():
+    """Fast SeqProp's sampler, not ColabDesign's argmax.
+
+    The straight-through gradient is the softmax Jacobian either way, so this
+    changes only which vertex the predictor is shown.
+    """
+    import jax
+    import jax.numpy as jnp
+    from mosaic.optimizers import _colabdesign_transform
+
+    z = jnp.asarray(
+        np.random.default_rng(5).standard_normal((N_DESIGNABLE, 20)), dtype=jnp.float32
+    )
+    one = jnp.asarray(1.0)
+    deterministic = _colabdesign_transform(z, one, one, one, None)
+    argmax_pick = tuple(np.asarray(deterministic.argmax(-1)))
+    picks = {
+        tuple(
+            np.asarray(
+                _colabdesign_transform(z, one, one, one, jax.random.key(k)).argmax(-1)
+            )
+        )
+        for k in range(12)
+    }
+    assert len(picks) > 1, "sampling produced the same draw every time"
+    assert picks != {argmax_pick}, "sampling only ever reproduced the argmax"
+    # Whatever produced it, the predictor must still be shown a one-hot: that
+    # is the entire reason for the hard branch.
+    for name, seq in (("argmax", deterministic),
+                      ("sampled", _colabdesign_transform(
+                          z, one, one, one, jax.random.key(0)))):
+        for row in np.asarray(seq):
+            assert np.isclose(row.sum(), 1.0) and np.isclose(row.max(), 1.0), (
+                f"{name} branch did not produce a one-hot"
+            )
+
+
+# --- behaviour, through the code `main()` actually runs --------------------
+#
+# Measured 2026-10-13 on this toy loss (a quadratic pull to a random target plus
+# a real `EditBudget` hinge), 29 designable positions, budget 5, through
+# `run_relaxation` at its PRODUCTION optimizer settings. "wanted" is the number
+# of positions whose preferred residue differs from the parent --
+# `candidate_substitutions_considered` in the seed JSON -- and is the useful
+# readout, because `edits` is capped at the budget and hides everything above it.
+#
+#   24 steps        scale 1.0            scale 5.0
+#     hinge 5.0     0 wanted (all)       0 wanted (all)
+#     hinge 0.0     21 / 20 / 28         0 wanted (ALL THREE)
+#
+#   125 steps       scale 1.0            scale 5.0
+#     hinge 5.0     0 / 5 / 4            0 / 4 / 9
+#     hinge 0.0     21 / 26 / 28         0 / 27 / 28
+#                   (apgm / bindcraft / colabdesign)
+#
+# Two things follow, and an earlier version of these tests got both wrong by
+# passing apgm settings of its own (0.1/0.9/1.0) while main() passed
+# 0.05/0.5/1.2:
+#
+#   - The hinge is NECESSARY but NOT SUFFICIENT. Switching it off moves all
+#     three methods only when the init scale is also 1.0.
+#   - At scale 5.0 and 24 steps NOTHING moves in either arm, and simplex_APGM
+#     never moves at scale 5.0 at all. So a zero in both arms does not implicate
+#     the loss; it is also what these settings produce on a loss with no model
+#     in it.
+
+@pytest.fixture(scope="module")
+def toy_problem():
+    """A loss factory so the hinge weight can vary with everything else fixed."""
+    import jax.numpy as jnp
+    from mosaic.common import LossTerm
+    from mosaic.losses.transformations import EditBudget
+
+    rng = np.random.default_rng(7)
+    parent = rng.integers(0, 20, size=N_DESIGNABLE).astype(np.int32)
+    s_ref = np.zeros((N_DESIGNABLE, 20), dtype=np.float32)
+    s_ref[np.arange(N_DESIGNABLE), parent] = 1.0
+    target = np.asarray(rng.random((N_DESIGNABLE, 20)), dtype=np.float32)
+
+    class Quadratic(LossTerm):
+        def __call__(self, seq, *, key=None):
+            value = ((seq - jnp.asarray(target)) ** 2).sum()
+            return value, {"quadratic": value}
+
+    def make_loss(hinge_weight):
+        if hinge_weight == 0.0:
+            return Quadratic()
+        return Quadratic() + hinge_weight * EditBudget(
+            s_ref=s_ref, designable=np.ones(N_DESIGNABLE, dtype=bool),
+            budget=float(BUDGET),
+        )
+
+    return make_loss, parent
+
+
+def relax(seeder, toy_problem, method, *, steps, scale, hinge):
+    """Edits and wanted-substitutions from `run_relaxation` at the shipped options."""
+    import contextlib
+    import io
+
+    import jax
+    import jax.numpy as jnp
+
+    make_loss, parent = toy_problem
+    init_key, run_key = jax.random.split(jax.random.key(0))
+    noise = 0.01 * np.asarray(jax.random.normal(init_key, (N_DESIGNABLE, 20)))
+    x0 = jnp.asarray(
+        seeder.anchored_logits(parent, np.arange(N_DESIGNABLE), scale, noise)
+    )
+    with contextlib.redirect_stdout(io.StringIO()):
+        relaxed = np.asarray(seeder.run_relaxation(
+            method, make_loss(hinge), x0, run_key, steps=steps, lr=0.1,
+            logit_norm=False, stochastic_hard=False, hard_temp=1.0,
+            hard_fraction=0.25,
+        ))
+    tokens, margins, _ = seeder.project_to_budget(
+        relaxed, parent, np.arange(N_DESIGNABLE), BUDGET
+    )
+    return int((tokens != parent).sum()), len(margins)
+
+
+# apgm moves inside 24 steps; the logit-space methods need the longer budget the
+# real run gives them, so the contrast is measured where both arms can move.
+_STEPS = {"apgm": 24, "bindcraft": 125, "colabdesign": 125}
+
+
+@pytest.mark.parametrize("method", ["apgm", "bindcraft", "colabdesign"])
+def test_the_hinge_decides_the_outcome_at_the_shipped_init_scale(
+    seeder, toy_problem, method
+):
+    """The factor with direct evidence, at the scale the seeder actually ships.
+
+    `EditBudget` is `w * relu(E(s) - budget)` with `E(s) = sum_pos (1 - p_parent)`,
+    the EXPECTED Hamming distance. At a one-hot that equals Hamming exactly, so
+    for the discrete search it is inert below the cap. On a relaxed sequence its
+    only route to satisfaction is raising p_parent, so the relaxation is held at
+    the parent. `project_to_budget` enforces the budget exactly downstream,
+    which is why the hinge can be switched off here without losing the cap.
+
+    Measured at `scale=1.0`, which is `--init-logit-scale`'s default. It does
+    NOT hold at every scale -- see
+    `test_the_hinge_is_necessary_but_not_sufficient`, which pins the case where
+    switching the hinge off changes nothing.
+    """
+    steps = _STEPS[method]
+    _, wanted_on = relax(seeder, toy_problem, method, steps=steps, scale=1.0, hinge=5.0)
+    edits_off, wanted_off = relax(
+        seeder, toy_problem, method, steps=steps, scale=1.0, hinge=0.0
+    )
+    assert wanted_on <= BUDGET, (
+        f"{method}: hinge ON still wanted {wanted_on} substitutions"
+    )
+    assert wanted_off >= 3 * BUDGET, (
+        f"{method}: hinge OFF wanted only {wanted_off}; expected the relaxation to "
+        "want far more than the budget allows, which is the truncation regime"
+    )
+    assert edits_off == BUDGET, "and the projection must still fill the budget exactly"
+
+
+@pytest.mark.parametrize("method", ["apgm", "bindcraft", "colabdesign"])
+def test_the_hinge_is_necessary_but_not_sufficient(seeder, toy_problem, method):
+    """The counterexample, pinned so the hinge claim cannot be over-read.
+
+    At init scale 5.0 on a 24-step budget, switching the hinge off moves NONE of
+    the three methods. So "zero substitutions wanted" is not diagnostic of the
+    loss or of the hinge on its own -- it is also what these settings produce on
+    a toy loss containing no model at all. §31.10 of docs/P17_JN1.md used to
+    read a zero in both arms as implicating OpenDDE's gradient; this is why it
+    no longer does.
+    """
+    _, wanted_on = relax(seeder, toy_problem, method, steps=24, scale=5.0, hinge=5.0)
+    _, wanted_off = relax(seeder, toy_problem, method, steps=24, scale=5.0, hinge=0.0)
+    assert wanted_on == 0 and wanted_off == 0, (
+        f"{method}: expected both arms dead at scale 5.0 / 24 steps, got "
+        f"{wanted_on} and {wanted_off}; the counterexample has moved and "
+        "§31.10's interpretation needs rechecking"
+    )
+
+
+def test_simplex_apgm_never_leaves_a_scale_five_start(seeder, toy_problem):
+    """For apgm the init scale is absolute, not a speed effect.
+
+    An earlier version of this file claimed the scale "sets the speed, not the
+    direction" for every method. That was measured with apgm settings the tests
+    supplied themselves (stepsize 0.1, momentum 0.9, scale 1.0); at the
+    production 0.05/0.5/1.2 it is false for apgm, which wants zero
+    substitutions from a scale-5.0 start however long it runs.
+    """
+    for steps in (24, 125):
+        _, wanted = relax(seeder, toy_problem, "apgm", steps=steps, scale=5.0,
+                          hinge=0.0)
+        assert wanted == 0, f"apgm wanted {wanted} at scale 5.0 after {steps} steps"
+    _, wanted_low = relax(seeder, toy_problem, "apgm", steps=24, scale=1.0, hinge=0.0)
+    assert wanted_low >= 3 * BUDGET, (
+        f"apgm wanted only {wanted_low} at scale 1.0; the contrast with scale 5.0 "
+        "is the whole point of this test"
+    )
+
+
+@pytest.mark.parametrize("method", ["bindcraft", "colabdesign"])
+def test_the_init_scale_sets_the_speed_for_the_logit_space_methods(
+    seeder, toy_problem, method
+):
+    """For the two logit-space methods only, and only with the hinge off.
+
+    The preferred residue's logit has to cross the gap the parent's scale
+    opened, so a short budget separates the two scales and a long one does not.
+    Note the scope: this says nothing about the trajectories being equivalent,
+    only that both reach a comparable COUNT of wanted substitutions by 125
+    steps, and it does not hold for apgm at all.
+    """
+    _, fast = relax(seeder, toy_problem, method, steps=24, scale=1.0, hinge=0.0)
+    _, slow = relax(seeder, toy_problem, method, steps=24, scale=5.0, hinge=0.0)
+    assert fast > slow, (
+        f"{method}: scale 1.0 wanted {fast} and scale 5.0 wanted {slow} at 24 steps; "
+        "the lower scale was supposed to flip first"
+    )
+    _, long_low = relax(seeder, toy_problem, method, steps=125, scale=1.0, hinge=0.0)
+    _, long_high = relax(seeder, toy_problem, method, steps=125, scale=5.0, hinge=0.0)
+    assert min(long_low, long_high) >= 3 * BUDGET, (
+        f"{method}: at 125 steps scale 1.0 wanted {long_low} and scale 5.0 wanted "
+        f"{long_high}; both were supposed to have crossed by then"
+    )
+
+
+# Shorter than the contrast tests above: at scale 1.0 with the hinge off, the
+# logit-space methods have already moved by 40 steps.
+_SHIPPED_STEPS = {"apgm": 24, "bindcraft": 40, "colabdesign": 40}
+
+
+@pytest.mark.parametrize("method", ["apgm", "bindcraft", "colabdesign"])
+def test_the_shipped_defaults_spend_the_whole_budget(seeder, toy_problem, method):
+    """Hinge off, scale 1.0, the options on: the configuration `main()` ships."""
+    edits, wanted = relax(
+        seeder, toy_problem, method, steps=_SHIPPED_STEPS[method], scale=1.0,
+        hinge=0.0,
+    )
+    assert edits == BUDGET, f"{method} spent only {edits} of {BUDGET} edits"
+    assert wanted > BUDGET, f"{method} wanted only {wanted}"
+
+
+def test_run_relaxation_refuses_an_unknown_method(seeder, toy_problem):
+    make_loss, parent = toy_problem
+    import jax
+    import jax.numpy as jnp
+
+    with pytest.raises(ValueError, match="unknown method"):
+        seeder.run_relaxation(
+            "adam", make_loss(0.0), jnp.zeros((N_DESIGNABLE, 20)), jax.random.key(0),
+            steps=4, lr=0.1, logit_norm=False, stochastic_hard=False,
+            hard_temp=1.0, hard_fraction=0.25,
+        )
+
+
+def test_a_degenerate_start_is_refused_rather_than_frozen():
+    """The uniform-start freeze, which silently did nothing with a live gradient."""
+    import jax.numpy as jnp
+    from mosaic.optimizers import _calibrate_logit_norm_scale, _layer_norm_logits
+
+    for name, x in (("exactly uniform", jnp.zeros((5, 20))),
+                    ("uniform nonzero", jnp.full((5, 20), 3.0)),
+                    ("0.01 * normal (the --init noise start)",
+                     jnp.full((5, 20), 0.0).at[0, 0].set(0.001))):
+        with pytest.raises(ValueError, match="could not be calibrated"):
+            _calibrate_logit_norm_scale(x)
+
+    # and what it was doing instead: wiping a real update to exactly zero
+    stepped = jnp.zeros((5, 20)).at[2, 3].set(0.27)
+    assert float(jnp.abs(_layer_norm_logits(stepped, 0.0)).max()) == 0.0
+
+    # a start with a real spread still calibrates
+    anchored = jnp.zeros((5, 20)).at[:, 0].set(1.0)
+    anchored = anchored - anchored.mean(-1, keepdims=True)
+    gamma = _calibrate_logit_norm_scale(anchored)
+    assert 0.2 < gamma < 0.25
+
+
+def test_gamma_bounds_the_aggregate_spread_not_each_row():
+    """What normalisation actually constrains, after I got this wrong.
+
+    `_layer_norm_logits` normalises over the WHOLE (N, 20) block, so gamma fixes
+    the GLOBAL standard deviation. An earlier version of this test evaluated a
+    (1, 20) array and concluded that gamma 0.218 "caps the softmax at about
+    p=0.125 per residue, so the relaxation can never become confident". That is
+    false for the shape the seeder actually uses: concentrating the spread in
+    one row of 29 reaches p=0.91 at the same gamma, because a single entry can
+    exceed the global deviation by up to about sqrt(29 * 20) = 24.
+
+    What gamma does bound is the aggregate: every row cannot be peaked at once,
+    because that would require a global deviation larger than gamma. So a small
+    gamma rations total confidence across positions rather than forbidding it
+    anywhere.
+    """
+    import jax
+    import jax.numpy as jnp
+    from mosaic.optimizers import _layer_norm_logits
+
+    gamma = 0.218
+
+    def max_p(x):
+        z = _layer_norm_logits(jnp.asarray(x, dtype=jnp.float32), gamma)
+        return float(jax.nn.softmax(z, -1).max())
+
+    every_row = np.zeros((N_DESIGNABLE, 20), dtype=np.float32)
+    every_row[np.arange(N_DESIGNABLE), 0] = 1.0
+    one_row = np.zeros((N_DESIGNABLE, 20), dtype=np.float32)
+    one_row[0, 0] = 1.0
+
+    assert max_p(every_row) < 0.15, (
+        "with every row peaked the global deviation is spread thin, so no row "
+        "gets far from uniform"
+    )
+    assert max_p(one_row) > 0.8, (
+        "but concentrating in one row reaches high confidence at the SAME gamma "
+        "-- which is why the per-row cap claim was wrong"
+    )
+    # and the global deviation is gamma in both cases, which is the invariant
+    for x in (every_row, one_row):
+        z = _layer_norm_logits(jnp.asarray(x, dtype=jnp.float32), gamma)
+        assert abs(float(jnp.std(z)) - gamma) < 1e-3
+
+
+@pytest.mark.parametrize("n_steps", [4, 5, 6, 7, 9, 13, 125, 600])
+def test_bindcraft_executes_exactly_the_requested_number_of_steps(n_steps):
+    """The budget overshoot, measured on the real function rather than a copy.
+
+    Four equal stages at `n_steps=6` ran 7 steps: the old rescaling dumped the
+    rounding remainder on one stage and clamped it at a floor of 1, and the
+    clamp could swallow part of the correction. `trajectory_fn` fires once per
+    step, so this counts what actually executed -- a Python counter inside the
+    loss would not, because the loss is traced.
+    """
+    import jax
+    import jax.numpy as jnp
+    from mosaic.common import LossTerm
+    from mosaic.optimizers import bindcraft_design
+
+    class Quad(LossTerm):
+        def __call__(self, seq, *, key=None):
+            return (seq ** 2).sum(), {}
+
+    equal = dict(logits_iters=(1, 1), soft_iters=1, hard_iters=1)
+    for kwargs in ({}, equal):
+        _, trajectory = bindcraft_design(
+            loss_function=Quad(), x=jnp.zeros((3, 20)), lr=0.1,
+            key=jax.random.key(0), n_steps=n_steps,
+            trajectory_fn=lambda aux, x: 1, **kwargs,
+        )
+        assert len(trajectory) == n_steps, (
+            f"requested {n_steps} steps with {kwargs or 'the published schedule'}, "
+            f"executed {len(trajectory)}"
+        )
+
+
+def test_apportionment_is_exact_and_preserves_a_published_schedule():
+    import itertools
+
+    from mosaic.optimizers import _apportion_stages
+
+    assert _apportion_stages((50, 25, 45, 5), 125) == [50, 25, 45, 5], (
+        "a schedule passed at its own total must come back unchanged"
+    )
+    assert sum(_apportion_stages((1, 1, 1, 1), 6)) == 6, "the n=6 overshoot"
+    for counts in itertools.product((1, 2, 5, 9, 50), repeat=4):
+        for n in (4, 5, 6, 7, 11, 37, 125, 600):
+            scaled = _apportion_stages(counts, n)
+            assert sum(scaled) == n, (counts, n, scaled)
+            assert min(scaled) >= 1, (counts, n, scaled)
+    with pytest.raises(ValueError, match="cannot cover|cannot give"):
+        _apportion_stages((1, 1, 1, 1), 3)
+
+
+def test_the_seeder_does_not_pay_for_a_best_iterate_it_discards(
+    seeder, toy_problem, monkeypatch
+):
+    """`relaxed_array` takes result[0], so APGM scoring is spend for nothing.
+
+    126 evaluations on the probe's 125-step runs, 378 across its three APGM
+    arms, for a value never read.
+    """
+    import contextlib
+    import io
+
+    import jax
+    import jax.numpy as jnp
+
+    import mosaic.optimizers as optimizers
+
+    make_loss, parent = toy_problem
+    init_key, run_key = jax.random.split(jax.random.key(0))
+    noise = 0.01 * np.asarray(jax.random.normal(init_key, (N_DESIGNABLE, 20)))
+    x0 = jnp.asarray(
+        seeder.anchored_logits(parent, np.arange(N_DESIGNABLE), 1.0, noise)
+    )
+    calls = []
+    real = optimizers._eval_loss
+
+    def counting(loss_function, x, key):
+        calls.append(1)
+        return real(loss_function, x, key)
+
+    monkeypatch.setattr(optimizers, "_eval_loss", counting)
+    with contextlib.redirect_stdout(io.StringIO()):
+        seeder.run_relaxation(
+            "apgm", make_loss(0.0), x0, run_key, steps=5, lr=0.1,
+            logit_norm=False, stochastic_hard=False, hard_temp=1.0,
+            hard_fraction=0.25,
+        )
+    assert not calls, f"the seeder paid for {len(calls)} discarded evaluations"

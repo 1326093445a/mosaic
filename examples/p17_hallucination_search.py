@@ -298,9 +298,12 @@ def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenize
                            pose_weight: float = 1.0,
                            registry_weight: float = 0.0,
                            registry_repel_weight: float = 0.0,
-                           registry_contact_distance: float = CONTACT_DISTANCE):
+                           registry_contact_distance: float = CONTACT_DISTANCE,
+                           edit_budget_weight: float = WEIGHT_EDIT_BUDGET):
     if not np.isfinite(pose_weight) or pose_weight < 0:
         raise ValueError("pose_weight must be finite and nonnegative")
+    if not np.isfinite(edit_budget_weight) or edit_budget_weight < 0:
+        raise ValueError("edit_budget_weight must be finite and nonnegative")
     # Keep the zero-weight term so paired runs preserve the random-key schedule.
     # Existing callers retain their original objective unless explicitly enabled.
     if confidence_loss is not None and opendde_path != "full":
@@ -405,7 +408,24 @@ def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenize
         CLIP_GRADIENT_NORM,
     )
 
-    edit_loss = WEIGHT_EDIT_BUDGET * EditBudget.from_residues(
+    # Weighted, not dropped, at 0: the term stays in the sum so a paired run
+    # keeps the same random-key schedule, exactly as registry does above.
+    #
+    # Why a caller would ever set this to 0. The hinge is `w * relu(E(s) - b)`
+    # with `E(s) = sum_pos (1 - p_parent)`, which is the EXPECTED Hamming
+    # distance under independent per-position sampling. At a one-hot that
+    # equals Hamming exactly, so for the discrete search it is inert below the
+    # cap and the default weight costs nothing. On a RELAXED sequence it is a
+    # different animal: a near-uniform start has E(s) ~ 27.6 over 29 designable
+    # positions, so the hinge opens near 113 against roughly 34 for every other
+    # term combined, and the only way to satisfy it is to drive p_parent toward
+    # 1 -- which is precisely the softmax saturation that kills the gradient
+    # (Fast SeqProp, arXiv:2005.11275). Measured on 2026-10-13: at weight 5.0
+    # the relaxation wanted 4-6 substitutions across all three optimizers and
+    # simplex_APGM wanted 0; at weight 0.0 the same runs wanted 27-29. The
+    # continuous seeding stage therefore turns it off and lets
+    # `project_to_budget` enforce the budget exactly, which it already did.
+    edit_loss = edit_budget_weight * EditBudget.from_residues(
         binder_seq, designable_idx, budget=float(edit_budget),
     )
 

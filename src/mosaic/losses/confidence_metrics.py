@@ -33,12 +33,27 @@ def _calculate_expected_aligned_error(
 
 
 def _calculate_bin_centers(breaks: jnp.ndarray):
+    """Bin centers from bin edges, with a catch-all bin appended.
+
+    `breaks[-2:-1] + step` was a transcription error: it takes the SECOND to
+    last center, so the catch-all duplicated the previous bin instead of
+    extending past it -- breaks [0,1,2] gave [0.5,1.5,2.5,2.5] where AlphaFold
+    gives [0.5,1.5,2.5,3.5]. The correct expression is already in this repo, at
+    `mosaic/alphafold/common/confidence.py`:
+    `np.concatenate([bin_centers, [bin_centers[-1] + step]])`.
+
+    Fixed 2026-10-13. It biases `predicted_tm_score` and
+    `_calculate_expected_aligned_error` by under-weighting the worst-error bin,
+    so AF2-path confidence numbers recorded before that date are not
+    comparable with ones recorded after. OpenDDE uses its own helper and is
+    unaffected.
+    """
     step = breaks[1] - breaks[0]
 
     # Add half-step to get the center
     bin_centers = breaks + step / 2
     # Add a catch-all bin at the end.
-    return jnp.append(bin_centers, bin_centers[-2:-1] + step, axis=0)
+    return jnp.append(bin_centers, bin_centers[-1:] + step, axis=0)
 
 
 def predicted_tm_score(

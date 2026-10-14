@@ -60,6 +60,50 @@ def _print_iter(iter, aux, v):
 
 
 # Split this up so changing optim parameters doesn't trigger re-compilation of loss function
+@eqx.filter_jit
+def _____eval_loss(loss, x, key):
+    return loss(x, key=key)
+
+
+def _eval_loss(loss_function, x, key):
+    """Loss value only, for scoring a FEASIBLE iterate.
+
+    `simplex_APGM` evaluates its gradient at the momentum extrapolation `v`,
+    which in the non-logspace branch is not projected onto the simplex -- only
+    the post-update iterate is. So the value returned alongside the gradient
+    belongs to a point the optimiser never visits and which may not be a valid
+    sequence, which is why `best_x` cannot simply be set to it.
+
+    Returned RAW, including NaN and the infinities. This used to be
+    `nan_to_num(value, nan=1e6)`, which made a diverged candidate score 1e6 and
+    so beat any legitimate loss above 1e6 -- and, worse, made the `np.isfinite`
+    guard at the selection site unreachable, because the NaN was already gone
+    by the time it was tested. Selection rejects nonfinite scores; it cannot do
+    that if scoring hides them.
+    """
+    x = np.array(x, dtype=np.float32)
+    value, _aux = _____eval_loss(loss_function, x=x, key=key)
+    return float(value)
+
+
+def _batched_eval_loss(loss_function, xs, keys):
+    """`_eval_loss` for a batch: RAW values, including NaN.
+
+    `batched_value_eval` applies its own `nan_to_num(v, nan=1e6)`, which is
+    defensible for driving an optimiser but not for SELECTING among iterates --
+    it was the second place a NaN could be laundered into a score that beats a
+    legitimate loss above 1e6, and it defeated the `isfinite` guard exactly as
+    `_eval_loss` used to. The other `batched_value_eval` call sites are left
+    alone; this one exists because selection has a different requirement from
+    optimisation.
+    """
+    def single(x, key):
+        v, _aux = loss_function(x, key=key)
+        return v
+
+    return np.asarray(jax.vmap(single)(xs, keys), dtype=np.float64)
+
+
 def _eval_loss_and_grad(
     loss_function: AbstractLoss,
     x,
@@ -141,6 +185,33 @@ def _proposal(sequence, g, temp, alphabet_size: int = 20):
     return softmax(logits, axis=-1), log_softmax(logits, axis=-1)
 
 
+def _reverse_path_logprob(proposal, mutations, g, temp, alphabet_size):
+    """Log-probability of the path that walks `proposal` back to its origin.
+
+    Returns `(log_q_backward, restored)`. `restored` must equal the sequence the
+    forward path started from -- that is the invariant, and it is what the old
+    implementation violated.
+
+    `mutations` is the forward path as `(position, new_token, previous_token)`.
+    Each reverse step scores the move that UNDOES a forward one, i.e. setting
+    the position back to `previous_token`, evaluated at the proposal-side
+    gradient. The old version scored `log_p[position, new_token]` and then
+    assigned `new_token`, which was a no-op because the proposal already held
+    it: `prop_backward` never changed and every term was the probability of
+    re-applying a mutation rather than reversing it. `detailed_balance=True`
+    therefore applied a wrong Hastings correction. Fixed 2026-10-13.
+
+    Extracted so the tests exercise this rather than a copy of it.
+    """
+    restored = proposal.copy()
+    log_q_backward = 0.0
+    for position, _new_token, previous_token in reversed(mutations):
+        _p, log_p = _proposal(restored, g, temp, alphabet_size=alphabet_size)
+        log_q_backward += log_p[position, previous_token]
+        restored = restored.at[position].set(previous_token)
+    return log_q_backward, restored
+
+
 def gradient_MCMC(
     loss,
     sequence: Int[Array, " N"],
@@ -178,21 +249,41 @@ def gradient_MCMC(
     (v_0, aux_0), g_0 = _eval_loss_and_grad(
         loss, jax.nn.one_hot(sequence, alphabet_size), key=key_model
     )
+    # Redrawing a proposal that came back equal to the current sequence
+    # CONDITIONS the proposal distribution on y != x, and the Hastings ratio
+    # below is computed from the UNconditioned q. The truncation factor
+    # (1 - q(x|x)) differs between states, so it does not cancel, and detailed
+    # balance fails: on a two-state chain the flows come out 0.582 against
+    # 0.418 of the total with the redraw and exactly 0.500 / 0.500 without it
+    # (`tests/test_base_library_corrections.py`). Dividing it out is not
+    # available either -- for a path of
+    # length > 1, q(x|x) is the total probability that the whole walk returns
+    # to its start, over every path, which this sampler does not enumerate.
+    # So when the correction is applied, the draw is taken as it comes; the
+    # self-proposal costs one wasted evaluation and is accepted or rejected
+    # like any other. With `detailed_balance=False` no Hastings term is applied
+    # at all, so the redraw is just a spend-saving heuristic there.
+    max_draws = 1 if detailed_balance else 50
     for iter in range(steps):
         start_time = time.time()
         ### generate a proposal
 
-        for i in range(50):
+        for i in range(max_draws):
             proposal = sequence.copy()
             mutations = []
             log_q_forward = 0.0
+            # Drawn from the SUPPLIED key. This used to be
+            # `jax.random.key(np.random.randint(10000))`, i.e. NumPy's GLOBAL
+            # random state, so two runs with identical explicit keys took
+            # different-length paths and nothing was reproducible from `key`
+            # alone. Fixed 2026-10-13.
+            key, length_key = jax.random.split(key)
             path_length = jax.random.randint(
-                key=jax.random.key(np.random.randint(10000)),
+                key=length_key,
                 minval=1,
                 maxval=max_path_length + 1,
                 shape=(),
             )
-            key = jax.random.fold_in(key, 0)
             for _ in range(path_length):
                 p, log_p = _proposal(
                     proposal, g_0, proposal_temp, alphabet_size=alphabet_size
@@ -206,7 +297,10 @@ def gradient_MCMC(
                 key = jax.random.fold_in(key, 0)
                 position, AA = np.unravel_index(mut_idx, p.shape)
                 log_q_forward += log_p[position, AA]
-                mutations += [(position, AA)]
+                # Record the token being REPLACED as well. Without it the
+                # reverse path below cannot be reconstructed: see
+                # `log_q_backward`.
+                mutations += [(position, AA, int(proposal[position]))]
                 proposal = proposal.at[position].set(AA)
             # check if proposal is same as current sequence
             if np.all(proposal == sequence):
@@ -215,7 +309,7 @@ def gradient_MCMC(
                 # continue
             else:
                 break
-        muts = ", ".join([f"{pos}:{aa}" for (pos, aa) in mutations])
+        muts = ", ".join([f"{pos}:{aa}" for (pos, aa, _prev) in mutations])
         print(f"Proposed mutations: {muts}")
 
         ### evaluate the proposal
@@ -227,14 +321,9 @@ def gradient_MCMC(
 
         # next bit is to calculate the backward probability, which is only used
         # if detailed_balance is True
-        prop_backward = proposal.copy()
-        log_q_backward = 0.0
-        for position, AA in reversed(mutations):
-            p, log_p = _proposal(
-                prop_backward, g_1, proposal_temp, alphabet_size=alphabet_size
-            )
-            log_q_backward += log_p[position, AA]
-            prop_backward = prop_backward.at[position].set(AA)
+        log_q_backward, prop_backward = _reverse_path_logprob(
+            proposal, mutations, g_1, proposal_temp, alphabet_size
+        )
 
         log_acceptance_probability = (v_0 - v_1) / temp + (
             (log_q_backward - log_q_forward) if detailed_balance else 0.0
@@ -290,6 +379,7 @@ def simplex_APGM(
     scale=1.0,
     trajectory_fn: Callable[tuple[PyTree, Float[Array, "N 20"]], any] | None = None,
     logspace: bool = False,
+    track_best: bool = True,
 ):
     """
     Accelerated projected gradient descent on the simplex.
@@ -318,9 +408,37 @@ def simplex_APGM(
     if key is None:
         key = jax.random.key(np.random.randint(0, 10000))
 
-    best_val = np.inf
+    # `best_x` selection scores FEASIBLE iterates, on its own fixed key.
+    #
+    # Fixed, not per-step: the loss may be stochastic, and comparing iterates
+    # scored under different keys makes `best_val` a minimum over noise, biased
+    # toward whichever iterate drew the luckiest key. Separate from the
+    # optimisation stream so scoring cannot perturb the trajectory.
+    #
+    # The initial and final iterates are both eligible. Before 2026-10-13
+    # neither was: `best_x` was set to the POST-update `x` while `best_val`
+    # held the loss at the PRE-update extrapolation `v`, so the pair did not
+    # describe the same point and `best_x` could be worse than the input -- a
+    # quadratic starting at loss 0.04 returned a "best" of 0.32.
+    #
+    # Cost: one extra forward pass per step plus one for the start. Pass
+    # `track_best=False` to skip it when only the final iterate is wanted; the
+    # gradient path, and so the trajectory, is identical either way.
+    score_key = jax.random.fold_in(key, 7919)
+
+    def score(candidate):
+        feasible = jax.nn.softmax(candidate) if logspace else candidate
+        return _eval_loss(loss_function, feasible, score_key)
+
     x = projection_simplex(x) if not logspace else x
     best_x = x
+    best_val = score(x) if track_best else np.inf
+    # A nonfinite opening score must not lock selection out: `candidate < nan`
+    # is False for every candidate, so a NaN start would pin `best_x` to the
+    # start forever. `inf` keeps the start as the fallback while letting the
+    # first finite iterate replace it.
+    if not np.isfinite(best_val):
+        best_val = np.inf
 
     x_prev = x
 
@@ -349,11 +467,11 @@ def simplex_APGM(
         x_prev = x
         x = x_new
 
-        if value < best_val and not np.isnan(value):
-            best_val = value
-            best_x = (
-                x  # this isn't exactly right, because we evaluated loss at v, not x.
-            )
+        if track_best:
+            candidate_val = score(x)
+            if np.isfinite(candidate_val) and candidate_val < best_val:
+                best_val = candidate_val
+                best_x = x
 
         average_nnz = (
             (x > 0.01).sum(-1).mean()
@@ -400,6 +518,7 @@ def batched_simplex_APGM(
     max_gradient_norm: float | None = None,
     scale: float = 1.0,
     logspace: bool = False,
+    track_best: bool = True,
 ) -> tuple[Float[Array, "B N 20"], Float[Array, "B N 20"]]:
     """
     Batched accelerated projected gradient descent on the simplex.
@@ -433,8 +552,23 @@ def batched_simplex_APGM(
         flat = np.array(x).reshape(-1, x.shape[-1])
         x = jnp.array(projection_simplex(flat).reshape(x.shape), dtype=jnp.float32)
 
-    best_vals = jnp.full(B, jnp.inf)
+    # See `simplex_APGM` for why selection scores feasible iterates on a fixed
+    # key of its own, and why the initial iterate is eligible. Same defect
+    # here: `best_x` took the post-update `x` while `best_vals` held the loss
+    # at the pre-update extrapolation.
+    score_keys = jax.random.split(jax.random.fold_in(key, 7919), B)
+
+    def score(candidate):
+        feasible = jax.nn.softmax(candidate, axis=-1) if logspace else candidate
+        return _batched_eval_loss(loss_function, feasible, score_keys)
+
     best_x = x
+    best_vals = (
+        jnp.asarray(score(x)) if track_best else jnp.full(B, jnp.inf)
+    )
+    # See `simplex_APGM`: a nonfinite opening score would pin that batch
+    # element to its start for the whole run.
+    best_vals = jnp.where(jnp.isfinite(best_vals), best_vals, jnp.inf)
     x_prev = x
 
     for _iter in range(n_steps):
@@ -459,9 +593,15 @@ def batched_simplex_APGM(
         x_prev = x
         x = x_new
 
-        better = (np.array(values) < np.array(best_vals)) & ~np.isnan(values)
-        best_vals = jnp.where(jnp.array(better), values, best_vals)
-        best_x = jnp.where(jnp.array(better)[:, None, None], x, best_x)
+        if track_best:
+            candidate_vals = score(x)
+            better = np.isfinite(candidate_vals) & (
+                candidate_vals < np.array(best_vals)
+            )
+            best_vals = jnp.where(
+                jnp.asarray(better), jnp.asarray(candidate_vals), best_vals
+            )
+            best_x = jnp.where(jnp.asarray(better)[:, None, None], x, best_x)
 
         for i in range(B):
             aux_i = jax.tree.map(lambda v: v[i], auxs)
@@ -1139,10 +1279,63 @@ def biohub_optimizer(
     return best_designs[order], best_loss[order]
 
 
-def _colabdesign_transform(z, soft, temp, hard):
-    """Map ColabDesign logits to the sequence passed to the user's loss."""
+def _apportion_stages(counts, n_steps):
+    """Rescale stage lengths to sum to EXACTLY `n_steps`, each at least 1.
+
+    Largest-remainder apportionment. An earlier version rounded each stage and
+    dumped the whole remainder on the longest one, clamped at a floor of 1 --
+    and the clamp could swallow part of the correction, so the total came out
+    wrong: four equal stages at `n_steps=6` ran 7 steps, silently spending more
+    GPU than the caller asked for. Floor-then-distribute cannot overshoot,
+    because the remainder handed out is exactly `n_steps - sum(floor)`, which is
+    strictly less than the number of stages.
+
+    Exact at `n_steps == sum(counts)`, so a published schedule passed at its own
+    total comes back unchanged.
+    """
+    k = len(counts)
+    total = sum(counts)
+    if total <= 0:
+        raise ValueError("the stage lengths must sum to a positive number")
+    if n_steps < k:
+        raise ValueError(
+            f"n_steps={n_steps} cannot cover {k} stages; pass at least {k}"
+        )
+    exact = [c * n_steps / total for c in counts]
+    scaled = [int(x) for x in exact]
+    order = sorted(range(k), key=lambda i: exact[i] - int(exact[i]), reverse=True)
+    for j in range(n_steps - sum(scaled)):
+        scaled[order[j]] += 1
+    # Every stage must run at least once; take from the largest that can spare a
+    # step. `n_steps >= k` guarantees some stage has two or more.
+    for i in range(k):
+        if scaled[i] == 0:
+            donor = max(range(k), key=lambda j: scaled[j])
+            scaled[donor] -= 1
+            scaled[i] = 1
+    if sum(scaled) != n_steps or min(scaled) < 1:
+        raise AssertionError(
+            f"apportioning {counts} to {n_steps} produced {scaled}"
+        )
+    return scaled
+
+
+def _colabdesign_transform(z, soft, temp, hard, sample_key=None):
+    """Map ColabDesign logits to the sequence passed to the user's loss.
+
+    `sample_key` switches the hard branch from ColabDesign's argmax to a
+    categorical SAMPLE, which is Fast SeqProp's delta operator (Linder & Seelig
+    2021, arXiv:2005.11275). They report the stochastic sampler reaching better
+    optima than the deterministic softmax relaxation; the gradient path is
+    unchanged either way, since the straight-through estimator substitutes the
+    softmax Jacobian for the discrete step whatever produced the one-hot.
+    """
     soft_seq = jax.nn.softmax(z / temp)
-    hard_seq = jax.nn.one_hot(soft_seq.argmax(-1), z.shape[-1])
+    if sample_key is None:
+        picks = soft_seq.argmax(-1)
+    else:
+        picks = jax.random.categorical(sample_key, z / temp, axis=-1)
+    hard_seq = jax.nn.one_hot(picks, z.shape[-1])
     # straight thru estimator
     hard_seq = jax.lax.stop_gradient(hard_seq - soft_seq) + soft_seq
     pseudo = soft * soft_seq + (1.0 - soft) * z
@@ -1153,14 +1346,79 @@ def _colabdesign_transform(z, soft, temp, hard):
 # transform grad computed separately so switching optimizers doesn't recompile everything
 
 
-def _colabdesign_pullback(z, g, soft, temp, hard):
+def _colabdesign_pullback(z, g, soft, temp, hard, sample_key=None):
     """Pull a sequence gradient back to ColabDesign logits."""
     _, pullback = jax.vjp(
-        lambda z: _colabdesign_transform(z, soft, temp, hard),
+        lambda z: _colabdesign_transform(z, soft, temp, hard, sample_key),
         z,
     )
     (g_z,) = pullback(g)
     return g_z
+
+
+def _calibrate_logit_norm_scale(x, minimum=1e-2):
+    """Gamma from the opening spread of `x`, refusing a degenerate one.
+
+    Calibrating to the start makes step 0 a no-op, so normalisation removes
+    drift without moving where the caller put the iterate. Two traps, both hit
+    on 2026-10-13:
+
+    - A UNIFORM start has zero spread, so gamma is 0 and
+      `_layer_norm_logits` multiplies every subsequent update back to exactly
+      zero. The optimiser then cannot move at all, with a perfectly good
+      gradient. ColabDesign's own un-seeded start is `np.zeros`, and this
+      module's `--init noise` start has spread ~0.01, so both are affected.
+    - Gamma RATIONS confidence across positions. After normalisation the
+      logits have standard deviation gamma over the WHOLE (N, 20) block, not
+      per row, so it does not cap any single row: concentrating the spread in
+      one row of 29 reaches p=0.91 at gamma 0.218, because one entry can exceed
+      the global deviation by up to about sqrt(29 * 20) = 24. What it does
+      bound is the aggregate -- every row cannot be peaked at once. An earlier
+      version of this docstring claimed a per-residue cap of about p=0.125 at
+      that gamma; that was measured on a (1, 20) array, the one shape where the
+      distinction is invisible, and is withdrawn. See
+      `tests/test_continuous_seed.py::test_gamma_bounds_the_aggregate_spread_not_each_row`.
+
+    Refusing is better than either silent failure. Pass `logit_norm_scale`
+    explicitly to choose the regime deliberately -- 1.0 is the usual
+    initialisation for a normalisation layer's gamma, and is what Fast SeqProp
+    (arXiv:2005.11275) then LEARNS rather than fixes.
+    """
+    spread = float(jnp.sqrt(jnp.square(x - x.mean()).mean()))
+    if not np.isfinite(spread) or spread < minimum:
+        raise ValueError(
+            f"logit_norm_scale could not be calibrated: the opening logits have "
+            f"spread {spread:.3e}, below the {minimum:g} floor. Normalising to it "
+            "would hold every iterate at that spread, so the softmax would stay "
+            "uniform and the optimisation would not move. Pass logit_norm_scale "
+            "explicitly (1.0 is the usual gamma for a normalisation layer)."
+        )
+    return spread
+
+
+def _layer_norm_logits(x, scale):
+    """Fast SeqProp's logit normalisation, protein variant.
+
+    Linder & Seelig (arXiv:2005.11275) identify "overly large and
+    disproportionally scaled logits" as the bottleneck of relaxed sequence
+    design, in both convergence speed AND the optima reached, because the
+    softmax Jacobian vanishes once any coordinate saturates. Their fix inserts
+    a normalisation layer between the trainable logits and the sampler, so the
+    logits are re-centred every step and cannot drift into saturation. For
+    20-channel alphabets they report LAYER normalisation (one global mean and
+    deviation, a shared scale) as more stable than per-channel instance
+    normalisation, because 20 channels give noisy per-channel statistics.
+
+    `scale` is their gamma. The caller passes the initial spread so that step 0
+    is a no-op: normalisation then removes DRIFT without moving the start, and
+    `--init-logit-scale` keeps its meaning. A fixed gamma of 1.0 would instead
+    rescale the opening gap to the block's own standard deviation, which for a
+    parent-anchored start AMPLIFIES it (a gap of 1.0 over 29x20 becomes ~4.6)
+    and re-saturates exactly what this is meant to prevent.
+    """
+    mean = x.mean()
+    deviation = jnp.sqrt(jnp.square(x - mean).mean())
+    return scale * (x - mean) / (deviation + 1e-7)
 
 
 def _seq_grad_norm(g):
@@ -1183,6 +1441,9 @@ def colabdesign_stage(
     lr: float,
     norm_seq_grad: bool = True,
     max_gradient_norm: float | None = None,
+    logit_norm: bool = False,
+    logit_norm_scale: float | None = None,
+    stochastic_hard: bool = False,
     key=None,
     trajectory_fn: Callable[tuple[PyTree, Float[Array, "N 20"]], any] | None = None,
 ):
@@ -1201,6 +1462,14 @@ def colabdesign_stage(
     - lr: base learning rate (ColabDesign default 0.1)
     - norm_seq_grad: normalise the gradient to sqrt(L); else clip at max_gradient_norm
     - max_gradient_norm: clip norm when norm_seq_grad is False (default sqrt(N))
+    - logit_norm: re-normalise the LOGITS after every update (Fast SeqProp,
+      arXiv:2005.11275). Off by default so existing callers are unchanged.
+    - logit_norm_scale: gamma for that normalisation. None (default) calibrates
+      it to the spread of `x` on entry, making step 0 a no-op -- see
+      `_layer_norm_logits` for why a fixed 1.0 re-saturates a parent-anchored
+      start instead of fixing it.
+    - stochastic_hard: in the hard branch, SAMPLE the one-hot rather than take
+      the argmax (Fast SeqProp's stochastic sampler). Off by default.
     - key: jax random key
     - trajectory_fn: takes (aux, x) and returns any value
 
@@ -1218,6 +1487,8 @@ def colabdesign_stage(
     # is off-distribution for the raw-logits stage (soft<1). The mosaic gradient is
     # row-centered, so x stays zero-mean (re-centering a chained stage is a no-op).
     x = x - x.mean(-1, keepdims=True)
+    if logit_norm and logit_norm_scale is None:
+        logit_norm_scale = _calibrate_logit_norm_scale(x)
     trajectory = []
 
     for _iter in range(n_steps):
@@ -1229,11 +1500,14 @@ def colabdesign_stage(
         soft = jnp.asarray(soft, dtype=jnp.float32)
         temp = jnp.asarray(temp, dtype=jnp.float32)
         hard = jnp.asarray(hard, dtype=jnp.float32)
-        pseudo = _colabdesign_transform(x, soft, temp, hard)
+        # One key for the sample, so the forward one-hot and the gradient
+        # pulled back through it are the same draw.
+        sample_key = jax.random.fold_in(key, 1) if stochastic_hard else None
+        pseudo = _colabdesign_transform(x, soft, temp, hard, sample_key)
         # compute loss gradient
         (value, aux), g = _eval_loss_and_grad(loss_function, pseudo, key)
         # apply vjp 
-        g = _colabdesign_pullback(x, g, soft, temp, hard)
+        g = _colabdesign_pullback(x, g, soft, temp, hard, sample_key)
         value = float(value)
         key = jax.random.fold_in(key, 0)
 
@@ -1246,6 +1520,8 @@ def colabdesign_stage(
 
         lr_scale = (1.0 - soft) + soft * temp
         x = x - (lr * lr_scale) * g
+        if logit_norm:
+            x = _layer_norm_logits(x, logit_norm_scale)
 
         average_nnz = float((jax.nn.softmax(x) > 0.01).sum(-1).mean())
         aux = {
@@ -1279,6 +1555,11 @@ def bindcraft_design(
     logits_iters: tuple[int, int] = (50, 25),
     soft_iters: int = 45,
     hard_iters: int = 5,
+    n_steps: int | None = None,
+    hard_temp: float = 1e-2,
+    logit_norm: bool = False,
+    logit_norm_scale: float | None = None,
+    stochastic_hard: bool = False,
     key=None,
     trajectory_fn: Callable[tuple[PyTree, Float[Array, "N 20"]], any] | None = None,
 ):
@@ -1297,6 +1578,21 @@ def bindcraft_design(
     - logits_iters: step counts for the two logits stages.
     - soft_iters: step count for the soft stage.
     - hard_iters: step count for the hard stage.
+    - n_steps: total budget. When given, the four stage lengths above are
+      rescaled to sum to it, keeping BindCraft's 50:25:45:5 proportions. This
+      exists because the schedule was previously reachable only by passing all
+      four counts, so a caller handing over a single `--steps` was silently
+      ignored and every run was 125 steps whatever it asked for.
+    - hard_temp: temperature of the final hard stage. BindCraft's own value is
+      1e-2, which is the default here. Note what that costs: the stage feeds a
+      straight-through one-hot whose gradient is the Jacobian of
+      softmax(z / hard_temp), and at 1e-2 that softmax is saturated, so the
+      estimator returns almost nothing -- while `lr_scale = soft*temp` shrinks
+      the step by another 100x. Raise it toward 1.0 for a hard stage that can
+      actually move, which is the regime Fast SeqProp's straight-through
+      sampler operates in.
+    - logit_norm, logit_norm_scale, stochastic_hard: forwarded to every stage;
+      see `colabdesign_stage`.
     - key: JAX random key.
     - trajectory_fn: optional callback receiving (aux, x).
 
@@ -1308,6 +1604,16 @@ def bindcraft_design(
         key = jax.random.key(np.random.randint(0, 10000))
 
     n1, n2 = logits_iters
+    if n_steps is not None:
+        if n_steps < 4:
+            raise ValueError(
+                f"n_steps={n_steps} cannot cover four stages; pass at least 4"
+            )
+        counts = (n1, n2, soft_iters, hard_iters)
+        total = sum(counts)
+        if total <= 0:
+            raise ValueError("the stage lengths must sum to a positive number")
+        n1, n2, soft_iters, hard_iters = _apportion_stages(counts, n_steps)
     stages = [
         {
             "n_steps": n1,
@@ -1337,12 +1643,20 @@ def bindcraft_design(
             "n_steps": hard_iters,
             "soft_start": 1.0,
             "soft_end": 1.0,
-            "temp_start": 1e-2,
-            "temp_end": 1e-2,
+            "temp_start": hard_temp,
+            "temp_end": hard_temp,
             "hard": True,
         },
     ]
     stage_keys = jax.random.split(key, len(stages))
+
+    if logit_norm and logit_norm_scale is None:
+        # Calibrate gamma ONCE, from the opening logits. Left to each stage,
+        # every stage boundary would re-read the spread it happened to inherit,
+        # so drift across boundaries would go uncorrected -- which is the thing
+        # the normalisation exists to stop.
+        x0 = jnp.asarray(x, dtype=jnp.float32)
+        logit_norm_scale = _calibrate_logit_norm_scale(x0 - x0.mean(-1, keepdims=True))
 
     trajectory = []
     for stage, k in zip(stages, stage_keys):
@@ -1351,6 +1665,9 @@ def bindcraft_design(
             x=x,
             lr=lr,
             key=k,
+            logit_norm=logit_norm,
+            logit_norm_scale=logit_norm_scale,
+            stochastic_hard=stochastic_hard,
             trajectory_fn=trajectory_fn,
             **stage,
         )

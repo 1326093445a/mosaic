@@ -163,8 +163,16 @@ def interaction_prediction_score(
     # 2025: https://pmc.ncbi.nlm.nih.gov/articles/PMC11844409/
     d0 = 1.24 * (jnp.clip(n_residues, min=27) - 15) ** (1.0 / 3) - 1.8
 
+    # `d0` is per ROW -- eqn. (15) adjusts it by the number of residues in that
+    # row's alignment, and `n_residues` has shape (N, 1). So `tm_per_bin` is
+    # (N, n_bins), and multiplying it straight into `probs` of shape
+    # (N, N, n_bins) broadcasts it as (1, N, n_bins): row j's d0 lands on
+    # COLUMN j instead of row i's d0 on row i. `[:, None, :]` aligns it with
+    # the row axis. Fixed 2026-10-13; invisible on systems small enough for
+    # `clip(n_residues, min=27)` to flatten d0 to a constant, which is why it
+    # survived.
     tm_per_bin = 1.0 / (1 + jnp.square(bin_centers) / jnp.square(d0))
-    predicted_tm_term = jnp.sum(probs * tm_per_bin, axis=-1)
+    predicted_tm_term = jnp.sum(probs * tm_per_bin[:, None, :], axis=-1)
 
     normed_residue_mask = pair_mask / (1e-8 + n_residues)
     per_alignment = jnp.sum(predicted_tm_term * normed_residue_mask, axis=-1)

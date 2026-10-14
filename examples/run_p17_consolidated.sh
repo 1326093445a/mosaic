@@ -737,10 +737,13 @@ if has_stage explore; then
         fi
     done
 
-    # Was the pair operator used, or only offered? The event log records
-    # move_positions per proposal, and that is the only way to tell -- a cell
-    # that offered 147,117 pair moves and sampled none of them would otherwise
-    # look identical to the baseline and be read as a null for the operator.
+    # Was the pair operator used, or only offered? A cell that offered 147,117
+    # pair moves and sampled none of them would otherwise look identical to the
+    # baseline and be read as a null for the operator. Read this file by
+    # CROSS-CELL CONTRAST, not by its own counts: an arity-1 exchange at the
+    # edit-budget cap also changes two positions and logs the same
+    # move_positions: 2, so the counts alone do not separate the two operators
+    # within one cell. See docs/P17_JN1.md section 31.4.
     if [[ -d "$OUT_ROOT/explore" ]]; then
         echo
         echo "-- was the pair operator used?"
