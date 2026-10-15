@@ -977,3 +977,164 @@ def test_the_seeder_does_not_pay_for_a_best_iterate_it_discards(
             hard_fraction=0.25,
         )
     assert not calls, f"the seeder paid for {len(calls)} discarded evaluations"
+
+
+# --- relaxed_concentration: separating "converged" from "never moved" ------
+#
+# `project_to_budget` reports an argmax, and on the shipped anchored start the
+# parent is already the argmax at all 29 designable positions before the first
+# step. So `candidate_substitutions_considered == 0` has two causes with
+# opposite meanings, and until 2026-10-14 the seed JSON recorded nothing that
+# told them apart -- which is exactly the question the real-loss run of that
+# date left open for `apgm` (section 32).
+
+
+def test_concentration_separates_a_converged_relaxation_from_an_untouched_one(seeder):
+    parent = np.arange(N_DESIGNABLE, dtype=np.int32) % 20
+
+    converged = relaxed_at_parent(parent)
+    converged = 0.98 * converged + 0.02 / 20  # not a vertex, but decided
+    moved = seeder.relaxed_concentration(converged, parent)
+
+    untouched = softmax(seeder.anchored_logits(
+        parent, np.arange(N_DESIGNABLE), 1.0, np.zeros((N_DESIGNABLE, 20))))
+    still = seeder.relaxed_concentration(untouched, parent)
+
+    # Both report 0 wanted substitutions: the parent is the argmax in both.
+    assert (converged.argmax(-1) == parent).all()
+    assert (untouched.argmax(-1) == parent).all()
+    # Only the concentration separates them.
+    assert moved["relaxed_peak_probability_mean"] > 0.9
+    assert still["relaxed_peak_probability_mean"] == pytest.approx(0.125, abs=5e-3)
+
+
+def test_the_untouched_peak_is_the_init_scales_own_parent_mass(seeder):
+    """The gate's 0.3 cutoff has to sit above every scale this stage ships.
+
+    `--init-logit-scale 1.0` is the default and puts 0.125 on the parent. The
+    cutoff is only meaningful if that number is a property of the start rather
+    than an assertion in a docstring, so it is measured here -- and at 5.0,
+    the former default, an untouched start would read 0.886 and the gate would
+    call it converged. That is correct: at scale 5.0 the start IS decided.
+    """
+    parent = np.arange(N_DESIGNABLE, dtype=np.int32) % 20
+    designable = np.arange(N_DESIGNABLE)
+    for scale, expected in ((1.0, 0.125), (5.0, 0.886)):
+        probs = softmax(seeder.anchored_logits(
+            parent, designable, scale, np.zeros((N_DESIGNABLE, 20))))
+        c = seeder.relaxed_concentration(probs, parent)
+        assert c["relaxed_peak_probability_mean"] == pytest.approx(expected, abs=5e-3)
+        assert c["relaxed_parent_probability_mean"] == pytest.approx(expected, abs=5e-3)
+
+
+def test_concentration_reports_the_parent_mass_separately_from_the_peak(seeder):
+    """A relaxation can be decided and not be at the parent; both are recorded."""
+    parent = np.zeros(N_DESIGNABLE, dtype=np.int32)
+    relaxed = np.full((N_DESIGNABLE, 20), 0.01 / 19, dtype=np.float64)
+    relaxed[:, 7] = 0.99          # decided, and not on the parent
+    c = seeder.relaxed_concentration(relaxed, parent)
+    assert c["relaxed_peak_probability_mean"] == pytest.approx(0.99, abs=1e-6)
+    assert c["relaxed_parent_probability_mean"] == pytest.approx(0.01 / 19, abs=1e-6)
+
+
+def test_concentration_flags_rows_that_are_not_probabilities(seeder):
+    """The numbers only mean what they say if the rows sum to one.
+
+    All three optimizers are supposed to return probabilities through
+    `run_relaxation` -- `bindcraft_design` softmaxes, `simplex_APGM` stays on
+    the simplex, and `run_relaxation` softmaxes `colabdesign_stage` itself --
+    but `colabdesign_stage` is logits-in/logits-out, so one dropped softmax
+    would turn every margin and every concentration above into a logit
+    difference while still printing as a probability.
+    """
+    parent = np.zeros(N_DESIGNABLE, dtype=np.int32)
+    logits = np.linspace(-4, 4, N_DESIGNABLE * 20).reshape(N_DESIGNABLE, 20)
+    assert seeder.relaxed_concentration(
+        logits, parent)["relaxed_row_sum_max_deviation"] > 1.0
+    assert seeder.relaxed_concentration(
+        softmax(logits), parent)["relaxed_row_sum_max_deviation"] < 1e-6
+
+
+def test_the_minimum_peak_is_reported_not_only_the_mean(seeder):
+    """A mean hides one undecided position among 28 decided ones."""
+    parent = np.zeros(N_DESIGNABLE, dtype=np.int32)
+    relaxed = np.full((N_DESIGNABLE, 20), 0.01 / 19, dtype=np.float64)
+    relaxed[:, 3] = 0.99
+    relaxed[0] = 1.0 / 20                      # one row still uniform
+    c = seeder.relaxed_concentration(relaxed, parent)
+    assert c["relaxed_peak_probability_mean"] > 0.95
+    assert c["relaxed_peak_probability_min"] == pytest.approx(0.05, abs=1e-6)
+
+
+@pytest.mark.parametrize("method", ["apgm", "bindcraft", "colabdesign"])
+def test_run_relaxation_returns_probabilities_for_every_method(
+    seeder, toy_problem, method
+):
+    """What the concentration fields and the margins are denominated in.
+
+    `colabdesign_stage` is logits-in/logits-out by design and `run_relaxation`
+    softmaxes it on the way out; `bindcraft_design` softmaxes internally and
+    `simplex_APGM` never leaves the simplex. The seed JSON's margins and its
+    peak/parent probabilities are read as probabilities across all three, so
+    that has to hold for the function `main()` actually calls, not for the
+    optimizers called directly -- the older test above calls them directly and
+    so would not notice a dropped softmax here.
+    """
+    import contextlib
+    import io
+
+    import jax
+    import jax.numpy as jnp
+
+    make_loss, parent = toy_problem
+    init_key, run_key = jax.random.split(jax.random.key(0))
+    noise = 0.01 * np.asarray(jax.random.normal(init_key, (N_DESIGNABLE, 20)))
+    x0 = jnp.asarray(
+        seeder.anchored_logits(parent, np.arange(N_DESIGNABLE), 1.0, noise)
+    )
+    with contextlib.redirect_stdout(io.StringIO()):
+        relaxed = np.asarray(seeder.run_relaxation(
+            method, make_loss(0.0), x0, run_key, steps=24, lr=0.1,
+            logit_norm=False, stochastic_hard=False, hard_temp=1.0,
+            hard_fraction=0.25,
+        ))
+    c = seeder.relaxed_concentration(relaxed, parent)
+    assert c["relaxed_row_sum_max_deviation"] < 1e-3, (
+        f"{method} did not come back in probability space: rows deviate by "
+        f"{c['relaxed_row_sum_max_deviation']}"
+    )
+    assert 0.0 < c["relaxed_peak_probability_min"] <= 1.0
+    assert 0.0 <= c["relaxed_parent_probability_mean"] <= 1.0
+
+
+def test_main_actually_records_the_fields_the_gate_reads():
+    """The write itself, which no behavioural test can reach.
+
+    `main()` loads OpenDDE, so the JSON it writes is only ever produced on the
+    cluster. Deleting `designable_positions` and `**concentration` from that
+    one `json.dumps` call passed every test in this file and every test of the
+    launcher: the gate would then read a *fresh* run as a pre-2026-10-14 one
+    and say so, which is loud but only to a reader who notices the date. This
+    is the structural check instead -- the record's keys, read off the source.
+    """
+    import ast
+
+    tree = ast.parse((REPO / "examples" / "p17_continuous_seed.py").read_text())
+    main = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "main")
+    dumps = [n for n in ast.walk(main)
+             if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "dumps"]
+    assert len(dumps) == 1, "main() no longer has exactly one json.dumps"
+    record = next(a for a in dumps[0].args if isinstance(a, ast.Call))
+    keywords = {k.arg for k in record.keywords}
+    assert "designable_positions" in keywords, (
+        "the gate reads this to know what denominator the wanted counts are "
+        "against; without it a changed CDR mask is invisible"
+    )
+    assert None in keywords, (
+        "`**concentration` is gone: 0 wanted substitutions is then "
+        "unattributable between a converged relaxation and a frozen one, "
+        "which is what section 32 could not resolve for apgm"
+    )

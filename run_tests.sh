@@ -159,6 +159,8 @@ if ! "$USE_GPU"; then
     export CUDA_VISIBLE_DEVICES=""
     echo "  backend:  cpu, no GPU touched (pass --gpu for the one skipped test)"
 else
+    # Dependency probes above are CPU-only; pytest must explicitly switch back.
+    export JAX_PLATFORMS=cuda
     export CUDA_VISIBLE_DEVICES="$DEVICE"
     # Without this JAX takes 75% of the device up front, which is what makes a
     # concurrent job die rather than simply slow down.

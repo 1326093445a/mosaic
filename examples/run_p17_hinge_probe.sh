@@ -60,6 +60,7 @@ DTYPE=bf16
 LR=0.1
 OUT_ROOT="${OUT_ROOT:-$REPO_DIR/results/p17_hinge_probe_$(date +%Y%m%d_%H%M%S)}"
 DRY_RUN=false
+ALLOW_BUSY_GPUS=false
 
 # method:hinge_weight:init_logit_scale
 # Rows 1-6 vary ONLY the hinge, at the init scale the stage shipped before
@@ -76,6 +77,7 @@ RUNS=(
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --allow-busy-gpus) ALLOW_BUSY_GPUS=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         --devices) DEVICES="$2"; shift 2 ;;
         --steps) STEPS="$2"; shift 2 ;;
@@ -84,6 +86,8 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+
+source "$SCRIPT_DIR/lib_gpu_capacity.sh"
 
 IFS=',' read -r -a DEV <<< "$DEVICES"
 # Distinctness, not just count. `--devices 0,0,0,0,0,0,0,0` has eight entries
@@ -112,6 +116,13 @@ fi
 echo "P17 hinge probe -- ${#RUNS[@]} runs, one per GPU, $STEPS steps each"
 echo "  devices: $DEVICES"
 echo "  output:  $OUT_ROOT"
+# The seeder inherits JAX's defaults here rather than having a fraction set for
+# it, so report against the same 0.90 the stage launcher uses: it is what the
+# runtime preallocates unless the caller says otherwise.
+if ! "$DRY_RUN"; then
+    gpu_capacity_check "$DEVICES" \
+        "${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.90}" "$ALLOW_BUSY_GPUS"
+fi
 echo
 
 # The tags are needed before the loop so the reporter can check for the files

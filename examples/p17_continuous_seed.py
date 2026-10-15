@@ -64,6 +64,41 @@ def project_to_budget(relaxed, parent_tokens, designable_idx, budget):
     return tokens, margins, kept
 
 
+def relaxed_concentration(relaxed, parent_rows):
+    """How far the relaxation actually moved, which the argmax cannot show.
+
+    `project_to_budget` reports only which residue won at each position, and
+    on an anchored start the parent wins at every designable position *before
+    the first step*. So `candidate_substitutions_considered == 0` has two
+    completely different causes -- the relaxation converged on a
+    parent-preferring optimum, or it never moved at all -- and the seed JSON
+    could not tell them apart. This is what distinguishes them: at the shipped
+    `--init parent --init-logit-scale 1.0` start the parent carries 0.125 and
+    the peak IS 0.125, so a run that still reports ~0.125 never left its
+    initialisation, while one reporting ~0.98 on the parent chose it.
+
+    On 2026-10-14 `apgm` came back with 0 wanted substitutions on the real loss
+    for both seeds, after the toy grid in section 31.8 predicted 21, and
+    nothing recorded could say which of the two it was. Hence these fields.
+
+    `row_sum_max_deviation` is the audit on the rest: every method is supposed
+    to return probabilities here (`bindcraft_design` softmaxes, `simplex_APGM`
+    stays on the simplex, and `run_relaxation` softmaxes `colabdesign_stage`
+    itself), and these numbers only mean what they say if that holds.
+    """
+    relaxed = np.asarray(relaxed, dtype=np.float64)
+    parent_rows = np.asarray(parent_rows)
+    peak = relaxed.max(-1)
+    at_parent = relaxed[np.arange(len(parent_rows)), parent_rows]
+    return dict(
+        relaxed_peak_probability_min=round(float(peak.min()), 6),
+        relaxed_peak_probability_mean=round(float(peak.mean()), 6),
+        relaxed_parent_probability_mean=round(float(at_parent.mean()), 6),
+        relaxed_row_sum_max_deviation=round(
+            float(np.abs(relaxed.sum(-1) - 1.0).max()), 6),
+    )
+
+
 def relaxed_array(result):
     """The relaxed sequence, whatever shape the optimizer wrapped it in.
 
@@ -282,7 +317,13 @@ def main(argv=None):
                              "removes the gradient. CPU toy loss, 125 steps, scale "
                              "5.0, 2026-10-13: hinge 5.0 -> bindcraft/colabdesign/apgm "
                              "wanted 4/6/0 substitutions; hinge 0.0 -> 27/29/29. "
-                             "Untested on the real loss.")
+                             "REAL loss, 600 steps, scale 1.0, 2026-10-14 "
+                             "(section 32): hinge 0.0 -> 15/15/0 of 29, two "
+                             "replicates each. One cell, no hinge-on arm, so "
+                             "that confirms the toy's prediction for this cell "
+                             "and not the hinge's role: the two logit-space "
+                             "methods move and apgm, which the toy put at 21 "
+                             "here, does not.")
     parser.add_argument("--logit-norm", dest="logit_norm", action="store_true",
                         default=False,
                         help="re-normalise the logits every step (Fast SeqProp). "
@@ -418,6 +459,7 @@ def main(argv=None):
 
     tokens, margins, kept = project_to_budget(full, parent, designable_idx,
                                               args.edit_budget)
+    concentration = relaxed_concentration(relaxed, parent[designable_idx])
     sequence = "".join(TOKENS[i] for i in tokens)
     edits = [
         dict(position_1idx=pos + 1, parent=TOKENS[parent[pos]],
@@ -440,6 +482,8 @@ def main(argv=None):
         parent_sequence=binder_seq, seed_sequence=sequence,
         hamming_from_parent=hamming, edits=edits,
         candidate_substitutions_considered=len(margins),
+        designable_positions=int(n_designable),
+        **concentration,
         interpretation=(
             "Discrete start for the population search, projected onto the edit "
             "budget from a continuous stage that does not enforce one. The "
@@ -453,7 +497,15 @@ def main(argv=None):
     for e in edits:
         print(f"    {e['parent']}{e['position_1idx']}{e['seeded']}  margin {e['margin']}")
     if len(margins) > args.edit_budget:
-        print(f"  ({len(margins)} substitutions wanted, {args.edit_budget} kept)")
+        print(f"  ({len(margins)} substitutions wanted of {n_designable} "
+              f"designable, {args.edit_budget} kept)")
+    print(f"  relaxed peak probability {concentration['relaxed_peak_probability_mean']} "
+          f"mean, {concentration['relaxed_peak_probability_min']} min; "
+          f"{concentration['relaxed_parent_probability_mean']} mean on the parent")
+    if concentration["relaxed_row_sum_max_deviation"] > 1e-3:
+        print(f"  WARNING: rows deviate from a probability distribution by up to "
+              f"{concentration['relaxed_row_sum_max_deviation']}; the margins and "
+              f"the concentration above are not probabilities")
     print(f"\nwrote {args.out}")
     return 0
 

@@ -11,6 +11,7 @@ because `parse` catches it.
 """
 
 import csv
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -288,3 +289,98 @@ def test_a_decoy_archive_does_not_match_a_real_one():
     assert real["scored_target_is_decoy"] is False
     assert decoy["scored_target_is_decoy"] is True
     assert real != decoy
+
+
+def emit_identity(monkeypatch, root, original, reference, *options):
+    """Exercise production signature creation through a model-free empty shard."""
+    monkeypatch.setattr(rescore, "load_candidates", lambda _: ([], [], original))
+    rescore.main([
+        "--input", str(root / "unused-input"), "--output-dir", str(root),
+        "--complex", str(reference), *options,
+    ])
+    return json.loads((root / "summary.json").read_text())["evaluation"]
+
+
+@pytest.mark.parametrize("difference", [
+    "target", "decoy_target", "reference", "binder_chain", "target_chain",
+])
+def test_merge_refuses_different_effective_input_identity(tmp_path, monkeypatch, difference):
+    reference = tmp_path / "reference.pdb"
+    reference.write_text("synthetic reference bytes\n")
+    original = _run_payload()
+    if difference == "decoy_target":
+        original["decoy_target"] = {"identity_to_real_target": 0.2}
+    first = emit_identity(monkeypatch, tmp_path / "first", original, reference)
+    options = []
+    if difference in ("target", "decoy_target"):
+        original["target_sequence"] = "synthetic-other-target"
+    elif difference == "reference":
+        reference.write_text("different synthetic reference bytes\n")
+    elif difference == "binder_chain":
+        options = ["--binder-chain", "C"]
+    else:
+        options = ["--target-chain", "C"]
+    second = emit_identity(monkeypatch, tmp_path / "second", original, reference, *options)
+    root = tmp_path / "merge"
+    for index, signature in enumerate([first, second]):
+        shard = write_shard(root, index, [0, 1, 2], candidate_ids=(index,))
+        summary = json.loads((shard / "summary.json").read_text())
+        summary["evaluation"] = signature
+        (shard / "summary.json").write_text(json.dumps(summary))
+    with pytest.raises(ValueError, match="not evaluated the same way"):
+        rescore.merge_shard_tables(root, 2)
+    assert not (root / "summary.json").exists()
+
+
+def test_reference_identity_uses_contents_not_path_or_archived_digest(tmp_path, monkeypatch):
+    reference = tmp_path / "a.pdb"
+    relocated = tmp_path / "b.pdb"
+    reference.write_bytes(b"synthetic reference bytes\n")
+    relocated.write_bytes(reference.read_bytes())
+    original = _run_payload()
+    original["reference_sha256"] = "stale archive digest"
+    first = emit_identity(monkeypatch, tmp_path / "first", original, reference)
+    second = emit_identity(monkeypatch, tmp_path / "second", original, relocated)
+    assert first == second
+    assert first["reference_sha256"] == hashlib.sha256(reference.read_bytes()).hexdigest()
+    assert first["reference_binder_chain"] == "B"
+    assert first["reference_target_chain"] == "A"
+    assert first["target_sequence_sha256"] == hashlib.sha256(
+        original["target_sequence"].encode()
+    ).hexdigest()
+    root = tmp_path / "merge"
+    for index, signature in enumerate([first, second]):
+        shard = write_shard(root, index, [0, 1, 2], candidate_ids=(index,))
+        summary = json.loads((shard / "summary.json").read_text())
+        summary["evaluation"] = signature
+        (shard / "summary.json").write_text(json.dumps(summary))
+    rescore.merge_shard_tables(root, 2)
+    assert json.loads((root / "summary.json").read_text())["completed"] is True
+
+
+def test_default_reference_identity_is_recorded_without_model_imports(tmp_path, monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_models(name, *args, **kwargs):
+        assert name not in ("p17_hallucination_search", "mosaic.models.opendde")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_models)
+    monkeypatch.setattr(rescore, "load_candidates", lambda _: ([], [], _run_payload()))
+    output = tmp_path / "empty"
+    rescore.main(["--input", "unused", "--output-dir", str(output)])
+    signature = json.loads((output / "summary.json").read_text())["evaluation"]
+    assert signature["reference_sha256"] == hashlib.sha256(
+        (REPO / "P17_JN1.pdb").read_bytes()
+    ).hexdigest()
+    assert signature["reference_binder_chain"] == "B"
+    assert signature["reference_target_chain"] == "T"
+
+
+def test_old_partial_signatures_name_the_identity_gap(tmp_path, capsys):
+    write_shard(tmp_path, 0, [101], candidate_ids=(0,))
+    write_shard(tmp_path, 1, [101], candidate_ids=(1,))
+    rescore.merge_shard_tables(tmp_path, 2)
+    assert "lack target/reference identity" in capsys.readouterr().err

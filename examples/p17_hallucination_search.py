@@ -72,11 +72,19 @@ from mosaic.optimizers import (
     simplex_APGM,
 )
 from mosaic.structure_prediction import TargetChain
+# Read THROUGH the module, never `from p17_reference_config import COMPLEX_PDB`.
+# A `from X import NAME` at module scope binds the value once, at import time,
+# into this module's own namespace -- so it is immune to patching either
+# `X.NAME` or this module's copy, and the two silently disagree. That is what
+# broke `test_winner_rescoring_exports_scored_pose_without_optimization` on
+# 2026-10-14: the constant moved from a function-local import (which read the
+# attribute at CALL time, after the test had patched it) to a module-level one,
+# and the rescorer copied the real P17_JN1.pdb over the test's fixture. Reading
+# the attribute at use time makes `p17_reference_config` the single place to
+# patch, for every consumer.
+import p17_reference_config as reference_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-COMPLEX_PDB = REPO_ROOT / "P17_JN1.pdb"
-BINDER_CHAIN = "B"
-TARGET_CHAIN = "T"
 
 # ANARCI-verified (IMGT scheme, run directly on P17's chain B), cross-checked
 # against ~/boltzgen/Round2_Design/Nanobody/production/P17_JN1.yaml -- exact
@@ -194,11 +202,11 @@ def apgm_seed_from_soft(full_continuous: np.ndarray, wt_tokens: np.ndarray, mode
 
 
 def load_structure():
-    st = gemmi.read_structure(str(COMPLEX_PDB))
+    st = gemmi.read_structure(str(reference_config.COMPLEX_PDB))
     st.setup_entities()
     model = st[0]
-    binder_seq = gemmi.one_letter_code([r.name for r in model[BINDER_CHAIN]]).upper()
-    target_seq = gemmi.one_letter_code([r.name for r in model[TARGET_CHAIN]]).upper()
+    binder_seq = gemmi.one_letter_code([r.name for r in model[reference_config.BINDER_CHAIN]]).upper()
+    target_seq = gemmi.one_letter_code([r.name for r in model[reference_config.TARGET_CHAIN]]).upper()
     return model, binder_seq, target_seq
 
 
@@ -213,8 +221,8 @@ def reference_binder_target_ca(model) -> tuple[np.ndarray, np.ndarray]:
                     break
         return np.array(coords, dtype=np.float32)
 
-    binder_ca = ca_coords(model[BINDER_CHAIN])
-    target_ca = ca_coords(model[TARGET_CHAIN])
+    binder_ca = ca_coords(model[reference_config.BINDER_CHAIN])
+    target_ca = ca_coords(model[reference_config.TARGET_CHAIN])
     return binder_ca, target_ca
 
 
@@ -425,6 +433,13 @@ def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenize
     # simplex_APGM wanted 0; at weight 0.0 the same runs wanted 27-29. The
     # continuous seeding stage therefore turns it off and lets
     # `project_to_budget` enforce the budget exactly, which it already did.
+    #
+    # On THIS loss, 2026-10-14 (section 32): weight 0.0 at 600 steps and init
+    # scale 1.0 gave bindcraft and colabdesign 15 wanted substitutions of 29
+    # on both replicates, and simplex_APGM 0 on both -- where the toy loss
+    # above had predicted 21 for it. That run has no hinge-on arm, so it
+    # confirms the toy's PREDICTION for this cell without attributing the
+    # movement to the hinge; the toy's per-method counts do not transfer.
     edit_loss = edit_budget_weight * EditBudget.from_residues(
         binder_seq, designable_idx, budget=float(edit_budget),
     )

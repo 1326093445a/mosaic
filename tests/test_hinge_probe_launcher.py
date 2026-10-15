@@ -53,6 +53,28 @@ esac
 """
 
 
+# A stand-in `nvidia-smi` on PATH. These are control-flow tests: without it the
+# launcher's capacity check reads the HOST's GPUs, so the suite passed or failed
+# according to what happened to be resident on the machine running it. The stub
+# reports eight idle 140 GB devices, which is the cluster the launchers target.
+IDLE_EIGHT = """#!/usr/bin/env bash
+case "$*" in
+  *--query-gpu*) for i in 0 1 2 3 4 5 6 7; do echo "$i, 143771, 1024"; done ;;
+  *) exit 1 ;;
+esac
+"""
+
+
+def _stub_nvidia_smi(directory, body=IDLE_EIGHT):
+    """Return a PATH prefix whose `nvidia-smi` is `body`."""
+    binary = directory / "stubbin"
+    binary.mkdir(exist_ok=True)
+    stub = binary / "nvidia-smi"
+    stub.write_text(body)
+    stub.chmod(0o755)
+    return str(binary)
+
+
 @pytest.fixture
 def probe(tmp_path):
     import sys
@@ -63,6 +85,7 @@ def probe(tmp_path):
 
     def run(*args, mode="ok"):
         env = dict(os.environ, PYTHON_BIN=str(mock), MOCK_MODE=mode)
+        env["PATH"] = _stub_nvidia_smi(tmp_path) + os.pathsep + env["PATH"]
         return subprocess.run(
             ["bash", str(PROBE), "--devices", DEVICES, *args],
             capture_output=True, text=True, env=env, timeout=300,

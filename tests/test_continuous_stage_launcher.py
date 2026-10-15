@@ -57,14 +57,51 @@ if [[ "$1" == *p17_continuous_seed.py ]]; then
   if [[ "$MOCK_SEED" == "mixed" ]]; then
     if [[ "$method" == apgm ]]; then wanted_override=29; else wanted_override=2; fi
   fi
+  # 2026-10-14: the stage records how many positions were designable and how
+  # far the relaxation moved. A seed JSON without them is a PRE-2026-10-14
+  # one, which the gate reads differently, so the mock emits them by default
+  # and the two legacy modes below are the exceptions.
+  designable=29
+  [[ "$MOCK_SEED" == "mask_changed" && "$method" == apgm ]] && designable=15
+  # Every run on a DIFFERENT mask than 29, consistently: the case a gate that
+  # prints the constant 29 cannot be distinguished from one that reads it.
+  [[ "$MOCK_SEED" == "mask_17" ]] && designable=17
+  # 0 wanted, and the two opposite causes the argmax cannot separate.
+  peak=0.95; parent_mass=0.02
+  if [[ "$MOCK_SEED" == "frozen" || "$MOCK_SEED" == "converged" ]]; then
+    wanted_override=0
+    if [[ "$MOCK_SEED" == "frozen" ]]; then peak=0.125; parent_mass=0.125
+    else peak=0.981; parent_mass=0.981; fi
+  fi
+  edits='[{"margin": 0.4}, {"margin": 0.9}]'
+  hamming=2
+  if [[ "${wanted_override:-1}" == 0 ]]; then edits='[]'; hamming=0; fi
+  # A heredoc, not a quoted assignment: `"` is literal inside one, and the
+  # escaped-quote version of this produced JSON whose keys had lost their
+  # quotes -- six files the gate reported as unreadable.
+  legacy=false
+  [[ "$MOCK_SEED" == "legacy_all" ]] && legacy=true
+  [[ "$MOCK_SEED" == "legacy_mix" && "$method" == apgm ]] && legacy=true
+  extra=""
+  if [[ "$legacy" == false ]]; then
+    extra="$(cat <<EOX
+,
+ "designable_positions": $designable,
+ "relaxed_peak_probability_mean": $peak,
+ "relaxed_peak_probability_min": $peak,
+ "relaxed_parent_probability_mean": $parent_mass,
+ "relaxed_row_sum_max_deviation": 0.0
+EOX
+)"
+  fi
   cat > "$out" <<EOJ
 {"method": "$method",
  "seed": $seed,
- "hamming_from_parent": 2,
+ "hamming_from_parent": $hamming,
  "candidate_substitutions_considered": ${wanted_override:-%(wanted)s},
  "edit_budget": 5,
  "seed_sequence": "QVQL$method$seed",
- "edits": [{"margin": 0.4}, {"margin": 0.9}]}
+ "edits": $edits$extra}
 EOJ
   exit 0
 fi
@@ -74,6 +111,28 @@ if [[ "$1" == *p17_alpha_recovery.py ]]; then
 fi
 exit 0
 """
+
+
+# A stand-in `nvidia-smi` on PATH. These are control-flow tests: without it the
+# launcher's capacity check reads the HOST's GPUs, so the suite passed or failed
+# according to what happened to be resident on the machine running it. The stub
+# reports eight idle 140 GB devices, which is the cluster the launchers target.
+IDLE_EIGHT = """#!/usr/bin/env bash
+case "$*" in
+  *--query-gpu*) for i in 0 1 2 3 4 5 6 7; do echo "$i, 143771, 1024"; done ;;
+  *) exit 1 ;;
+esac
+"""
+
+
+def _stub_nvidia_smi(directory, body=IDLE_EIGHT):
+    """Return a PATH prefix whose `nvidia-smi` is `body`."""
+    binary = directory / "stubbin"
+    binary.mkdir(exist_ok=True)
+    stub = binary / "nvidia-smi"
+    stub.write_text(body)
+    stub.chmod(0o755)
+    return str(binary)
 
 
 @pytest.fixture
@@ -87,6 +146,7 @@ def stage(tmp_path):
         env = dict(
             os.environ, PYTHON_BIN=str(mock), MOCK_SEED=seeds, MOCK_SEARCH=search
         )
+        env["PATH"] = _stub_nvidia_smi(tmp_path) + os.pathsep + env["PATH"]
         return subprocess.run(
             ["bash", str(STAGE), "--devices", DEVICES, "--seed-replicates", "2", *args],
             capture_output=True, text=True, env=env, timeout=600,
@@ -357,6 +417,7 @@ def test_a_relative_output_dir_resolves_where_it_was_asked_for(stage, tmp_path):
     elsewhere = tmp_path / "cwd"
     elsewhere.mkdir()
     env = dict(os.environ, PYTHON_BIN=str(mock), MOCK_SEED="ok", MOCK_SEARCH="ok")
+    env["PATH"] = _stub_nvidia_smi(tmp_path) + os.pathsep + env["PATH"]
     done = subprocess.run(
         ["bash", str(STAGE), "--devices", DEVICES, "--seed-replicates", "2",
          "--stages", "seed", "--output-dir", "out_here"],
@@ -463,3 +524,171 @@ def test_a_max_based_verdict_does_not_claim_to_describe_every_seed(
     assert "4/6 fit the budget" in gate, gate
     assert "truncation regime for 2 of 6 seeds" in gate, gate
     assert "so each seed is an argmax" not in gate
+
+
+def test_a_device_that_cannot_hold_the_preallocation_is_refused(stage, tmp_path):
+    """The capacity check is wired in, and the stub above is not hiding it.
+
+    Stubbing `nvidia-smi` to eight idle devices makes every other test here
+    host-independent -- but it would also hide the check being absent
+    altogether, so one case stubs a device that is nearly full.
+    """
+    import os
+    import subprocess
+    import sys
+
+    mock = tmp_path / "mockpy_full"
+    mock.write_text(MOCK % {"python": sys.executable, "wanted": 3})
+    mock.chmod(0o755)
+    nearly_full = """#!/usr/bin/env bash
+case "$*" in
+  *--query-gpu*) for i in 0 1 2 3 4 5 6 7; do echo "$i, 143771, 140000"; done ;;
+  *) exit 1 ;;
+esac
+"""
+    (tmp_path / "full").mkdir(exist_ok=True)
+    env = dict(os.environ, PYTHON_BIN=str(mock), MOCK_SEED="ok", MOCK_SEARCH="ok")
+    env["PATH"] = (
+        _stub_nvidia_smi(tmp_path / "full", nearly_full) + os.pathsep + env["PATH"]
+    )
+    done = subprocess.run(
+        ["bash", str(STAGE), "--devices", DEVICES, "--seed-replicates", "2",
+         "--stages", "seed", "--output-dir", str(tmp_path / "nofit")],
+        capture_output=True, text=True, env=env, timeout=600,
+    )
+    assert done.returncode == 2, done.stdout[-2000:] + done.stderr[-2000:]
+    assert "DOES NOT FIT" in done.stdout
+    assert "Refusing to start" in done.stderr
+
+
+def test_allow_busy_gpus_proceeds_past_a_full_device(stage, tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    mock = tmp_path / "mockpy_force"
+    mock.write_text(MOCK % {"python": sys.executable, "wanted": 3})
+    mock.chmod(0o755)
+    nearly_full = """#!/usr/bin/env bash
+case "$*" in
+  *--query-gpu*) for i in 0 1 2 3 4 5 6 7; do echo "$i, 143771, 140000"; done ;;
+  *) exit 1 ;;
+esac
+"""
+    (tmp_path / "force").mkdir(exist_ok=True)
+    env = dict(os.environ, PYTHON_BIN=str(mock), MOCK_SEED="ok", MOCK_SEARCH="ok")
+    env["PATH"] = (
+        _stub_nvidia_smi(tmp_path / "force", nearly_full) + os.pathsep + env["PATH"]
+    )
+    done = subprocess.run(
+        ["bash", str(STAGE), "--devices", DEVICES, "--seed-replicates", "2",
+         "--stages", "seed", "--allow-busy-gpus",
+         "--output-dir", str(tmp_path / "forced")],
+        capture_output=True, text=True, env=env, timeout=600,
+    )
+    assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
+    assert "Expect an OOM" in done.stderr
+
+
+# --------------------------------------------------------------------------- #
+# After the 2026-10-14 real-loss run (section 32): the gate printed a
+# hardcoded denominator, and `0 wanted` had two opposite causes it could not
+# separate.
+# --------------------------------------------------------------------------- #
+
+
+def test_the_gate_reads_the_designable_count_from_the_runs(stage, tmp_path):
+    """`designable 29` was a constant in the gate's own source.
+
+    It is correct today and it is the denominator the `>= 25` threshold was
+    chosen against, but nothing tied it to `CDR_RESIDUE_INDICES_1IDX`:
+    changing the mask would have left the gate printing a stale denominator
+    under a threshold that no longer meant what it says.
+    """
+    out = tmp_path / "denominator"
+    done = stage("--stages", "seed", "--output-dir", str(out))
+    assert done.returncode == 0, done.stdout[-2000:]
+    gate = (out / "seeds" / "gate.txt").read_text()
+    assert "designable 29" in gate, gate
+    assert "assumed" not in gate, "the count IS recorded; nothing is assumed"
+
+    # 29 is the mask shipped today, so the assertion above passes against a
+    # gate that reads the field AND against one that prints the constant. The
+    # discriminating case is a run on a different mask.
+    other = tmp_path / "denominator_17"
+    done = stage("--stages", "seed", "--output-dir", str(other), seeds="mask_17")
+    assert done.returncode == 0, done.stdout[-2000:]
+    gate = (other / "seeds" / "gate.txt").read_text()
+    assert "designable 17" in gate, gate
+    assert "designable 29" not in gate, gate
+    # And the verdict's own threshold was picked against 29, so it says so
+    # rather than ranking 17 positions against a cutoff of 25.
+    assert "threshold below was chosen against 29" in gate, gate
+
+
+def test_seed_runs_disagreeing_on_the_designable_count_are_refused(stage, tmp_path):
+    """Two masks is two experiments, and the verdict would average them."""
+    out = tmp_path / "mask_changed"
+    done = stage("--stages", "seed", "--output-dir", str(out), seeds="mask_changed")
+    assert done.returncode != 0, done.stdout[-2000:]
+    gate = (out / "seeds" / "gate.txt").read_text()
+    assert "disagree on how many positions are designable" in gate, gate
+    assert "15" in gate and "29" in gate, gate
+    assert "VERDICT" not in gate, "the verdict must not print over a split mask"
+
+
+def test_a_seed_directory_holding_two_builds_of_the_seeder_is_refused(
+    stage, tmp_path
+):
+    """A missing count is not a disagreeing one, and the refusal says which.
+
+    Both exit nonzero, but naming the wrong reason sends the reader to the
+    wrong file.
+    """
+    out = tmp_path / "legacy_mix"
+    done = stage("--stages", "seed", "--output-dir", str(out), seeds="legacy_mix")
+    assert done.returncode != 0, done.stdout[-2000:]
+    gate = (out / "seeds" / "gate.txt").read_text()
+    assert "two builds of the seeder" in gate, gate
+    assert "disagree on how many positions" not in gate, gate
+    assert "2 of 6 seed runs predate" in gate, gate
+
+
+def test_seed_runs_from_before_the_count_was_recorded_still_read(stage, tmp_path):
+    """The field is 2026-10-14; the directories from before it still gate."""
+    out = tmp_path / "legacy_all"
+    done = stage("--stages", "seed", "--output-dir", str(out), seeds="legacy_all")
+    assert done.returncode == 0, done.stdout[-2000:]
+    gate = (out / "seeds" / "gate.txt").read_text()
+    assert "29 (assumed; not recorded before 2026-10-14)" in gate, gate
+    assert "VERDICT" in gate, gate
+    assert "not recorded" in gate
+
+
+def test_zero_wanted_separates_a_converged_relaxation_from_a_frozen_one(
+    stage, tmp_path
+):
+    """The question the real-loss run left open, and could not answer.
+
+    On the anchored start the parent is the argmax at every designable
+    position before the first step, so `0 wanted` is produced both by a
+    relaxation that chose the parent and by one that never moved. At
+    `--init-logit-scale 1.0` the untouched peak is 0.125; a converged one is
+    near 1. The gate now says which it is looking at.
+    """
+    frozen = tmp_path / "frozen"
+    moved = tmp_path / "converged"
+    a = stage("--stages", "seed", "--output-dir", str(frozen), seeds="frozen")
+    b = stage("--stages", "seed", "--output-dir", str(moved), seeds="converged")
+    assert a.returncode == 0, a.stdout[-2000:]
+    assert b.returncode == 0, b.stdout[-2000:]
+    ga = (frozen / "seeds" / "gate.txt").read_text()
+    gb = (moved / "seeds" / "gate.txt").read_text()
+    # Identical readouts in everything the argmax can see.
+    for gate in (ga, gb):
+        assert "0 edits kept / 0 wanted" in gate, gate
+        assert "no truncation" in gate, gate
+    assert "may never have left the start" in ga, ga
+    assert "converged on the parent" not in ga, ga
+    assert "converged on the parent" in gb, gb
+    assert "may never have left the start" not in gb, gb

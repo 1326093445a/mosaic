@@ -729,16 +729,23 @@ def main(argv=None):
     reference_audit = None
     if args.pose_diagnostic:
         from p17_pose_diagnostics import audit_reference, geometry_checks, write_report
-        from p17_hallucination_search import BINDER_CHAIN, TARGET_CHAIN, COMPLEX_PDB
+        # Through the module, not `from … import`: see the note in
+        # p17_hallucination_search. This used to read the names as attributes
+        # of p17_hallucination_search, which worked only because the import was
+        # function-local.
+        import p17_reference_config as reference_config
 
         # Audit whatever reference this run actually loaded, not the module
         # default: auditing P17_JN1.pdb while scoring against Alpha would
         # report a passing correspondence for the wrong file.
-        complex_pdb = args.complex if args.complex is not None else COMPLEX_PDB
+        complex_pdb = (
+            args.complex if args.complex is not None
+            else reference_config.COMPLEX_PDB
+        )
         chains = (
             (args.binder_chain or "B", args.target_chain or "A")
             if args.complex is not None
-            else (BINDER_CHAIN, TARGET_CHAIN)
+            else (reference_config.BINDER_CHAIN, reference_config.TARGET_CHAIN)
         )
         try:
             if model is None:

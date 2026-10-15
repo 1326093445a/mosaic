@@ -18,6 +18,17 @@ import tarfile
 import numpy as np
 
 from p17_search_outputs import SearchOutputs, compact_prediction
+# Read THROUGH the module, never `from p17_reference_config import COMPLEX_PDB`.
+# A `from X import NAME` at module scope binds the value once, at import time,
+# into this module's own namespace -- so it is immune to patching either
+# `X.NAME` or this module's copy, and the two silently disagree. That is what
+# broke `test_winner_rescoring_exports_scored_pose_without_optimization` on
+# 2026-10-14: the constant moved from a function-local import (which read the
+# attribute at CALL time, after the test had patched it) to a module-level one,
+# and the rescorer copied the real P17_JN1.pdb over the test's fixture. Reading
+# the attribute at use time makes `p17_reference_config` the single place to
+# patch, for every consumer.
+import p17_reference_config as reference_config
 
 
 def check_reference_consistency(
@@ -242,7 +253,7 @@ def select_shard(candidates, num_shards, shard_index):
 
 
 def evaluation_signature(
-    seeds, sampling_steps, opendde_dtype, original=None,
+    seeds, sampling_steps, opendde_dtype, original=None, *, reference_identity=None,
 ):
     """What has to match for two shards to be parts of one evaluation.
 
@@ -281,7 +292,13 @@ def evaluation_signature(
             pae_cutoff=arguments.get("pae_cutoff"),
             distance_cutoff=arguments.get("distance_cutoff"),
             scored_target_is_decoy=original.get("decoy_target") is not None,
+            target_sequence_sha256=(
+                hashlib.sha256(original["target_sequence"].encode()).hexdigest()
+                if original.get("target_sequence") is not None else None
+            ),
         )
+    if reference_identity is not None:
+        signature.update(reference_identity)
     return signature
 
 
@@ -325,6 +342,19 @@ def merge_shard_tables(root, num_shards):
             "their compatibility with the rest cannot be checked. Shards "
             "written before 2026-10-14 predate the field; re-run them to make "
             "this verifiable.",
+            file=sys.stderr,
+        )
+    missing_identity = [
+        i for i, signature in signatures.items()
+        if any(signature.get(key) is None for key in (
+            "target_sequence_sha256", "reference_sha256",
+            "reference_binder_chain", "reference_target_chain",
+        ))
+    ]
+    if missing_identity:
+        print(
+            f"  WARNING: shard(s) {missing_identity} lack target/reference identity "
+            "in their evaluation signature; that compatibility cannot be checked.",
             file=sys.stderr,
         )
 
@@ -431,7 +461,16 @@ def main(argv=None):
     links = [row for row in links if row["candidate_id"] in selected_ids]
     steps = args.sampling_steps or original["arguments"]["sampling_steps"]
     precision = args.opendde_dtype or original["arguments"].get("opendde_dtype", "fp32")
-    signature = evaluation_signature(args.seeds, steps, precision, original)
+    if args.complex is None:
+        if args.binder_chain or args.target_chain:
+            parser.error("--binder-chain/--target-chain require --complex")
+        complex_pdb = reference_config.COMPLEX_PDB
+        binder_chain = reference_config.BINDER_CHAIN
+        target_chain = reference_config.TARGET_CHAIN
+    else:
+        complex_pdb = args.complex
+        binder_chain = args.binder_chain or "B"
+        target_chain = args.target_chain or "A"
     print(
         f"Shard {args.shard_index}/{args.num_shards}, candidate IDs {sorted(selected_ids)}: "
         f"{len(candidates)} sequences, seeds {args.seeds}: "
@@ -440,6 +479,16 @@ def main(argv=None):
     )
     if args.dry_run:
         return
+    # Hash the selected local input, never an archived path or digest. Empty
+    # shards need the same identity as populated shards, before model imports.
+    reference_identity = dict(
+        reference_sha256=hashlib.sha256(complex_pdb.read_bytes()).hexdigest(),
+        reference_binder_chain=binder_chain,
+        reference_target_chain=target_chain,
+    )
+    signature = evaluation_signature(
+        args.seeds, steps, precision, original, reference_identity=reference_identity,
+    )
     args.output_dir.mkdir(parents=True, exist_ok=False)
     if not candidates:
         (args.output_dir / "summary.json").write_text(
@@ -468,26 +517,16 @@ def main(argv=None):
     from mosaic.losses.structure_prediction import predicted_tm_score
     from p17_confidence_search import confidence_metrics, record_memory_call
     from p17_hallucination_search import (
-        COMPLEX_PDB,
-        BINDER_CHAIN,
-        TARGET_CHAIN,
         load_structure,
         reference_binder_target_ca,
     )
 
     if args.complex is None:
-        if args.binder_chain or args.target_chain:
-            raise ValueError("--binder-chain/--target-chain require --complex")
-        complex_pdb = COMPLEX_PDB
-        binder_chain, target_chain = BINDER_CHAIN, TARGET_CHAIN
         reference, wt, reference_target = load_structure()
         binder_ca, target_ca = reference_binder_target_ca(reference)
     else:
         from p17_alpha_reference import load_complex
 
-        complex_pdb = args.complex
-        binder_chain = args.binder_chain or "B"
-        target_chain = args.target_chain or "A"
         loaded = load_complex(complex_pdb, binder_chain, target_chain)
         wt, reference_target = loaded["binder_seq"], loaded["target_seq"]
         binder_ca, target_ca = loaded["binder_ca"], loaded["target_ca"]
@@ -504,6 +543,10 @@ def main(argv=None):
     del reference_target
     outputs = SearchOutputs(args.output_dir, binder_ca, target_ca)
     shutil.copy2(complex_pdb, args.output_dir / "reference.pdb")
+    if hashlib.sha256((args.output_dir / "reference.pdb").read_bytes()).hexdigest() != (
+        reference_identity["reference_sha256"]
+    ):
+        raise ValueError("reference file changed while preparing the evaluation")
     (args.output_dir / "README.md").write_text(
         "# P17 winner pose review\n\n"
         "New forward predictions of archived WT and winners; no optimization.\n"
@@ -551,7 +594,7 @@ def main(argv=None):
         reference_binder_chain=binder_chain,
         reference_target_chain=target_chain,
         reference_source=str(complex_pdb),
-        reference_sha256=hashlib.sha256(complex_pdb.read_bytes()).hexdigest(),
+        reference_sha256=reference_identity["reference_sha256"],
         pae_cutoff=original["arguments"]["pae_cutoff"],
         distance_cutoff=original["arguments"]["distance_cutoff"],
         # Says plainly which target was folded, so a decoy archive's numbers

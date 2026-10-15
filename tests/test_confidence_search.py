@@ -880,7 +880,11 @@ def test_winner_rescoring_exports_scored_pose_without_optimization(
     )
     reference = tmp_path / "ref.pdb"
     reference.write_text("HEADER    TEST\n")
-    monkeypatch.setattr(original, "COMPLEX_PDB", reference)
+    # `p17_reference_config` is the one place to patch: every consumer reads
+    # the attribute through the module at use time, so this reaches all of them.
+    import p17_reference_config as reference_config
+
+    monkeypatch.setattr(reference_config, "COMPLEX_PDB", reference)
     out = tmp_path / "rescore"
     rescoring.main(
         ["--input", str(tmp_path), "--output-dir", str(out), "--seeds", "0", "1"]

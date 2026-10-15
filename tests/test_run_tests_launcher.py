@@ -7,14 +7,58 @@ happens to have a free device.
 """
 
 import os
+import json
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 
 import pytest
 
 
 REPO = Path(__file__).resolve().parents[1]
 RUNNER = REPO / "run_tests.sh"
+
+
+@pytest.mark.parametrize("gpu", [False, True])
+def test_backend_at_pytest_launch_after_cpu_dependency_probes(tmp_path, gpu):
+    """Observe child environments without importing JAX or starting pytest."""
+    runner = tmp_path / "run_tests.sh"
+    shutil.copy2(RUNNER, runner)
+    interpreter = tmp_path / ".venv/bin/python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['LAUNCH_LOG'], 'a') as stream:\n"
+        "    stream.write(json.dumps(dict(args=sys.argv[1:], "
+        "backend=os.environ.get('JAX_PLATFORMS'), "
+        "devices=os.environ.get('CUDA_VISIBLE_DEVICES'), "
+        "preallocate=os.environ.get('XLA_PYTHON_CLIENT_PREALLOCATE'))) + '\\n')\n"
+    )
+    interpreter.chmod(0o755)
+    (tmp_path / "tests").mkdir()
+    for _, _, target in optional_deps():
+        (tmp_path / target.split("::")[0]).touch()
+    log = tmp_path / "launch.jsonl"
+    env = dict(os.environ, LAUNCH_LOG=str(log), JAX_PLATFORMS="cuda",
+               CUDA_VISIBLE_DEVICES="7")
+    env["PATH"] = f"{fake_nvidia_smi(tmp_path, devices='2')}{os.pathsep}{env['PATH']}"
+    result = subprocess.run(
+        ["bash", str(runner), *(["--gpu", "2"] if gpu else [])],
+        env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    probes = [call for call in calls if call["args"][0] == "-c"]
+    assert probes
+    assert all(call["backend"] == "cpu" and call["devices"] == "" for call in probes)
+    launches = [call for call in calls if call["args"][:2] == ["-m", "pytest"]]
+    assert len(launches) == 1
+    assert launches[0]["backend"] == ("cuda" if gpu else "cpu")
+    assert launches[0]["devices"] == ("2" if gpu else "")
+    if gpu:
+        assert launches[0]["preallocate"] == "false"
 
 
 def invoke(*args, path_prefix=None):

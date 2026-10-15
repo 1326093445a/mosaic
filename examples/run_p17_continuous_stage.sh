@@ -55,7 +55,24 @@
 #   with it on and 27, 29 and 29 with it off, and it decides the outcome at
 #   every step count and scale tried. `project_to_budget` already enforces the
 #   budget exactly, so `SEED_EDIT_WEIGHT=0.0` loses nothing. The DISCRETE search
-#   keeps 5.0. NOT YET TESTED ON THE REAL LOSS.
+#   keeps 5.0.
+#
+#   TESTED ON THE REAL LOSS, 2026-10-14 (section 32): six runs, 600 steps,
+#   scale 1.0, hinge 0.0, on OpenDDE at bf16 and 64 sampling steps.
+#
+#     bindcraft    15 wanted / 29 designable, both seeds (budget 5)
+#     colabdesign  15 wanted, both seeds
+#     apgm          0 wanted, both seeds
+#
+#   One cell, no hinge-on arm, so this does NOT attribute the movement to the
+#   hinge rather than to the scale, the step count or the hard temperature --
+#   all four changed together. What it says is that the toy's PREDICTION for
+#   this cell holds for the two logit-space methods and fails for `apgm`,
+#   which the toy grid put at 21 here. The real loss is
+#   also far less swamped than the toy predicted for the other two -- 15 of
+#   29, against 26-28 on the toy -- so the hand-off is a partially truncated
+#   argmax, not a wholly truncated one. The kept five carry probability
+#   margins of 0.707-0.985 across the four moving runs.
 #
 # Three more changes were made on principle and their effect is UNMEASURED:
 #
@@ -228,6 +245,7 @@ ACCEPT_TEMP=0.02        # pinned, see header
 POLICY=population
 OUT_ROOT=""
 DRY_RUN=false
+ALLOW_BUSY_GPUS=false
 FAILURES=0
 ALL_STAGES="seed search"
 STAGES="$ALL_STAGES"
@@ -250,6 +268,8 @@ Options:
   --score-calls N       unique scored sequences per worker (default: $SCORE_CALLS)
   --seed-dir PATH       reuse an earlier stage-seed output instead of rerunning
   --output-dir PATH     default: results/p17_continuous_stage_<timestamp>
+  --allow-busy-gpus     start even though a device cannot hold the
+                        preallocation alongside what is already resident
   --dry-run             print the plan; create nothing, load nothing
 EOF
 }
@@ -268,6 +288,7 @@ while [[ $# -gt 0 ]]; do
         --score-calls) SCORE_CALLS="$2"; shift 2 ;;
         --seed-dir) SEED_DIR="$2"; shift 2 ;;
         --output-dir) OUT_ROOT="$2"; shift 2 ;;
+        --allow-busy-gpus) ALLOW_BUSY_GPUS=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -340,6 +361,8 @@ _check_selection --methods "$ALL_METHODS" "$METHODS"
 STAGES="$(echo $STAGES)"
 CELLS="$(echo $CELLS)"
 METHODS="$(echo $METHODS)"
+
+source "$SCRIPT_DIR/lib_gpu_capacity.sh"
 
 has_stage() { [[ " $STAGES " == *" $1 "* ]]; }
 
@@ -443,8 +466,12 @@ mkdir -p "$OUT_ROOT"
 cd "$REPO_DIR"
 export MOSAIC_OPENDDE_AGGREGATION="$AGGREGATION"
 export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-true}"
-[[ -z "${XLA_CLIENT_MEM_FRACTION:-}" ]] && \
-    export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.90}"
+# The guard used to test `XLA_CLIENT_MEM_FRACTION` -- a name nothing sets and
+# nothing reads -- while exporting `XLA_PYTHON_CLIENT_MEM_FRACTION`. Harmless,
+# because the `:-` default preserves a caller's value either way, but it was a
+# condition on a variable that does not exist.
+export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.90}"
+gpu_capacity_check "$DEVICES" "$XLA_PYTHON_CLIENT_MEM_FRACTION" "$ALLOW_BUSY_GPUS"
 export PYTHONUNBUFFERED=1
 
 # A FRESH output directory. Reusing one and then failing every seed job made
@@ -683,14 +710,57 @@ for spec in specs:
     if margins:
         print(f"{head}   margins {min(margins):.3f}-{max(margins):.3f}")
     else:
-        print(f"{head}   (the relaxation asked for no substitution at all)")
+        # 0 wanted has two causes and the argmax cannot separate them: the
+        # anchored start already has the parent on top everywhere, so a
+        # relaxation that converged on the parent and one that never moved
+        # look identical here. `relaxed_peak_probability_mean` separates them
+        # -- at `--init-logit-scale 1.0` the start's own peak IS 0.125.
+        peak = d.get("relaxed_peak_probability_mean")
+        if peak is None:
+            print(f"{head}   (the relaxation asked for no substitution at all;"
+                  f" pre-2026-10-14 seed JSON, so whether it MOVED is not"
+                  f" recorded)")
+        else:
+            moved = "converged on the parent" if peak > 0.3 else \
+                    "may never have left the start"
+            print(f"{head}   (no substitution asked for; peak probability "
+                  f"{peak} mean, {d.get('relaxed_parent_probability_mean')} "
+                  f"on the parent -- {moved})")
 
 if rows:
     wanted = [d["candidate_substitutions_considered"] for d in rows]
     budget = rows[0]["edit_budget"]
     print()
+    # `designable 29` was a hardcoded constant here. It is correct today and
+    # it is still the denominator the `>= 25` threshold below was chosen
+    # against, but nothing made it track `CDR_RESIDUE_INDICES_1IDX`: changing
+    # the mask would have left the gate printing a stale denominator under a
+    # threshold that no longer meant what it says. Read it from the runs.
+    recorded = {d["designable_positions"] for d in rows
+                if d.get("designable_positions") is not None}
+    if len(recorded) > 1:
+        sys.exit(f"  the seed runs disagree on how many positions are "
+                 f"designable ({sorted(recorded)}); they are not one "
+                 f"comparison and the gate below would mean nothing")
+    # A MISSING count is not a disagreeing one, and saying so would be the
+    # wrong refusal with the right exit code. But a directory holding both
+    # kinds holds output from two different builds of the seeder, which is
+    # equally not one comparison.
+    unrecorded = [d for d in rows if d.get("designable_positions") is None]
+    if recorded and unrecorded:
+        sys.exit(f"  {len(unrecorded)} of {len(rows)} seed runs predate "
+                 f"2026-10-14 and do not record how many positions were "
+                 f"designable, while the rest do: this directory holds output "
+                 f"from two builds of the seeder, so it is not one comparison")
+    designable = recorded.pop() if recorded else None
+    shown = "29 (assumed; not recorded before 2026-10-14)" \
+        if designable is None else str(designable)
     print(f"  substitutions wanted: min {min(wanted)}, max {max(wanted)}, "
-          f"budget {budget}, designable 29")
+          f"budget {budget}, designable {shown}")
+    if designable is not None and designable != 29:
+        print(f"  NOTE: the >= 25 threshold below was chosen against 29 "
+              f"designable positions, not {designable}. Read the per-seed "
+              f"counts, not the verdict.")
     n = len(wanted)
     n_heavy = sum(1 for w in wanted if w >= 25)
     n_fits = sum(1 for w in wanted if w <= budget)
