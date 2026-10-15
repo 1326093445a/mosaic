@@ -81,6 +81,59 @@ def project_to_budget(relaxed, parent_tokens, designable_idx, budget):
     return tokens, margins, kept
 
 
+def relaxed_loss(loss_function, x0, relaxed, key):
+    """The objective at the start and at the end, under ONE sampling key.
+
+    Why this is recorded. `0 wanted substitutions` and `26 wanted` are both
+    arguments about WHERE the relaxation ended, and neither says whether it
+    ended somewhere good. On 2026-10-15 `simplex_APGM` came back at the parent
+    from the anchored start and at an unrelated vertex from a noise start, and
+    the question that decides what to do about it -- is the anchored init
+    finding a better optimum, or trapping the optimizer in a worse basin? --
+    needs the loss at the two points, which nothing kept (§32.5).
+
+    One key for both evaluations, so the difference is descent and not
+    sampling noise. The loss is stochastic in the sampling steps, so two
+    draws would differ by an amount nobody has measured here.
+
+    `x0` is the raw start the optimizers were handed: logits for the two
+    logit-space methods, and what `simplex_APGM` softmaxes. Softmaxing it here
+    puts both evaluations in the probability space `relaxed` is already in,
+    which is the only form in which the two numbers are comparable.
+
+    A diagnostic must not destroy the result it describes. A loss that raises
+    or returns a nonfinite value after 600 steps of completed work is recorded
+    as such, not propagated.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    def evaluate(seq):
+        value, _aux = loss_function(jnp.asarray(seq), key=key)
+        value = float(value)
+        return value if np.isfinite(value) else None
+
+    try:
+        start = evaluate(jax.nn.softmax(jnp.asarray(x0), -1))
+        end = evaluate(relaxed)
+    except Exception as exc:                       # noqa: BLE001 - diagnostic
+        return dict(loss_at_init=None, loss_at_relaxed=None,
+                    loss_descent=None, loss_eval_error=repr(exc)[:200])
+    # The descent is the difference of the RECORDED numbers, not of the
+    # unrounded ones. Subtracting the two fields in the JSON has to give the
+    # third: a record whose own columns disagree by 1e-6 is a record that
+    # cannot be checked, and nothing here needs the last decimal.
+    at_init = None if start is None else round(start, 6)
+    at_relaxed = None if end is None else round(end, 6)
+    return dict(
+        loss_at_init=at_init,
+        loss_at_relaxed=at_relaxed,
+        loss_descent=None if (at_init is None or at_relaxed is None)
+        else round(at_init - at_relaxed, 6),
+        loss_eval_error=None,
+    )
+
+
 def projection_tie_at_cut(margins, budget):
     """Whether the budget cut falls inside a group of equal margins.
 
@@ -512,6 +565,10 @@ def main(argv=None):
                                               args.edit_budget)
     concentration = relaxed_concentration(relaxed, parent[designable_idx])
     tie = projection_tie_at_cut(margins, args.edit_budget)
+    # A separate key from the optimisation's, and the same one for both
+    # points: this measures descent, not a re-draw of the sampling.
+    objective = relaxed_loss(variable_only_loss, x0, relaxed,
+                             jax.random.fold_in(key, 1_000_003))
     sequence = "".join(TOKENS[i] for i in tokens)
     edits = [
         dict(position_1idx=pos + 1, parent=TOKENS[parent[pos]],
@@ -537,6 +594,7 @@ def main(argv=None):
         designable_positions=int(n_designable),
         **concentration,
         **tie,
+        **objective,
         interpretation=(
             "Discrete start for the population search, projected onto the edit "
             "budget from a continuous stage that does not enforce one. The "
@@ -552,6 +610,12 @@ def main(argv=None):
     if len(margins) > args.edit_budget:
         print(f"  ({len(margins)} substitutions wanted of {n_designable} "
               f"designable, {args.edit_budget} kept)")
+    if objective["loss_at_relaxed"] is not None:
+        print(f"  loss {objective['loss_at_init']} at the start -> "
+              f"{objective['loss_at_relaxed']} at the end "
+              f"(descent {objective['loss_descent']})")
+    elif objective.get("loss_eval_error"):
+        print(f"  loss not evaluated: {objective['loss_eval_error']}")
     print(f"  relaxed peak probability {concentration['relaxed_peak_probability_mean']} "
           f"mean, {concentration['relaxed_peak_probability_min']} min; "
           f"{concentration['relaxed_parent_probability_mean']} mean on the parent")

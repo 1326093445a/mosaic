@@ -90,7 +90,14 @@ if [[ "$1" == *p17_continuous_seed.py ]]; then
  "relaxed_peak_probability_mean": $peak,
  "relaxed_peak_probability_min": $peak,
  "relaxed_parent_probability_mean": $parent_mass,
- "relaxed_row_sum_max_deviation": 0.0
+ "relaxed_row_sum_max_deviation": 0.0,
+ "projection_tied_group": 1,
+ "projection_tied_discarded": 0,
+ "projection_margin_gap_at_cut": 0.01,
+ "loss_at_init": 40.5,
+ "loss_at_relaxed": 12.25,
+ "loss_descent": 28.25,
+ "loss_eval_error": null
 EOX
 )"
   fi
@@ -106,6 +113,9 @@ EOJ
   exit 0
 fi
 if [[ "$1" == *p17_alpha_recovery.py ]]; then
+  # Opt-in: unset for every other test, so none of them change behaviour.
+  # Doubled percent: the fixture formats this whole script as a template.
+  [[ -n "$MOCK_ARGS_DIR" ]] && printf '%%s\n' "$@" > "$MOCK_ARGS_DIR/driver_$$.args"
   [[ "$MOCK_SEARCH" == "fail" ]] && exit 1
   exit 0
 fi
@@ -139,12 +149,13 @@ def _stub_nvidia_smi(directory, body=IDLE_EIGHT):
 def stage(tmp_path):
     import sys
 
-    def run(*args, seeds="ok", search="ok", wanted=3):
+    def run(*args, seeds="ok", search="ok", wanted=3, args_dir=None):
         mock = tmp_path / f"mockpy_{wanted}_{seeds}"
         mock.write_text(MOCK % {"python": sys.executable, "wanted": wanted})
         mock.chmod(0o755)
         env = dict(
-            os.environ, PYTHON_BIN=str(mock), MOCK_SEED=seeds, MOCK_SEARCH=search
+            os.environ, PYTHON_BIN=str(mock), MOCK_SEED=seeds, MOCK_SEARCH=search,
+            MOCK_ARGS_DIR=str(args_dir) if args_dir else "",
         )
         env["PATH"] = _stub_nvidia_smi(tmp_path) + os.pathsep + env["PATH"]
         return subprocess.run(
@@ -692,3 +703,51 @@ def test_zero_wanted_separates_a_converged_relaxation_from_a_frozen_one(
     assert "converged on the parent" not in ga, ga
     assert "converged on the parent" in gb, gb
     assert "may never have left the start" not in gb, gb
+
+
+# --edit-budget, added 2026-10-15. It was a pinned assignment with no flag, so
+# the only way to run the 2026-10-15 budget-7 arm was to sed a copy of this
+# script -- which silently resolves REPO_DIR from wherever the copy landed.
+
+
+def test_the_edit_budget_defaults_to_five(stage, tmp_path):
+    done = stage("--stages", "search", "--cells", "parent", "--dry-run",
+                 "--output-dir", str(tmp_path / "default"))
+    assert "edit_budget 5," in done.stdout, done.stdout
+    assert "OVERRIDDEN" not in done.stdout
+
+
+def test_a_raised_edit_budget_reaches_the_plan_and_the_driver(stage, tmp_path):
+    out = tmp_path / "budget7"
+    seen = tmp_path / "driverargs"
+    seen.mkdir()
+    done = stage("--stages", "search", "--cells", "parent", "--edit-budget", "7",
+                 "--output-dir", str(out), args_dir=seen)
+    assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:]
+    plan = json.loads((out / "plan.json").read_text())
+    assert plan["search_stage"]["edit_budget"] == 7
+    # Both, so a reader of an old plan can tell a 7 that was chosen from a 7
+    # that was the default of the day.
+    assert plan["search_stage"]["edit_budget_default"] == 5
+    recorded = [f.read_text().split() for f in seen.glob("driver_*.args")]
+    assert recorded, "the mock driver was never invoked, so this asserts nothing"
+    for argv in recorded:
+        assert "--edit-budget" in argv, argv
+        assert argv[argv.index("--edit-budget") + 1] == "7", argv
+
+
+def test_the_override_is_named_wherever_the_budget_is_printed(stage, tmp_path):
+    done = stage("--stages", "search", "--cells", "parent", "--edit-budget", "7",
+                 "--dry-run", "--output-dir", str(tmp_path / "say_so"))
+    assert "edit_budget 7 (OVERRIDDEN, default 5)" in done.stdout, done.stdout
+
+
+@pytest.mark.parametrize("bad", ["0", "-1", "x", "5.5", "07x", ""])
+def test_an_edit_budget_that_is_not_a_positive_integer_is_refused(
+    stage, tmp_path, bad
+):
+    done = stage("--stages", "search", "--cells", "parent", "--dry-run",
+                 "--edit-budget", bad,
+                 "--output-dir", str(tmp_path / "bad"))
+    assert done.returncode == 2, (bad, done.stdout, done.stderr)
+    assert "positive integer" in done.stderr, done.stderr

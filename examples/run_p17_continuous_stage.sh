@@ -173,7 +173,15 @@
 # with its treatment. Use `--cells` to drop it if the compute is needed
 # elsewhere; section 30.2's grad_pop numbers are the fallback comparison.
 #
-# WHAT IS PINNED. edit_budget 5, weight_registry 0.0, target_entropy 0.6,
+# WHAT IS PINNED. edit_budget 5 -- the DEFAULT, not a constant: `--edit-budget`
+# overrides it, and `plan.json` records both the value used and the default so
+# a reader can see which runs differ. Raising it on a `--stages search` run
+# that reuses an earlier `--seed-dir` is the one case that matters: the seed
+# was projected onto the SEED stage's budget, so a larger search budget leaves
+# the difference free for the search to spend on top of the seed, instead of
+# the exchange-only moves a saturated start is restricted to. Every cell in
+# one invocation still shares one budget. Also pinned:
+# weight_registry 0.0, target_entropy 0.6,
 # population policy, 200 score calls, 64 sampling steps, bf16, stable
 # aggregation, acceptance_temperature 0.02, held-out structural seeds
 # 101/102/103 -- identical in every cell and identical to the section 29
@@ -237,7 +245,8 @@ PROPOSALS=2000
 STEPS=64
 DTYPE=bf16
 AGGREGATION=stable
-EDIT_BUDGET=5           # pinned, shared between the stages, see header
+EDIT_BUDGET=5           # default, shared between the stages, see header
+EDIT_BUDGET_DEFAULT=5   # what --edit-budget overrode, for the echo and the plan
 WEIGHT_REGISTRY=0.0     # pinned off, see header
 REGISTRY_CUTOFF=8.0
 ENTROPY=0.6             # pinned, matches the section 29 grad_ cells
@@ -266,6 +275,10 @@ Options:
   --init {parent,noise} relaxed-variable start (default: $INIT)
   --seeds-per-cell N    search seeds per stage-search cell (default: $SEEDS_PER_CELL)
   --score-calls N       unique scored sequences per worker (default: $SCORE_CALLS)
+  --edit-budget N       edits allowed from the budget anchor (default:
+                        $EDIT_BUDGET). Both stages use it. Raising it for a
+                        search that reuses an EARLIER --seed-dir is how a
+                        seeded cell gets free moves on top of its seed.
   --seed-dir PATH       reuse an earlier stage-seed output instead of rerunning
   --output-dir PATH     default: results/p17_continuous_stage_<timestamp>
   --allow-busy-gpus     start even though a device cannot hold the
@@ -286,6 +299,7 @@ while [[ $# -gt 0 ]]; do
         --init) INIT="$2"; shift 2 ;;
         --seeds-per-cell) SEEDS_PER_CELL="$2"; shift 2 ;;
         --score-calls) SCORE_CALLS="$2"; shift 2 ;;
+        --edit-budget) EDIT_BUDGET="$2"; shift 2 ;;
         --seed-dir) SEED_DIR="$2"; shift 2 ;;
         --output-dir) OUT_ROOT="$2"; shift 2 ;;
         --allow-busy-gpus) ALLOW_BUSY_GPUS=true; shift ;;
@@ -294,6 +308,17 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+if [[ ! "$EDIT_BUDGET" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--edit-budget must be a positive integer, got '$EDIT_BUDGET'" >&2
+    exit 2
+fi
+# Said out loud wherever the budget is printed. A run at a budget the rest
+# of this header was written against 5 is a different experiment, and the
+# word "pinned" would otherwise still be on the line.
+BUDGET_NOTE=""
+[[ "$EDIT_BUDGET" != "$EDIT_BUDGET_DEFAULT" ]] && \
+    BUDGET_NOTE=" (OVERRIDDEN, default $EDIT_BUDGET_DEFAULT)"
 
 [[ -z "$OUT_ROOT" ]] && OUT_ROOT="$REPO_DIR/results/p17_continuous_stage_$(date +%Y%m%d_%H%M%S)"
 DEVICES="${DEVICES//[[:space:]]/}"
@@ -393,14 +418,14 @@ echo "  [seed]  methods:      $METHODS"
 echo "          replicates:   $SEED_REPLICATES per method"
 echo "          steps:        $SEED_STEPS (pinned across methods, see header)"
 echo "          init:         $INIT (logit scale $INIT_LOGIT_SCALE)"
-echo "          budget:       $EDIT_BUDGET, shared with the search stage"
+echo "          budget:       $EDIT_BUDGET$BUDGET_NOTE, shared with the search stage"
 fi
 if has_stage search; then
 echo
 echo "  [search] cells:       $CELLS"
 echo "           seeds/cell:  $SEEDS_PER_CELL  ->  $(echo "$CELLS" | wc -w) x $SEEDS_PER_CELL workers"
 echo "           per worker:  $SCORE_CALLS score calls, $STEPS steps, $DTYPE, $AGGREGATION"
-echo "           pinned:      edit_budget $EDIT_BUDGET, registry $WEIGHT_REGISTRY,"
+echo "           pinned:      edit_budget $EDIT_BUDGET$BUDGET_NOTE, registry $WEIGHT_REGISTRY,"
 echo "                        target_entropy $ENTROPY, policy $POLICY,"
 echo "                        acceptance_temperature $ACCEPT_TEMP"
 echo "           varied:      where the search starts, and nothing else"
@@ -547,7 +572,8 @@ print(json.dumps(dict(
     search_stage=dict(
         cells="$CELLS".split(), seeds_per_cell=$SEEDS_PER_CELL,
         score_calls=$SCORE_CALLS, gradient_calls=$GRADIENT_CALLS,
-        edit_budget=$EDIT_BUDGET, weight_registry=$WEIGHT_REGISTRY,
+        edit_budget=$EDIT_BUDGET, edit_budget_default=$EDIT_BUDGET_DEFAULT,
+        weight_registry=$WEIGHT_REGISTRY,
         target_entropy=$ENTROPY, policy="$POLICY",
         acceptance_temperature=$ACCEPT_TEMP,
         budget_anchor="reference on every seeded cell, default on the control",
@@ -704,6 +730,13 @@ for spec in specs:
         continue
     rows.append(d)
     margins = [e["margin"] for e in d["edits"]]
+    # The loss at the two endpoints, when the run recorded it. `0 wanted` and
+    # `26 wanted` are both claims about WHERE the relaxation ended; this is
+    # the only field that says whether it ended anywhere good, and it makes
+    # two runs' basins comparable (section 32.5).
+    if d.get("loss_at_relaxed") is not None:
+        print(f"  {'':12} {'':6}   loss {d['loss_at_init']} -> "
+              f"{d['loss_at_relaxed']}  (descent {d['loss_descent']})")
     head = (f"  {d['method']:<12} seed {d['seed']}  "
             f"{d['hamming_from_parent']} edits kept / "
             f"{d['candidate_substitutions_considered']} wanted")

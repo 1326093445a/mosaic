@@ -1222,6 +1222,117 @@ def test_the_tie_fields_reach_the_record(seeder):
     record = next(a for a in dumps[0].args if isinstance(a, ast.Call))
     starred = [k for k in record.keywords if k.arg is None]
     names = {k.value.id for k in starred if isinstance(k.value, ast.Name)}
-    assert names == {"concentration", "tie"}, (
-        f"main() no longer records both diagnostic groups: {names}"
+    # A subset check, not equality: this exists to catch a group being
+    # DELETED, and equality would make every future addition fail a test that
+    # gains no safety from it.
+    required = {"concentration", "tie", "objective"}
+    assert required <= names, (
+        f"main() no longer records {sorted(required - names)}"
     )
+
+
+def test_main_uses_no_name_it_has_not_bound():
+    """A NameError in `main()` costs the whole run, after it has finished.
+
+    `main()` loads OpenDDE, so nothing in this file executes it: the §32.5
+    diagnostics were added with a call to `loss_function`, a name that exists
+    in `run_relaxation` and not in `main`, where the loss is
+    `variable_only_loss`. That is a crash at the *write*, after 600 steps and
+    two GPU-hours, and `relaxed_loss`'s own try/except could not have caught
+    it -- the guard wraps the body, not the call.
+
+    So: every name `main()` reads must be one it binds, imports, takes as an
+    argument, or finds at module level.
+    """
+    import ast
+    import builtins
+
+    source = (REPO / "examples" / "p17_continuous_seed.py").read_text()
+    tree = ast.parse(source)
+    module_level = {n.id for node in tree.body for n in ast.walk(node)
+                    if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+    module_level |= {n.name for n in tree.body
+                     if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            module_level |= {(a.asname or a.name).split(".")[0]
+                             for a in node.names}
+
+    main = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "main")
+    bound = {a.arg for a in main.args.args} | {
+        a.arg for a in main.args.kwonlyargs}
+    for node in ast.walk(main):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bound.add(node.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound |= {(a.asname or a.name).split(".")[0] for a in node.names}
+        elif isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp,
+                               ast.DictComp)):
+            for gen in node.generators:
+                for n in ast.walk(gen.target):
+                    if isinstance(n, ast.Name):
+                        bound.add(n.id)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, ast.Lambda):
+            bound |= {a.arg for a in node.args.args}
+
+    read = {n.id for n in ast.walk(main)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+    unbound = read - bound - module_level - set(dir(builtins))
+    assert not unbound, f"main() reads names it never binds: {sorted(unbound)}"
+
+
+def test_the_objective_is_evaluated_at_both_endpoints_under_one_key(seeder, toy_problem):
+    """Descent, not a re-draw: the same key at the start and at the end."""
+    import jax
+    import jax.numpy as jnp
+
+    make_loss, parent = toy_problem
+    loss = make_loss(0.0)
+    designable = np.arange(N_DESIGNABLE)
+    x0 = jnp.asarray(seeder.anchored_logits(
+        parent, designable, 1.0, np.zeros((N_DESIGNABLE, 20))))
+    # A deliberately DIFFERENT point: the parent one-hot against the
+    # near-uniform start. Which of the two the toy prefers is not the subject
+    # here -- on this loss the descent comes out negative -- only that both
+    # were evaluated and that the three recorded numbers agree.
+    relaxed = relaxed_at_parent(parent).astype(np.float64)
+    report = seeder.relaxed_loss(loss, x0, relaxed, jax.random.key(0))
+    assert report["loss_eval_error"] is None
+    assert report["loss_at_init"] is not None
+    assert report["loss_at_relaxed"] is not None
+    assert report["loss_descent"] == pytest.approx(
+        report["loss_at_init"] - report["loss_at_relaxed"], abs=1e-6)
+
+
+def test_a_failing_loss_does_not_destroy_a_finished_run(seeder):
+    """Two GPU-hours of completed work must survive a broken diagnostic."""
+    class Exploding:
+        def __call__(self, seq, *, key=None):
+            raise RuntimeError("boom")
+
+    import jax
+    report = seeder.relaxed_loss(
+        Exploding(), np.zeros((N_DESIGNABLE, 20)),
+        np.full((N_DESIGNABLE, 20), 1.0 / 20), jax.random.key(0))
+    assert report["loss_at_relaxed"] is None
+    assert report["loss_descent"] is None
+    assert "boom" in report["loss_eval_error"]
+
+
+def test_a_nonfinite_loss_is_recorded_as_missing_not_as_a_number(seeder):
+    """`nan` descent would read as a measurement. It is not one."""
+    class NotANumber:
+        def __call__(self, seq, *, key=None):
+            return float("nan"), {}
+
+    import jax
+    report = seeder.relaxed_loss(
+        NotANumber(), np.zeros((N_DESIGNABLE, 20)),
+        np.full((N_DESIGNABLE, 20), 1.0 / 20), jax.random.key(0))
+    assert report["loss_at_init"] is None
+    assert report["loss_at_relaxed"] is None
+    assert report["loss_descent"] is None
+    assert report["loss_eval_error"] is None, "it evaluated; it was not finite"
