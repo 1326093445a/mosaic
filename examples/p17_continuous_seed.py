@@ -44,8 +44,25 @@ def project_to_budget(relaxed, parent_tokens, designable_idx, budget):
     Ranks candidate positions by the relaxed objective's own margin -- the
     logit it assigns its preferred residue minus the logit it assigns the
     parent's residue -- so the kept edits are the ones the continuous stage
-    pushed hardest for, not an arbitrary subset. Returns tokens plus the
-    per-position margins, since the ranking is the part worth auditing.
+    pushed hardest for. Returns tokens plus the per-position margins, since
+    the ranking is the part worth auditing.
+
+    THE RANKING CAN BE A COMPLETE TIE, and then this does not do what the
+    paragraph above says. `margins.sort(reverse=True)` sorts the tuples
+    `(margin, pos, residue)`, so equal margins fall through to POSITION INDEX,
+    descending -- the five highest-numbered designable positions, whatever the
+    optimizer was doing. A relaxation that reaches the simplex vertices has
+    margin exactly 1.0 everywhere and hits this exactly: on 2026-10-15
+    `simplex_APGM` from a noise start wanted 26 of 29 substitutions at margins
+    1.000-1.000, and all five it handed over were 105-109, the tail of CDR3,
+    for no reason other than the sort (§32.5). Every replicate of a saturated
+    run hands over the SAME five positions, so the replicates are not
+    independent draws.
+
+    This still keeps the tie-break deterministic -- changing it changes the
+    hand-off, which is a design decision and not this function's to make --
+    but `projection_tie_at_cut` below measures the degeneracy so it is
+    recorded instead of silent.
     """
     relaxed = np.asarray(relaxed)
     preferred = relaxed.argmax(-1)
@@ -62,6 +79,40 @@ def project_to_budget(relaxed, parent_tokens, designable_idx, budget):
     for _, pos, residue in kept:
         tokens[pos] = residue
     return tokens, margins, kept
+
+
+def projection_tie_at_cut(margins, budget):
+    """Whether the budget cut falls inside a group of equal margins.
+
+    `project_to_budget` claims to keep what the relaxation pushed hardest for.
+    That claim holds exactly as far as the margins distinguish the candidates;
+    where they tie across the cut, the kept set is chosen by the sort's
+    fall-through and not by the optimization. This reports the size of the tie
+    group straddling the cut and how much of it was discarded.
+
+    `margin_gap_at_cut` is the distance between the last kept margin and the
+    first discarded one, reported as a number rather than compared against a
+    threshold: an exact tie gives 0.0, and a reader can see a near-tie without
+    this function having to decide what "near" means. It is `None` when
+    nothing was discarded.
+    """
+    ranked = sorted(margins, reverse=True)
+    if budget <= 0 or len(ranked) <= budget:
+        return dict(projection_tied_group=0, projection_tied_discarded=0,
+                    projection_margin_gap_at_cut=None)
+    cut = ranked[budget - 1][0]
+    group = sum(1 for m in ranked if m[0] == cut)
+    kept_in_group = sum(1 for m in ranked[:budget] if m[0] == cut)
+    return dict(
+        projection_tied_group=int(group),
+        projection_tied_discarded=int(group - kept_in_group),
+        # 12 decimals, not 6: the whole point of reporting the gap instead
+        # of a verdict is that a reader can see a 1e-9 cut, and rounding to 6
+        # turns one into exactly 0.0 -- indistinguishable from the exact tie
+        # it is supposed to be contrasted with.
+        projection_margin_gap_at_cut=round(
+            float(ranked[budget - 1][0] - ranked[budget][0]), 12),
+    )
 
 
 def relaxed_concentration(relaxed, parent_rows):
@@ -460,6 +511,7 @@ def main(argv=None):
     tokens, margins, kept = project_to_budget(full, parent, designable_idx,
                                               args.edit_budget)
     concentration = relaxed_concentration(relaxed, parent[designable_idx])
+    tie = projection_tie_at_cut(margins, args.edit_budget)
     sequence = "".join(TOKENS[i] for i in tokens)
     edits = [
         dict(position_1idx=pos + 1, parent=TOKENS[parent[pos]],
@@ -484,6 +536,7 @@ def main(argv=None):
         candidate_substitutions_considered=len(margins),
         designable_positions=int(n_designable),
         **concentration,
+        **tie,
         interpretation=(
             "Discrete start for the population search, projected onto the edit "
             "budget from a continuous stage that does not enforce one. The "

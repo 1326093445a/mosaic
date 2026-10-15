@@ -709,6 +709,21 @@ for spec in specs:
             f"{d['candidate_substitutions_considered']} wanted")
     if margins:
         print(f"{head}   margins {min(margins):.3f}-{max(margins):.3f}")
+        # A tie across the cut means the kept set was chosen by the sort's
+        # fall-through -- position index, descending -- and not by the
+        # relaxation. A saturated run ties completely, and then every
+        # replicate hands over the same five positions (section 32.5).
+        discarded = d.get("projection_tied_discarded")
+        if discarded:
+            print(f"      TIED AT THE CUT: {d['projection_tied_group']} "
+                  f"candidates share the margin of the last kept one and "
+                  f"{discarded} of them were discarded by position index, not "
+                  f"by the optimisation. These five edits are an arbitrary "
+                  f"member of that group, and every replicate picks the SAME "
+                  f"one, so they are not independent draws.")
+        elif d.get("projection_margin_gap_at_cut") == 0.0:
+            print("      the cut sits on a zero margin gap; see "
+                  "projection_tied_group in the JSON")
     else:
         # 0 wanted has two causes and the argmax cannot separate them: the
         # anchored start already has the parent on top everywhere, so a

@@ -1138,3 +1138,90 @@ def test_main_actually_records_the_fields_the_gate_reads():
         "unattributable between a converged relaxation and a frozen one, "
         "which is what section 32 could not resolve for apgm"
     )
+
+
+# --- projection_tie_at_cut: the ranking that is not a ranking ---------------
+#
+# §32.5. `project_to_budget`'s docstring claimed the kept edits are the ones
+# the relaxation pushed hardest for "not an arbitrary subset". Under a tie that
+# is false: the tuple sort falls through to position index, descending. The
+# 2026-10-15 `apgm` noise probe hit it exactly -- 26 wanted at margins
+# 1.000-1.000, five handed over, all of them 105-109.
+
+
+def test_a_saturated_relaxation_hands_over_the_highest_numbered_positions(seeder):
+    """The defect itself, pinned so a tie-break change is a visible decision."""
+    cdr = [26, 27, 28, 29, 30, 31, 32, 33, 51, 52, 53, 54, 55, 56, 57, 58,
+           97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109]
+    designable = np.array([p - 1 for p in cdr])
+    rng = np.random.default_rng(0)
+    parent = rng.integers(0, 20, size=123).astype(np.int32)
+    relaxed = np.zeros((123, 20))
+    relaxed[np.arange(123), parent] = 1.0
+    for pos in designable:                      # a vertex, on a non-parent residue
+        relaxed[pos] = 0.0
+        relaxed[pos, (parent[pos] + 1) % 20] = 1.0
+
+    _tokens, margins, kept = seeder.project_to_budget(
+        relaxed, parent, designable, 5)
+    assert len(margins) == len(cdr), "a vertex everywhere wants every position"
+    assert {round(m, 9) for m, _, _ in margins} == {1.0}
+    assert sorted(p + 1 for _, p, _ in kept) == cdr[-5:] == [105, 106, 107, 108, 109]
+
+
+def test_the_tie_is_measured_rather_than_left_silent(seeder):
+    tied = [(1.0, p, 3) for p in range(26)]
+    report = seeder.projection_tie_at_cut(tied, 5)
+    assert report["projection_tied_group"] == 26
+    assert report["projection_tied_discarded"] == 21
+    assert report["projection_margin_gap_at_cut"] == 0.0
+
+
+def test_distinct_margins_report_no_tie(seeder):
+    """Today's `bindcraft` and `colabdesign` shape: 15 wanted, margins apart."""
+    distinct = [(0.70 + 0.01 * i, i, 3) for i in range(15)]
+    report = seeder.projection_tie_at_cut(distinct, 5)
+    assert report["projection_tied_discarded"] == 0
+    assert report["projection_tied_group"] == 1
+    assert report["projection_margin_gap_at_cut"] == pytest.approx(0.01)
+
+
+def test_nothing_discarded_means_no_tie_to_report(seeder):
+    """Fewer wanted than the budget: the cut does not exist."""
+    report = seeder.projection_tie_at_cut([(0.9, 1, 3), (0.8, 2, 3)], 5)
+    assert report["projection_tied_discarded"] == 0
+    assert report["projection_margin_gap_at_cut"] is None
+    assert seeder.projection_tie_at_cut([(0.9, 1, 3)], 0)[
+        "projection_margin_gap_at_cut"] is None
+
+
+def test_a_near_tie_is_a_number_not_a_verdict(seeder):
+    """The gap is reported; no threshold decides what counts as "near".
+
+    A cut 1e-9 apart is as arbitrary as an exact tie in practice, but picking
+    the tolerance that says so is a judgement this code does not get to make
+    on the reader's behalf.
+    """
+    near = [(1.0, 0, 3), (1.0, 1, 3), (1.0, 2, 3), (1.0, 3, 3),
+            (1.0, 4, 3), (1.0 - 1e-9, 5, 3)]
+    report = seeder.projection_tie_at_cut(near, 5)
+    assert report["projection_tied_discarded"] == 0, "not an exact tie"
+    assert 0.0 < report["projection_margin_gap_at_cut"] < 1e-5
+
+
+def test_the_tie_fields_reach_the_record(seeder):
+    """Same structural check as the concentration fields: `main()` writes them."""
+    import ast
+
+    tree = ast.parse((REPO / "examples" / "p17_continuous_seed.py").read_text())
+    main = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "main")
+    dumps = [n for n in ast.walk(main)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "dumps"]
+    record = next(a for a in dumps[0].args if isinstance(a, ast.Call))
+    starred = [k for k in record.keywords if k.arg is None]
+    names = {k.value.id for k in starred if isinstance(k.value, ast.Name)}
+    assert names == {"concentration", "tie"}, (
+        f"main() no longer records both diagnostic groups: {names}"
+    )
