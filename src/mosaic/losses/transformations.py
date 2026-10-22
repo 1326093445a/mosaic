@@ -1,4 +1,3 @@
-# Simple transformations of loss functions
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Bool, Float, Int
@@ -21,7 +20,6 @@ class NoCys(LossTerm):
     @staticmethod
     def sequence(seq: Float[Array, "N 19"]):
         cys_idx = TOKENS.index("C")
-        # reinsert cys
         full_seq = jnp.concatenate(
             [seq[:, :cys_idx], jnp.zeros((*seq.shape[:-1], 1)), seq[:, cys_idx:]],
             axis=-1,
@@ -76,14 +74,6 @@ class ClippedLoss(LossTerm):
         return v.clip(self.l, self.u), {"": aux, self.name: v.clip(self.l, self.u)}
 
 
-# Generic tools for fixing positions in a binder sequence
-# Note: if you're finetuning an existing binder you might want to (additionally)
-#  - If you're using Boltz: use a binder sequence (instead of all "X"'s) to generate features
-#  - If using AF2: set the wildtype complex as the initial guess (maybe, this hasn't been tested)
-#  - Add additional loss functions to constrain the design to be close to the wildtype (if you have a complex):
-#    - ProteinMPNN inverse folding for the complex
-#    - Some kind of distance metric on the predicted complex structure, e.g. DistogramCE
-#
 class SetPositions(LossTerm):
     """Precomposes loss functional with function that maps a soft sequence of ONLY VARIABLE positions to a full binder sequence to eliminate constraints/penalties.
     WARNING: Be sure to call `sequence` *after* optimization, e.g. `loss.sequence(jax.nn.softmax(logits))`."""

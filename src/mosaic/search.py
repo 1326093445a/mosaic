@@ -25,12 +25,6 @@ class SearchConfig:
     target_entropy: float = 0.6
     acceptance_temperature: float = 0.02
     seed: int = 0
-    # Positions a single proposal may change at once. 1 is the operator every
-    # recorded result used and keeps `_moves` as the generator verbatim, so the
-    # RNG stream is unchanged. 2 adds every feasible position-disjoint pair,
-    # which lets the search cross a valley whose midpoint the accept test would
-    # reject -- see `_multi_moves` for why that is the mechanism and why the
-    # first-order ranking still cannot see synergy.
     move_arity: int = 1
 
     def __post_init__(self):
@@ -288,8 +282,6 @@ def _proposal_distribution(deltas, target_entropy):
 def _competitor(active, candidate, parent_slot, policy):
     if policy == "independent":
         return parent_slot
-    # Fill initial duplicate slots before imposing local competition. Keep one
-    # copy of each incumbent, including the current global elite.
     seen = set()
     for slot, incumbent in enumerate(active):
         if incumbent.sequence in seen:
@@ -298,7 +290,6 @@ def _competitor(active, candidate, parent_slot, policy):
     distances = [
         sum(a != b for a, b in zip(c.sequence, candidate.sequence)) for c in active
     ]
-    # At equal distance, challenge the worse incumbent first.
     return min(
         range(len(active)), key=lambda i: (distances[i], active[i].retention_key, i)
     )
@@ -463,9 +454,6 @@ def run_gradient_search(
                 gradient_calls=stats["gradient_calls"],
             )
         if config.move_arity == 1:
-            # `_moves` verbatim, so the move order -- and therefore the RNG
-            # stream -- is identical to every result recorded before the
-            # multi-position operator existed.
             moves, deltas = _moves(
                 sequence, wt, mask, config.edit_budget, gradients[parent.id]
             )
@@ -475,20 +463,11 @@ def run_gradient_search(
                 sequence, wt, mask, config.edit_budget,
                 gradients[parent.id], config.move_arity,
             )
-            # The singles are the prefix, so the saliency map stays the same
-            # per-(position, residue) object at any arity rather than becoming
-            # a map over move combinations.
             saliency_moves = [
                 (position, residue, -1) for ((position, residue),) in moves[:single_count]
             ]
             saliency_deltas = deltas[:single_count]
         if on_saliency is not None and saliency_moves:
-            # Per-(position, residue) first-order delta loss, which the search
-            # computes at every step and otherwise discards -- only the chosen
-            # move survives into the event log. Persisting it gives a saliency
-            # map over the designable positions, which cannot be recovered
-            # after the fact. A Taylor-1 delta over a nonlinear loss shows
-            # where the gradient points, not why a residue is good there.
             on_saliency(
                 candidate_id=parent.id,
                 sequence=sequence.copy(),
@@ -553,10 +532,6 @@ def run_gradient_search(
             duplicate=duplicate,
             filling=bool(filling),
             move=list(moves[move_index]),
-            # How many positions this one proposal changed. At arity 1 it is 1,
-            # or 2 for an exchange at the cap; at arity 2 it separates the pair
-            # moves from the singles in the same log, which is what tells you
-            # whether the operator was actually used rather than merely offered.
             move_positions=len(edits),
             predicted_loss_delta=float(deltas[move_index]),
             entropy=entropy,

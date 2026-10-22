@@ -65,28 +65,12 @@ from mosaic.structure_prediction import TargetChain
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPLEX_CIF = REPO_ROOT / "vhh72_wt_wt_rbd.cif"
 
-# Same ANARCI-verified, 1-indexed CDR boundaries used throughout this
-# project (examples/anarci_vhh72_cdr_boundaries.py, examples/crop_vhh72_wt_rbd.py).
 CDR_RESIDUE_INDICES_1IDX = set(range(26, 34)) | set(range(51, 59)) | set(range(97, 115))
 
-# Defaults, held fixed for this round (docs/guidance_alphaseq_testing_notes.md
-# section 12c's "class 2/3 knobs held fixed, sweep class 1" framing) --
-# matching the values already used/verified elsewhere in this project.
 WEIGHT_OPENDDE_CONTACT = 0.5
 WEIGHT_ABLANG2 = 0.10
 WEIGHT_EDIT_BUDGET = 5.0
 CONTACT_DISTANCE = 8.0
-# BinderPoseDistogramDrift's tolerance is NOT a fixed absolute Angstrom
-# value -- calibrated at runtime as measure_wt_pose_drift() + this margin.
-# A fixed absolute tolerance (originally 2.0A) was wrong: OpenDDE's cheap
-# distogram-only path (trunk + distogram head, no diffusion sampling) has
-# real, substantial inherent noise even on the true WT structure -- measured
-# directly at ~13A, not near zero (see docs/guidance_alphaseq_testing_notes.md
-# section 13/9c on this path's confidence). The hinge should fire on
-# ADDITIONAL drift a candidate introduces beyond that baseline, not on the
-# baseline itself. This margin is a first-pass choice, not derived from
-# anything -- tune against real results, same caveat as every other
-# first-pass default in this project.
 POSE_DRIFT_MARGIN = 3.0
 POSE_RMSD_MARGIN = 3.0
 CLIP_GRADIENT_NORM = 1.0
@@ -94,8 +78,8 @@ OPENDDE_RECYCLING_STEPS = 4
 OPENDDE_FULL_NUM_SAMPLES = 1
 APGM_STEPS = 200
 APGM_STEPSIZE = 0.05
-APGM_SCALE = 1.2  # >1.0 encourages sparsity, per simplex_APGM's own docstring
-APGM_INIT_WT_PROB = 1.0  # exact one-hot WT unless explicitly softened
+APGM_SCALE = 1.2
+APGM_INIT_WT_PROB = 1.0
 APGM_MOMENTUM = 0.5
 GREEDY_STEPS = 200
 GREEDY_BATCH_SIZE = 16
@@ -237,11 +221,6 @@ def measure_wt_distogram_pose_drift(*, opendde, features, reference_distances,
     )
     x_wt = seq_to_one_hot(binder_seq)
     _, aux = probe(x_wt, key=key)
-    # ClippedGradient/DistogramOnlyOpenDDELoss both pass their wrapped
-    # loss's (value, aux) straight through unmodified -- probe wraps only
-    # BinderPoseDistogramDrift (a single term, not a LinearCombination), so
-    # aux is exactly its own plain dict, verified directly against the
-    # smoke test's printed aux structure before writing this.
     return float(aux["binder_target_distogram_drift"])
 
 

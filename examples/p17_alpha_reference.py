@@ -23,17 +23,10 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
 
-# Verified against the files themselves, not assumed from the PDB entry:
-# Alpha chain A is the 195-residue Alpha RBD and chain B the 123-residue P17
-# binder, whose sequence is byte-identical to P17_JN1.pdb chain B -- so the
-# CDR mask in `p17_hallucination_search` transfers with no renumbering. Chain
-# C holds only NAG/FUC and is dropped.
 ALPHA_COMPLEX = REPO / "P17_Alpha.pdb"
 ALPHA_BINDER_CHAIN = "B"
 ALPHA_TARGET_CHAIN = "A"
 
-# Adjacent-CA spacing accepted by the reference audit, matching the bounds the
-# WT validator already applies. A unit/gap sanity check, not proof of validity.
 CA_SPACING_RANGE_A = (2.5, 4.5)
 
 
@@ -204,12 +197,6 @@ def ca_distance_matrix(binder_ca, target_ca):
     )
 
 
-# Damage generation ----------------------------------------------------------
-#
-# The control's logic: destroy the binder's CDRs until OpenDDE's confidence
-# falls into the non-binding regime, then measure whether the gradient climbs
-# back. A solution is guaranteed to exist in the feasible set, because the
-# undamaged sequence is in it.
 
 AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
 
@@ -249,8 +236,6 @@ def damage_sequence(sequence, designable_idx, n_edits, seed, *, forbid_wt=False)
         wt_residue = residues[position]
         choices = [a for a in AMINO_ACIDS if a != wt_residue]
         if forbid_wt:
-            # Nothing further to exclude: `choices` already omits WT. Kept
-            # explicit so the flag's meaning is visible at the call site.
             pass
         new_residue = choices[int(rng.integers(len(choices)))]
         residues[position] = new_residue
@@ -369,11 +354,6 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-# Decoy targets --------------------------------------------------------------
-#
-# The negative control the design lacked (docs/P17_JN1.md section 20.11 item 1):
-# every control so far asks whether a solution exists, none asks whether the
-# pipeline would report success against a target it should fail on.
 
 
 def epitope_scrambled_target(sequence, epitope_idx, seed):

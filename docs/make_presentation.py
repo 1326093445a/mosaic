@@ -28,8 +28,6 @@ INK, INK_SOFT, INK_FAINT = "#15191e", "#4d5760", "#7d878f"
 RULE, ACCENT, ACCENT_DIM = "#cfd6dd", "#2f5d82", "#8fa9bf"
 NULL, PASS, BAND = "#9c4a35", "#3f6b54", "#dde6ec"
 
-# Per-candidate mean iRMSD, from the two runs' capri.csv (WT excluded), and the
-# unmodified start scored separately in each cell.
 CELLS = {
     "bindcraft5": [3.38, 6.97, 7.01, 7.2, 7.33, 7.34, 7.37, 7.4, 7.64, 8.22, 8.46,
                    13.82, 13.92, 15.47, 16.02, 16.38, 19.27, 21.03, 24.04, 24.22],
@@ -67,7 +65,6 @@ def irmsd_figure(path: Path) -> None:
         y = len(ROWS) - 1 - r
         vals = np.array(CELLS[key])
         ax.axhline(y, color=RULE, lw=0.8, zorder=2)
-        # fan overlapping marks so the band's density is countable
         placed = []
         for v in np.sort(vals):
             dy = 0.0

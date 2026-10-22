@@ -16,7 +16,6 @@ def compare(monkeypatch):
 
 
 def test_exact_quadratic_directional_derivative(compare):
-    # f(x)=x*x, x=2; symmetric differences give f'(2)=4 exactly.
     eps = 0.125
     result = compare([4, 4], [(2 + eps) ** 2] * 3, [(2 - eps) ** 2] * 3, [4, 4, 4], eps)
     assert result["finite_difference_mean"] == pytest.approx(4)
@@ -110,8 +109,6 @@ def test_float32_identity_nonoverlap_is_not_a_correctness_verdict(compare):
 
 
 def test_final_scalar_resolution_does_not_exclude_internal_rounding(compare):
-    # Exactly representable BF16 values after rounding 1 +/- 0.01, then
-    # converting back to FP32. The final-scalar ULP misses this quantization.
     result = compare([1] * 3, [1.0078125] * 3, [0.98828125] * 3, [1] * 3, 0.01)
     assert result["signal_exceeds_3x_observed_resolution"]
     assert result["finite_difference_mean"] == 0.9765625
@@ -156,7 +153,6 @@ def test_batch_completion_is_separate_from_validation(
         def poll(self):
             return exit_code
 
-    # Exercise parent reporting only; no model or checkpoint is loaded.
     monkeypatch.setattr(audit.subprocess, "Popen", FinishedWorker)
     output = tmp_path / "audit"
     monkeypatch.setattr(sys, "argv", ["audit", "--cpu", "--output", str(output)])

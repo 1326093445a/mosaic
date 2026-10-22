@@ -66,7 +66,7 @@ COMPLEXES = [
         "pdb": REPO_ROOT / "P17_Alpha.pdb",
         "binder_chain": "B",
         "target_chain": "A",
-        "epitope_idx": None,  # JN.1 hotspot numbering doesn't map onto Alpha's target
+        "epitope_idx": None,
     },
     {
         "name": "P17_vs_JN1",
@@ -170,7 +170,7 @@ def main():
 
         features, _ = opendde.binder_features(
             len(binder_seq), [TargetChain(target_seq, use_msa=False)]
-        )  # template_chain left unset -> no template
+        )
 
         contact_loss = BinderTargetContact(
             paratope_idx=designable_idx, contact_distance=CONTACT_DISTANCE,

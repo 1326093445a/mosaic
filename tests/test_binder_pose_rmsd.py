@@ -41,14 +41,14 @@ def _random_rigid(key, coords):
     k1, k2 = jax.random.split(key)
     A = jax.random.normal(k1, (3, 3))
     Q, _ = jnp.linalg.qr(A)
-    Q = Q * jnp.sign(jnp.linalg.det(Q))  # ensure proper rotation, det=+1
+    Q = Q * jnp.sign(jnp.linalg.det(Q))
     t = jax.random.normal(k2, (3,)) * 5.0
     return coords @ Q + t
 
 
 REFERENCE = jnp.array(np.random.RandomState(0).randn(N, 3) * 3.0)
 REFERENCE_BINDER, REFERENCE_TARGET = REFERENCE[:N_BINDER], REFERENCE[N_BINDER:]
-SEQUENCE = jnp.zeros((N_BINDER, 20))  # only sequence.shape[0] (binder_len) is used
+SEQUENCE = jnp.zeros((N_BINDER, 20))
 
 
 def test_zero_when_pose_exactly_matches_reference():
@@ -60,11 +60,6 @@ def test_zero_when_pose_exactly_matches_reference():
 
 
 def test_invariant_to_rigid_transform_of_whole_complex():
-    # The key correctness property: if the model just outputs the entire
-    # predicted complex in some arbitrary frame (a real, expected behavior,
-    # not a bug), target-alignment must cancel it out completely -- this is
-    # exactly why alignment happens on the target, not skipped, and not
-    # done over the whole complex.
     transformed = _random_rigid(jax.random.key(0), REFERENCE)
     loss_fn = BinderPoseRMSD(REFERENCE_BINDER, REFERENCE_TARGET, rmsd_tolerance=2.0)
     output = _make_output(transformed)
@@ -74,14 +69,13 @@ def test_invariant_to_rigid_transform_of_whole_complex():
 
 
 def test_within_tolerance_is_exactly_zero():
-    # Perturb only the binder (post target-alignment) by less than tolerance.
-    small_shift = REFERENCE_BINDER + jnp.ones((N_BINDER, 3)) * 0.5  # small, uniform nudge
+    small_shift = REFERENCE_BINDER + jnp.ones((N_BINDER, 3)) * 0.5
     coords = jnp.concatenate([small_shift, REFERENCE_TARGET], axis=0)
     loss_fn = BinderPoseRMSD(REFERENCE_BINDER, REFERENCE_TARGET, rmsd_tolerance=2.0)
     output = _make_output(coords)
     violation, aux = loss_fn(SEQUENCE, output, key=None)
-    assert float(aux["binder_pose_rmsd"]) > 0.0  # real drift happened
-    assert float(violation) == pytest.approx(0.0, abs=1e-4)  # but hinge stays at 0
+    assert float(aux["binder_pose_rmsd"]) > 0.0
+    assert float(violation) == pytest.approx(0.0, abs=1e-4)
 
 
 def test_beyond_tolerance_grows_linearly_and_matches_hinge_exactly():
@@ -106,7 +100,7 @@ def test_gradient_is_zero_within_tolerance_and_nonzero_beyond_it():
         v, _ = loss_fn(SEQUENCE, output, key=None)
         return v
 
-    grad_small = jax.grad(loss_of_binder_shift)(0.1)  # well within 2.0 tolerance
-    grad_large = jax.grad(loss_of_binder_shift)(5.0)  # well beyond tolerance
+    grad_small = jax.grad(loss_of_binder_shift)(0.1)
+    grad_large = jax.grad(loss_of_binder_shift)(5.0)
     assert float(grad_small) == pytest.approx(0.0, abs=1e-5)
     assert float(grad_large) > 0.0

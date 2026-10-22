@@ -1,4 +1,3 @@
-# Note we use a vanilla ODE sampler for the structure module by default!
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -43,7 +42,6 @@ install_protenix_msa_auth_fix()
 def load_model(name="protenix_mini_default_v0.5.0"):
     protenix_backend._CACHE_DIR = str(cache_dir() / "protenix")
     jax_model = protenix_backend.load_model(name)
-    # set gamma0, step_scale_eta, and N_steps to match the vanilla ODE sampler settings
     jax_model = eqx.tree_at(lambda m: (m.gamma0, m.step_scale_eta, m.noise_scale_lambda, m.N_steps), jax_model, (0.0, 1.0, 1.0, 20))
 
     return jax_model

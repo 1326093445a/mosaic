@@ -56,7 +56,6 @@ def main():
             writer.writerow(row)
     print(f"wrote combined CSV: {args.output_csv}", flush=True)
 
-    # Quick summary: best (lowest) total_loss per seed at the max edit_count.
     by_seed = {}
     for r in rows:
         by_seed.setdefault(r["seed"], []).append(r)

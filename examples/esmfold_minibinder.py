@@ -70,7 +70,6 @@ def _():
 def _(ESMFold2ExperimentalFast, ESMFold2ExperimentalFast2025, eqx, load_esmc):
     model_0 = ESMFold2ExperimentalFast()
     model_1 = ESMFold2ExperimentalFast2025()
-    # remove esmc models
     model_0 = eqx.tree_at(lambda m: m.esmc, model_0, None)
     model_1 = eqx.tree_at(lambda m: m.esmc, model_1, None)
 
@@ -81,9 +80,6 @@ def _(ESMFold2ExperimentalFast, ESMFold2ExperimentalFast2025, eqx, load_esmc):
 @app.cell
 def _(ESMFold2ExperimentalFast2025, eqx, esmc):
     validation_model = ESMFold2ExperimentalFast2025()
-    # Dedup ESMC: drop this model's own copy and share the single loaded esmc_6b
-    # (same weights model_0/model_1 use for design) rather than holding a second
-    # ~24GB copy resident -- that duplicate is what OOMs the final predict.
     validation_model = eqx.tree_at(lambda m: m.esmc, validation_model, None)
     validation_model = eqx.tree_at(
         lambda m: m.esmc, validation_model, esmc, is_leaf=lambda l: l is None
@@ -142,7 +138,6 @@ def _(
                 features=features,
                 recycling_steps=1,
                 msa_max_depth=1024,
-                # geom + LM refresh are tied to the (design) features from binder_features.
                 lm_dropout=0.5,
             )
             for model in (model_0, model_1)
@@ -155,7 +150,7 @@ def _(
 
 @app.cell
 def _():
-    B = 4  # batch: parallel designs from different inits
+    B = 4
     return (B,)
 
 
@@ -197,7 +192,6 @@ def _(
                 features=features,
                 recycling_steps=1,
                 msa_max_depth=1024,
-                # geom + LM refresh are tied to the (design) features from binder_features.
                 lm_dropout=0.5,
             )
             for model in (model_0, model_1)

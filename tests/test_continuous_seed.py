@@ -15,7 +15,6 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 
-# The real designable geometry: CDR_RESIDUE_INDICES_1IDX, 29 positions.
 N_DESIGNABLE = 29
 BUDGET = 5
 
@@ -37,13 +36,11 @@ def relaxed_at_parent(parent, n_tokens=20):
     return relaxed
 
 
-# --- project_to_budget -----------------------------------------------------
 
 
 def test_projection_never_exceeds_the_budget_however_many_edits_are_wanted(seeder):
     parent = np.zeros(12, dtype=np.int32)
     designable = np.arange(10)
-    # Every designable position prefers a non-parent residue by a wide margin.
     relaxed = relaxed_at_parent(parent)
     for pos in designable:
         relaxed[pos] = 0.0
@@ -58,7 +55,6 @@ def test_projection_keeps_the_highest_margin_substitutions(seeder):
     parent = np.zeros(6, dtype=np.int32)
     designable = np.arange(6)
     relaxed = np.zeros((6, 20), dtype=np.float32)
-    # Position p prefers residue 1 with margin (p + 1) / 10.
     for pos in range(6):
         relaxed[pos, 0] = 0.0
         relaxed[pos, 1] = (pos + 1) / 10.0
@@ -76,8 +72,8 @@ def test_projection_ranks_by_margin_not_by_absolute_probability(seeder):
     parent = np.zeros(2, dtype=np.int32)
     designable = np.arange(2)
     relaxed = np.zeros((2, 20), dtype=np.float32)
-    relaxed[0, 0], relaxed[0, 1] = 0.45, 0.50   # high mass, margin 0.05
-    relaxed[1, 0], relaxed[1, 1] = 0.05, 0.40   # lower mass, margin 0.35
+    relaxed[0, 0], relaxed[0, 1] = 0.45, 0.50
+    relaxed[1, 0], relaxed[1, 1] = 0.05, 0.40
     _, _, kept = seeder.project_to_budget(relaxed, parent, designable, 1)
     assert [pos for _, pos, _ in kept] == [1]
 
@@ -101,7 +97,7 @@ def test_projection_leaves_non_designable_positions_at_the_parent(seeder):
     parent = np.zeros(8, dtype=np.int32)
     designable = np.array([1, 3])
     relaxed = np.zeros((8, 20), dtype=np.float32)
-    relaxed[:, 5] = 1.0  # every position, designable or not, prefers residue 5
+    relaxed[:, 5] = 1.0
     tokens, _, _ = seeder.project_to_budget(relaxed, parent, designable, BUDGET)
     assert tokens[1] == 5 and tokens[3] == 5
     untouched = [i for i in range(8) if i not in (1, 3)]
@@ -128,7 +124,6 @@ def test_projection_does_not_mutate_the_parent_array(seeder):
     assert np.array_equal(parent, before)
 
 
-# --- anchored_logits -------------------------------------------------------
 
 
 def softmax(x):
@@ -201,14 +196,6 @@ def test_anchored_logits_rejects_mismatched_noise(seeder):
         seeder.anchored_logits(parent, np.arange(10), 5.0, np.zeros((9, 20)))
 
 
-# --- single budget accounting ----------------------------------------------
-#
-# The seeding stage and the search each enforce `edit_budget`, so unless they
-# share an anchor a 5-edit seed followed by a 5-edit search drifts 10 from the
-# parent. `--budget-anchor reference` in `examples/p17_confidence_search.py`
-# shares it by passing the parent as `wt` and the seed as `initial_sequences`.
-# These checks exercise that wiring against `mosaic.search` directly, since the
-# harness itself needs a model.
 
 
 def run_anchored(wt, initial, budget, steps=400):
@@ -228,7 +215,6 @@ def run_anchored(wt, initial, budget, steps=400):
 
     def gradient(sequence):
         seen.append(np.array(sequence))
-        # Reward moving away from the parent, so the budget is the only brake.
         g = -np.tile(np.arange(alphabet, dtype=float), (len(wt), 1))
         return -float(np.count_nonzero(sequence != wt)), g
 
@@ -251,7 +237,7 @@ def test_anchoring_to_the_parent_shares_one_budget_with_the_seeding_stage():
     """A seed that already spent 3 of 5 edits leaves the search 2, not 5."""
     parent = np.zeros(10, dtype=int)
     seed = parent.copy()
-    seed[:3] = 1  # three edits already spent by the producer
+    seed[:3] = 1
     result, seen = run_anchored(parent, seed, budget=5)
 
     drift = [int(np.count_nonzero(s != parent)) for s in seen]
@@ -276,19 +262,11 @@ def test_anchoring_to_the_seed_instead_permits_double_the_drift():
 def test_a_seed_over_the_shared_budget_is_rejected_rather_than_silently_capped():
     parent = np.zeros(10, dtype=int)
     seed = parent.copy()
-    seed[:6] = 1  # six edits against a budget of five
+    seed[:6] = 1
     with pytest.raises(ValueError, match="edit budget"):
         run_anchored(parent, seed, budget=5)
 
 
-# --- the optimizers themselves ---------------------------------------------
-#
-# The 2026-10-06 seeding cells completed all 125 optimization steps and then
-# died unpacking the optimizer's return value, so the stage has never produced
-# a sequence. These run all three optimizers end to end on a CPU-sized loss
-# with the anchored start, which covers everything in the seeding stage except
-# loading OpenDDE: the init, each optimizer's own return convention, the
-# `relaxed_array` guard, and the projection onto the budget.
 
 
 @pytest.fixture(scope="module")
@@ -351,7 +329,6 @@ def test_every_optimizer_returns_a_usable_relaxed_sequence(seeder, toy_loss, met
     )
     assert np.isfinite(relaxed).all(), f"{method} produced non-finite values"
 
-    # The hand-off: project onto the budget and check it is a usable sequence.
     tokens, margins, kept = seeder.project_to_budget(
         relaxed, parent, designable, BUDGET
     )
@@ -369,13 +346,6 @@ def test_relaxed_array_handles_both_return_conventions(seeder):
     assert seeder.relaxed_array(pair) is pair[0]
 
 
-# --- the 2026-10-13 defaults -----------------------------------------------
-#
-# Seven replicates of three methods returned 0, 0, 0, 0, 1, 1 and 2 edits on a
-# budget of 5, and at 0 the argmax was still the parent at all 29 designable
-# positions. These pin each of the four causes separately, because none of the
-# four fixes is sufficient alone and a regression in any one of them would look
-# like the same silent null.
 
 
 def seeder_defaults(seeder):
@@ -594,8 +564,6 @@ def test_stochastic_hard_draws_a_one_hot_that_is_not_always_the_argmax():
     }
     assert len(picks) > 1, "sampling produced the same draw every time"
     assert picks != {argmax_pick}, "sampling only ever reproduced the argmax"
-    # Whatever produced it, the predictor must still be shown a one-hot: that
-    # is the entire reason for the hard branch.
     for name, seq in (("argmax", deterministic),
                       ("sampled", _colabdesign_transform(
                           z, one, one, one, jax.random.key(0)))):
@@ -605,34 +573,6 @@ def test_stochastic_hard_draws_a_one_hot_that_is_not_always_the_argmax():
             )
 
 
-# --- behaviour, through the code `main()` actually runs --------------------
-#
-# Measured 2026-10-13 on this toy loss (a quadratic pull to a random target plus
-# a real `EditBudget` hinge), 29 designable positions, budget 5, through
-# `run_relaxation` at its PRODUCTION optimizer settings. "wanted" is the number
-# of positions whose preferred residue differs from the parent --
-# `candidate_substitutions_considered` in the seed JSON -- and is the useful
-# readout, because `edits` is capped at the budget and hides everything above it.
-#
-#   24 steps        scale 1.0            scale 5.0
-#     hinge 5.0     0 wanted (all)       0 wanted (all)
-#     hinge 0.0     21 / 20 / 28         0 wanted (ALL THREE)
-#
-#   125 steps       scale 1.0            scale 5.0
-#     hinge 5.0     0 / 5 / 4            0 / 4 / 9
-#     hinge 0.0     21 / 26 / 28         0 / 27 / 28
-#                   (apgm / bindcraft / colabdesign)
-#
-# Two things follow, and an earlier version of these tests got both wrong by
-# passing apgm settings of its own (0.1/0.9/1.0) while main() passed
-# 0.05/0.5/1.2:
-#
-#   - The hinge is NECESSARY but NOT SUFFICIENT. Switching it off moves all
-#     three methods only when the init scale is also 1.0.
-#   - At scale 5.0 and 24 steps NOTHING moves in either arm, and simplex_APGM
-#     never moves at scale 5.0 at all. So a zero in both arms does not implicate
-#     the loss; it is also what these settings produce on a loss with no model
-#     in it.
 
 @pytest.fixture(scope="module")
 def toy_problem():
@@ -689,8 +629,6 @@ def relax(seeder, toy_problem, method, *, steps, scale, hinge):
     return int((tokens != parent).sum()), len(margins)
 
 
-# apgm moves inside 24 steps; the logit-space methods need the longer budget the
-# real run gives them, so the contrast is measured where both arms can move.
 _STEPS = {"apgm": 24, "bindcraft": 125, "colabdesign": 125}
 
 
@@ -793,8 +731,6 @@ def test_the_init_scale_sets_the_speed_for_the_logit_space_methods(
     )
 
 
-# Shorter than the contrast tests above: at scale 1.0 with the hinge off, the
-# logit-space methods have already moved by 40 steps.
 _SHIPPED_STEPS = {"apgm": 24, "bindcraft": 40, "colabdesign": 40}
 
 
@@ -834,11 +770,9 @@ def test_a_degenerate_start_is_refused_rather_than_frozen():
         with pytest.raises(ValueError, match="could not be calibrated"):
             _calibrate_logit_norm_scale(x)
 
-    # and what it was doing instead: wiping a real update to exactly zero
     stepped = jnp.zeros((5, 20)).at[2, 3].set(0.27)
     assert float(jnp.abs(_layer_norm_logits(stepped, 0.0)).max()) == 0.0
 
-    # a start with a real spread still calibrates
     anchored = jnp.zeros((5, 20)).at[:, 0].set(1.0)
     anchored = anchored - anchored.mean(-1, keepdims=True)
     gamma = _calibrate_logit_norm_scale(anchored)
@@ -884,7 +818,6 @@ def test_gamma_bounds_the_aggregate_spread_not_each_row():
         "but concentrating in one row reaches high confidence at the SAME gamma "
         "-- which is why the per-row cap claim was wrong"
     )
-    # and the global deviation is gamma in both cases, which is the invariant
     for x in (every_row, one_row):
         z = _layer_norm_logits(jnp.asarray(x, dtype=jnp.float32), gamma)
         assert abs(float(jnp.std(z)) - gamma) < 1e-3
@@ -979,31 +912,21 @@ def test_the_seeder_does_not_pay_for_a_best_iterate_it_discards(
     assert not calls, f"the seeder paid for {len(calls)} discarded evaluations"
 
 
-# --- relaxed_concentration: separating "converged" from "never moved" ------
-#
-# `project_to_budget` reports an argmax, and on the shipped anchored start the
-# parent is already the argmax at all 29 designable positions before the first
-# step. So `candidate_substitutions_considered == 0` has two causes with
-# opposite meanings, and until 2026-10-14 the seed JSON recorded nothing that
-# told them apart -- which is exactly the question the real-loss run of that
-# date left open for `apgm` (section 32).
 
 
 def test_concentration_separates_a_converged_relaxation_from_an_untouched_one(seeder):
     parent = np.arange(N_DESIGNABLE, dtype=np.int32) % 20
 
     converged = relaxed_at_parent(parent)
-    converged = 0.98 * converged + 0.02 / 20  # not a vertex, but decided
+    converged = 0.98 * converged + 0.02 / 20
     moved = seeder.relaxed_concentration(converged, parent)
 
     untouched = softmax(seeder.anchored_logits(
         parent, np.arange(N_DESIGNABLE), 1.0, np.zeros((N_DESIGNABLE, 20))))
     still = seeder.relaxed_concentration(untouched, parent)
 
-    # Both report 0 wanted substitutions: the parent is the argmax in both.
     assert (converged.argmax(-1) == parent).all()
     assert (untouched.argmax(-1) == parent).all()
-    # Only the concentration separates them.
     assert moved["relaxed_peak_probability_mean"] > 0.9
     assert still["relaxed_peak_probability_mean"] == pytest.approx(0.125, abs=5e-3)
 
@@ -1031,7 +954,7 @@ def test_concentration_reports_the_parent_mass_separately_from_the_peak(seeder):
     """A relaxation can be decided and not be at the parent; both are recorded."""
     parent = np.zeros(N_DESIGNABLE, dtype=np.int32)
     relaxed = np.full((N_DESIGNABLE, 20), 0.01 / 19, dtype=np.float64)
-    relaxed[:, 7] = 0.99          # decided, and not on the parent
+    relaxed[:, 7] = 0.99
     c = seeder.relaxed_concentration(relaxed, parent)
     assert c["relaxed_peak_probability_mean"] == pytest.approx(0.99, abs=1e-6)
     assert c["relaxed_parent_probability_mean"] == pytest.approx(0.01 / 19, abs=1e-6)
@@ -1060,7 +983,7 @@ def test_the_minimum_peak_is_reported_not_only_the_mean(seeder):
     parent = np.zeros(N_DESIGNABLE, dtype=np.int32)
     relaxed = np.full((N_DESIGNABLE, 20), 0.01 / 19, dtype=np.float64)
     relaxed[:, 3] = 0.99
-    relaxed[0] = 1.0 / 20                      # one row still uniform
+    relaxed[0] = 1.0 / 20
     c = seeder.relaxed_concentration(relaxed, parent)
     assert c["relaxed_peak_probability_mean"] > 0.95
     assert c["relaxed_peak_probability_min"] == pytest.approx(0.05, abs=1e-6)
@@ -1140,13 +1063,6 @@ def test_main_actually_records_the_fields_the_gate_reads():
     )
 
 
-# --- projection_tie_at_cut: the ranking that is not a ranking ---------------
-#
-# §32.5. `project_to_budget`'s docstring claimed the kept edits are the ones
-# the relaxation pushed hardest for "not an arbitrary subset". Under a tie that
-# is false: the tuple sort falls through to position index, descending. The
-# 2026-10-15 `apgm` noise probe hit it exactly -- 26 wanted at margins
-# 1.000-1.000, five handed over, all of them 105-109.
 
 
 def test_a_saturated_relaxation_hands_over_the_highest_numbered_positions(seeder):
@@ -1158,7 +1074,7 @@ def test_a_saturated_relaxation_hands_over_the_highest_numbered_positions(seeder
     parent = rng.integers(0, 20, size=123).astype(np.int32)
     relaxed = np.zeros((123, 20))
     relaxed[np.arange(123), parent] = 1.0
-    for pos in designable:                      # a vertex, on a non-parent residue
+    for pos in designable:
         relaxed[pos] = 0.0
         relaxed[pos, (parent[pos] + 1) % 20] = 1.0
 
@@ -1222,9 +1138,6 @@ def test_the_tie_fields_reach_the_record(seeder):
     record = next(a for a in dumps[0].args if isinstance(a, ast.Call))
     starred = [k for k in record.keywords if k.arg is None]
     names = {k.value.id for k in starred if isinstance(k.value, ast.Name)}
-    # A subset check, not equality: this exists to catch a group being
-    # DELETED, and equality would make every future addition fail a test that
-    # gains no safety from it.
     required = {"concentration", "tie", "objective"}
     assert required <= names, (
         f"main() no longer records {sorted(required - names)}"
@@ -1294,10 +1207,6 @@ def test_the_objective_is_evaluated_at_both_endpoints_under_one_key(seeder, toy_
     designable = np.arange(N_DESIGNABLE)
     x0 = jnp.asarray(seeder.anchored_logits(
         parent, designable, 1.0, np.zeros((N_DESIGNABLE, 20))))
-    # A deliberately DIFFERENT point: the parent one-hot against the
-    # near-uniform start. Which of the two the toy prefers is not the subject
-    # here -- on this loss the descent comes out negative -- only that both
-    # were evaluated and that the three recorded numbers agree.
     relaxed = relaxed_at_parent(parent).astype(np.float64)
     report = seeder.relaxed_loss(loss, x0, relaxed, jax.random.key(0))
     assert report["loss_eval_error"] is None

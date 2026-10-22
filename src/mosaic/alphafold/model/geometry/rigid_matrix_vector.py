@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 """Rigid3Array Transformations represented by a Matrix and a Vector."""
 
 from __future__ import annotations
@@ -63,7 +50,7 @@ class Rigid3Array:
     """Return identity Rigid3Array of given shape."""
     return cls(
         rotation_matrix.Rot3Array.identity(shape, dtype=dtype),
-        vector.Vec3Array.zeros(shape, dtype=dtype))  # pytype: disable=wrong-arg-count  # trace-all-classes
+        vector.Vec3Array.zeros(shape, dtype=dtype))
 
   def scale_translation(self, factor: Float) -> Rigid3Array:
     """Scale translation in Rigid3Array by 'factor'."""
@@ -78,7 +65,7 @@ class Rigid3Array:
   def from_array(cls, array):
     rot = rotation_matrix.Rot3Array.from_array(array[..., :3])
     vec = vector.Vec3Array.from_array(array[..., -1])
-    return cls(rot, vec)  # pytype: disable=wrong-arg-count  # trace-all-classes
+    return cls(rot, vec)
 
   @classmethod
   def from_array4x4(cls, array: jnp.ndarray) -> Rigid3Array:
@@ -92,7 +79,7 @@ class Rigid3Array:
         )
     translation = vector.Vec3Array(
         array[..., 0, 3], array[..., 1, 3], array[..., 2, 3])
-    return cls(rotation, translation)  # pytype: disable=wrong-arg-count  # trace-all-classes
+    return cls(rotation, translation)
 
   def __getstate__(self):
     return (VERSION, (self.rotation, self.translation))

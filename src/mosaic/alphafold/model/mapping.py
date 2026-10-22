@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Specialized mapping functions."""
 
@@ -49,7 +36,6 @@ def _maybe_get_size(array, axis):
 def _expand_axes(axes, values, name='sharded_apply'):
   values_tree_def = jax.tree_util.tree_flatten(values)[1]
   flat_axes = jax.api_util.flatten_axes(name, values_tree_def, axes)
-  # Replace None's with PROXY
   flat_axes = [PROXY if x is None else x for x in flat_axes]
   return jax.tree_util.tree_unflatten(values_tree_def, flat_axes)
 
@@ -79,7 +65,6 @@ def sharded_map(
   if 'split_rng' in inspect.signature(hk.vmap).parameters:
     vmapped_fun = hk.vmap(fun, in_axes, out_axes, split_rng=False)
   else:
-    # TODO(tomhennigan): Remove this when older versions of Haiku aren't used.
     vmapped_fun = hk.vmap(fun, in_axes, out_axes)
   return sharded_apply(vmapped_fun, shard_size, in_axes, out_axes)
 
@@ -116,12 +101,10 @@ def sharded_apply(
   if new_out_axes:
     raise NotImplementedError('New output axes not yet implemented.')
 
-  # shard size None denotes no sharding
   if shard_size is None:
     return fun
 
   def mapped_fn(*args):
-    # Expand in axes and Determine Loop range
     in_axes_ = _expand_axes(in_axes, args)
 
     in_sizes = jax.tree.map(_maybe_get_size, args, in_axes_)
@@ -131,7 +114,6 @@ def sharded_apply(
 
     num_extra_shards = (in_size - 1) // shard_size
 
-    # Fix Up if necessary
     last_shard_size = in_size % shard_size
     last_shard_size = shard_size if last_shard_size == 0 else last_shard_size
 
@@ -160,8 +142,6 @@ def sharded_apply(
       out_shapes = jax.tree.map(make_output_shape, out_axes_, shard_shapes,
                                 out_shapes)
 
-    # Calls dynamic Update slice with different argument order
-    # This is here since tree_map only works with positional arguments
     def dynamic_update_slice_in_dim(full_array, update, axis, i):
       return jax.lax.dynamic_update_slice_in_dim(full_array, update, i, axis)
 

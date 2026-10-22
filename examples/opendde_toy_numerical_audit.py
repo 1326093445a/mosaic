@@ -114,8 +114,6 @@ def compare_derivatives(baseline, plus, minus, autodiff, epsilon):
     b, p, m, a = arrays
     mean_difference = float(p.mean() - m.mean())
     repeat_range = float(max(np.ptp(b), np.ptp(p), np.ptp(m)))
-    # A heuristic resolution floor: host float64 subtraction cannot recover
-    # information already lost when the model produced float32 scalars.
     ulp = float(
         max(
             np.spacing(np.abs(np.asarray(x, dtype=np.float32))).max() for x in (b, p, m)
@@ -319,8 +317,6 @@ def run_worker(args):
         )
         seed_host_generators(args.worker_seed)
         model = OpenDDEModelAbag(compute_precision="fp32")
-        # Isolate feature randomness from loading/cache RNG consumption.
-        # This controls the toy harness only.
         seed_host_generators(args.worker_seed)
         features, _ = model.binder_features(2, [TargetChain("ACD", use_msa=False)])
         fingerprints = {
@@ -399,7 +395,6 @@ def run_worker(args):
                 raise ValueError("Perturbation changed discrete residue identities")
             values = {"plus": [], "minus": []}
             for repeat in range(PAIR_REPEATS):
-                # Alternate order to make simple order effects visible.
                 for side in ("plus", "minus") if repeat % 2 == 0 else ("minus", "plus"):
                     label = f"eps{eps}_{side}_{repeat}"
                     value, _ = measured(label, lambda: forward(xs[side], loss, key))

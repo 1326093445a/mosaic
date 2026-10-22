@@ -174,7 +174,6 @@ def _(
     np,
     sharp_pssms,
 ):
-    # pick the best PSSM and discretize
     key = jax.random.key(0)
     shared_keys = jnp.broadcast_to(key, (sharp_pssms.shape[0], *key.shape))
     values, _, _ = batched_eval(loss, sharp_pssms, shared_keys)

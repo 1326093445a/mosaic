@@ -33,7 +33,6 @@ def _args(stage, *extra, out="/tmp/x"):
     )
 
 
-# Decoy target construction ---------------------------------------------------
 
 
 def test_shuffle_preserves_length_and_composition():
@@ -60,7 +59,6 @@ def test_shuffle_actually_moves_most_residues():
     assert info["identity_to_real_target"] < 0.25
 
 
-# Arm construction ------------------------------------------------------------
 
 
 def test_decoy_arm_passes_the_decoy_sequence_and_nothing_else_differs():
@@ -70,7 +68,6 @@ def test_decoy_arm_passes_the_decoy_sequence_and_nothing_else_differs():
     jobs = driver.search_jobs(Path("/tmp/x"), args.policies, [0], None, 5, args, None)
     command = jobs[0]["command"]
     assert command[command.index("--target-sequence") + 1] == "W" * 184
-    # Same entry point, same policy default, no start override.
     assert command[command.index("--policy") + 1] == "population"
     assert "--start-sequence" not in command
 
@@ -123,7 +120,6 @@ def test_saliency_is_requested_only_when_asked():
         assert ("--save-saliency" in command) is expected
 
 
-# The epitope-scrambled decoy -------------------------------------------------
 
 
 def test_epitope_scramble_changes_only_the_epitope_and_keeps_composition():
@@ -196,7 +192,6 @@ def test_decoy_mode_shuffled_is_still_reachable_for_comparison(
     assert report["decoy"]["kind"] == "shuffled"
 
 
-# The real decoy --------------------------------------------------------------
 
 
 REPO = Path(__file__).resolve().parent.parent
@@ -235,7 +230,6 @@ def test_decoy_arm_refuses_both_decoy_sources_at_once(tmp_path):
         driver.decoy(args)
 
 
-# The decoy's fold confound ---------------------------------------------------
 
 
 def _decoy_run(
@@ -411,7 +405,6 @@ def test_supplied_decoy_must_match_the_reference_target_length(tmp_path, monkeyp
         driver.decoy(args)
 
 
-# Saliency persistence --------------------------------------------------------
 
 
 def test_saliency_callback_receives_every_feasible_move(monkeypatch):
@@ -442,7 +435,6 @@ def test_saliency_callback_receives_every_feasible_move(monkeypatch):
     assert captured, "the hook fired"
     first = captured[0]
     assert len(first["moves"]) == len(first["deltas"])
-    # Only designable positions may appear.
     assert {m[0] for m in first["moves"]} <= {0, 1, 2}
     assert np.all(np.isfinite(first["deltas"]))
 
@@ -479,7 +471,6 @@ def test_search_without_the_hook_behaves_identically():
     assert results[0] == results[1]
 
 
-# The launcher -----------------------------------------------------------------
 
 
 FOLLOWUPS = REPO / "examples/run_p17_followups.sh"

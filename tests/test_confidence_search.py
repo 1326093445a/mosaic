@@ -184,7 +184,7 @@ def test_entropy_control_is_gradient_scale_invariant_and_handles_ties():
     assert scaled_temperature == pytest.approx(temperature * 1000)
     probs, actual, _ = _proposal_distribution(np.array([0.0, 0.0, 1.0]), 0.1)
     np.testing.assert_allclose(probs, [0.5, 0.5, 0.0])
-    assert actual > 0.1  # Report unattainable target honestly.
+    assert actual > 0.1
     probs, actual, _ = _proposal_distribution(np.ones(4), 0.6)
     np.testing.assert_allclose(probs, 0.25)
     assert actual == 1
@@ -198,7 +198,6 @@ def test_reproducible_search_and_no_global_numpy_rng_dependence():
     assert first.evaluated == second.evaluated
     assert first.active == second.active
 
-    # Timings naturally differ; proposal decisions must not.
     def decisions(events):
         return [
             {k: v for k, v in e.items() if k != "elapsed_seconds"}
@@ -282,7 +281,6 @@ def runner(monkeypatch):
 
 
 def test_runner_preserves_pae_directionality_and_distance_is_diagnostic_only(runner):
-    # A perfect binder->target direction cannot hide a poor reverse direction.
     pae = np.array([[0.0, 0.0, 0.0], [9.0, 0.0, 0.0], [9.0, 0.0, 0.0]])
     ca = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
     near = runner.confidence_metrics(pae, ca, 1, 12.0, 12.0)
@@ -334,8 +332,6 @@ def test_selection_averages_seed_minima_not_best_seed_or_minimum_of_means(runner
 
 
 def test_device_memory_stats_reports_real_or_explicitly_unsupported(runner):
-    # No model loading required -- this only exercises jax.devices() itself,
-    # so it runs the same on CPU-only CI as it does on the GPU cluster node.
     stats = runner.device_memory_stats()
     assert stats, "expected at least one device"
     for device_name, device_stats in stats.items():
@@ -352,10 +348,6 @@ def test_device_memory_stats_reports_real_or_explicitly_unsupported(runner):
 
 
 def test_device_memory_stats_peak_is_monotonic_across_calls(runner):
-    # peak_bytes_in_use is a running maximum since process start (no per-call
-    # reset exists) -- confirm it behaves that way rather than silently
-    # assuming it, since this is the exact caveat callers must know about
-    # before reading memory.jsonl.
     import jax
 
     if not jax.devices()[0].memory_stats():
@@ -378,7 +370,6 @@ def test_each_confidence_component_contributes_a_sequence_gradient(runner, weigh
     bins = jnp.array([0.5, 8.0, 20.0])
 
     def loss(sequence):
-        # Toy differentiable predictor: sequence changes low-error PAE logits.
         logits = jnp.broadcast_to(
             jnp.stack([sequence[0, 0], jnp.array(0.0), jnp.array(0.0)]), (4, 4, 3)
         )
@@ -393,7 +384,7 @@ def test_each_confidence_component_contributes_a_sequence_gradient(runner, weigh
     sequence = jnp.zeros((2, 20))
     gradient = jax.grad(loss)(sequence)
     assert np.all(np.isfinite(gradient))
-    assert float(gradient[0, 0]) < 0  # More low-PAE weight lowers every objective.
+    assert float(gradient[0, 0]) < 0
 
 
 def test_full_confidence_terms_reach_the_shared_proposal_gradient(runner, monkeypatch):
@@ -436,8 +427,6 @@ def test_full_confidence_terms_reach_the_shared_proposal_gradient(runner, monkey
         def build_distogram_only_loss(self, **kwargs):
             return ZeroLoss()
 
-    # Isolate the newly wired confidence signal while retaining the real loss
-    # composition, gradient clipping, edit penalty and JAX differentiation.
     for name in (
         "BinderTargetContact",
         "BinderPoseRMSD",
@@ -567,7 +556,7 @@ def export_prediction():
     coords = np.arange(4 * 37 * 3, dtype=np.float32).reshape(4, 37, 3) / 10
     mask = np.zeros((4, 37), dtype=np.float32)
     mask[:, :3] = 1
-    mask[1, 32] = 1  # ARG CZ: export includes side chains, not just CA atoms.
+    mask[1, 32] = 1
     return StructureModelOutput(
         distogram_logits=np.zeros((4, 4, 2)),
         distogram_bins=np.array([1.0, 2.0]),
@@ -577,7 +566,7 @@ def export_prediction():
         pae_bins=np.array([1.0, 2.0]),
         structure_coordinates=coords.reshape(-1, 3),
         backbone_coordinates=coords[:, [0, 1, 2, 4]],
-        full_sequence=np.eye(20)[[0, 1, 7, 2]],  # AR + GN in mosaic ordering.
+        full_sequence=np.eye(20)[[0, 1, 7, 2]],
         asym_id=np.array([0, 0, 1, 1]),
         residue_idx=np.array([1, 2, 1, 2]),
         atom37_coords=coords,
@@ -593,7 +582,6 @@ def test_exact_scoring_structures_and_confidence_are_exported(
     import gemmi
     import jax
 
-    # Exercise the JIT boundary used in the real runner without loading weights.
     compact = eqx.filter_jit(runner.compact_prediction)(export_prediction)
     output = jax.tree.map(np.asarray, compact)
     assert output.pae_logits is None and output.distogram_logits is None
@@ -880,8 +868,6 @@ def test_winner_rescoring_exports_scored_pose_without_optimization(
     )
     reference = tmp_path / "ref.pdb"
     reference.write_text("HEADER    TEST\n")
-    # `p17_reference_config` is the one place to patch: every consumer reads
-    # the attribute through the module at use time, so this reaches all of them.
     import p17_reference_config as reference_config
 
     monkeypatch.setattr(reference_config, "COMPLEX_PDB", reference)
@@ -1057,6 +1043,5 @@ def test_pose_toggle_changes_real_composite_gradient_and_preserves_aux_keys(runn
     np.testing.assert_allclose(grad_off, 0., atol=1e-7)
     for key in ("binder_pose_rmsd", "pose_target_fit_rmsd", "key_marker"):
         assert float(_ranking_leaf(aux_on, key)) == pytest.approx(float(_ranking_leaf(aux_off, key)))
-    # Full auxiliary trees (including downstream random-key markers) agree.
     for a, b in zip(jax.tree.leaves(aux_on), jax.tree.leaves(aux_off)):
         np.testing.assert_array_equal(a, b)

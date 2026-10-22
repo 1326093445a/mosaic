@@ -40,7 +40,7 @@ sys.path.insert(0, str(REPO / "src"))
 
 from mosaic.search import ConfidenceScore, SearchConfig, run_gradient_search  # noqa: E402
 
-WEIGHT_EDIT_BUDGET = 5.0  # matches examples/p17_hallucination_search.py
+WEIGHT_EDIT_BUDGET = 5.0
 
 
 def _seeder():
@@ -52,14 +52,12 @@ def _seeder():
     return module
 
 
-# --- the synthetic objective ----------------------------------------------
 
 
 def make_problem(rng, length, alphabet, coupling_scale):
     """A frustrated Potts energy and a parent sequence to start from."""
     fields = rng.standard_normal((length, alphabet))
     raw = rng.standard_normal((length, length, alphabet, alphabet))
-    # Symmetric in (i, a) <-> (j, b), and no self-coupling.
     couplings = coupling_scale * 0.5 * (raw + raw.transpose(1, 0, 3, 2))
     idx = np.arange(length)
     couplings[idx, idx] = 0.0
@@ -78,7 +76,6 @@ def energy(tokens, fields, couplings):
 def extension(simplex, fields, couplings):
     """Multilinear extension; equals `energy` at the one-hot vertices."""
     linear = float((fields * simplex).sum())
-    # sum_{i,j,a,b} J[i,j,a,b] X[i,a] X[j,b], halved for the double count.
     pair = np.einsum("ijab,ia,jb->", couplings, simplex, simplex)
     return linear + 0.5 * float(pair)
 
@@ -144,7 +141,6 @@ def enumeration_size(length, alphabet, budget):
     )
 
 
-# --- the relaxed stage -----------------------------------------------------
 
 
 def relax(seeder, fields, couplings, parent, budget, steps, lr, rng, scale):
@@ -160,7 +156,6 @@ def relax(seeder, fields, couplings, parent, budget, steps, lr, rng, scale):
         simplex /= simplex.sum(-1, keepdims=True)
         _, hinge_gradient = hinge_and_gradient(simplex, parent, budget)
         g_simplex = extension_gradient(simplex, fields, couplings) + hinge_gradient
-        # Softmax Jacobian.
         g_logits = simplex * (
             g_simplex - (g_simplex * simplex).sum(-1, keepdims=True)
         )
@@ -172,7 +167,6 @@ def relax(seeder, fields, couplings, parent, budget, steps, lr, rng, scale):
     return simplex
 
 
-# --- the discrete stage ----------------------------------------------------
 
 
 def discrete(fields, couplings, parent, budget, *, policy, initial, score_calls,
@@ -199,7 +193,6 @@ def discrete(fields, couplings, parent, budget, *, policy, initial, score_calls,
         gradient_fn=lambda s: objective_at_vertex(
             s, fields, couplings, parent, budget
         ),
-        # The harness maximizes its readout, so the score is the negated energy.
         confidence_fn=lambda s: ConfidenceScore(
             -energy(s, fields, couplings)
         ),
@@ -267,12 +260,10 @@ def main(argv=None):
 
         record("parent", parent)
 
-        # j = 0: all five edits spent by the discrete search. Today's grad arm.
         record("discrete j=0", discrete(
             fields, couplings, parent, args.budget, initial=None,
             score_calls=args.score_calls, **common))
 
-        # The relaxed optimum, rounded at several hand-off points.
         simplex = relax(seeder, fields, couplings, parent, args.budget,
                         args.relax_steps, args.relax_lr, rng,
                         args.init_logit_scale)
@@ -285,12 +276,10 @@ def main(argv=None):
                 simplex, parent, designable, j
             )
             record(f"relax j={j}, no search", seed_tokens)
-            # The hand-off: one shared budget, search starts at the seed.
             record(f"relax j={j} + discrete", discrete(
                 fields, couplings, parent, args.budget, initial=seed_tokens,
                 score_calls=args.score_calls, **common))
 
-        # The reference the other arms are scored against.
         if args.exhaustive:
             record("REFERENCE exact", exhaustive_optimum(
                 fields, couplings, parent, args.budget))
@@ -322,7 +311,6 @@ def main(argv=None):
         share = 100 * gain / (baseline - best) if baseline != best else float("nan")
         print(f"{name:26s} {mean:9.3f} {sem:7.3f} {gain:+10.3f} {share:20.1f}%")
 
-    # The number stage 0 exists to produce.
     pure = st.mean(arms[f"relax j={args.budget}, no search"])
     disc = st.mean(arms["discrete j=0"])
     hybrid = st.mean(arms["relax j=2 + discrete"])

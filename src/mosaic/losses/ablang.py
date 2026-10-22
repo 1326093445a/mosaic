@@ -1,4 +1,3 @@
-# This loss is not well tested; use at your own risk
 import jax
 import numpy as np
 from jax import numpy as jnp
@@ -30,10 +29,8 @@ class AbLangPseudoLikelihood(LossTerm):
 
     def __call__(self, seq_standard_tokens: Float[Array, "N 20"], *, key):
         n = seq_standard_tokens.shape[0]
-        # convert from standard tokenization to ablang tokenization
         ablang_toks_unpadded = seq_standard_tokens @ boltz_to_ablang_matrix(self.tokenizer)
 
-        # add cls and eos tokens (0 and 22)
         toks = jnp.concatenate(
             [
                 jax.nn.one_hot([self.tokenizer.vocab_to_token["<"]], 24),
@@ -46,9 +43,7 @@ class AbLangPseudoLikelihood(LossTerm):
         def single_ll(index: int):
             rep = self.model.rep
             head = self.model.head
-            # replace token at index with mask
             masked_tokens = toks.at[index].set(jax.nn.one_hot(self.tokenizer.vocab_to_token["*"], 24))
-            # embed and run ablang
             x = masked_tokens @ rep.embedding.AAEmbeddings.weight
             position_embeddings = rep.embedding.PositionEmbeddings.weight[:x.shape[0]]
             x = rep.embedding.LayerNorm(x + position_embeddings)

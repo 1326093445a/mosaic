@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Protein data type."""
 
@@ -28,13 +15,11 @@ from Bio.PDB.Structure import Structure
 import numpy as np
 
 FeatureDict = Mapping[str, np.ndarray]
-ModelOutput = Mapping[str, Any]  # Is a nested dict.
+ModelOutput = Mapping[str, Any]
 
-# Complete sequence of chain IDs supported by the PDB format.
 PDB_CHAIN_IDS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-PDB_MAX_CHAINS = len(PDB_CHAIN_IDS)  # := 62.
+PDB_MAX_CHAINS = len(PDB_CHAIN_IDS)
 
-# Data to fill the _chem_comp table when writing mmCIFs.
 _CHEM_COMP: Mapping[str, Tuple[Tuple[str, str], ...]] = {
     'L-peptide linking': (
         ('ALA', 'ALANINE'),
@@ -65,29 +50,17 @@ _CHEM_COMP: Mapping[str, Tuple[Tuple[str, str], ...]] = {
 class Protein:
   """Protein structure representation."""
 
-  # Cartesian coordinates of atoms in angstroms. The atom types correspond to
-  # residue_constants.atom_types, i.e. the first three are N, CA, CB.
-  atom_positions: np.ndarray  # [num_res, num_atom_type, 3]
+  atom_positions: np.ndarray
 
-  # Amino-acid type for each residue represented as an integer between 0 and
-  # 20, where 20 is 'X'.
-  aatype: np.ndarray  # [num_res]
+  aatype: np.ndarray
 
-  # Binary float mask to indicate presence of a particular atom. 1.0 if an atom
-  # is present and 0.0 if not. This should be used for loss masking.
-  atom_mask: np.ndarray  # [num_res, num_atom_type]
+  atom_mask: np.ndarray
 
-  # Residue index as used in PDB. It is not necessarily continuous or 0-indexed.
-  residue_index: np.ndarray  # [num_res]
+  residue_index: np.ndarray
 
-  # 0-indexed number corresponding to the chain in the protein that this residue
-  # belongs to.
-  chain_index: np.ndarray  # [num_res]
+  chain_index: np.ndarray
 
-  # B-factors, or temperature factors, of each residue (in sq. angstroms units),
-  # representing the displacement of the residue from its ground truth mean
-  # value.
-  b_factors: np.ndarray  # [num_res, num_atom_type]
+  b_factors: np.ndarray
 
   def __post_init__(self):
     if len(np.unique(self.chain_index)) > PDB_MAX_CHAINS:
@@ -153,7 +126,6 @@ def _from_bio_structure(
         mask[residue_constants.atom_order[atom.name]] = 1.
         res_b_factors[residue_constants.atom_order[atom.name]] = atom.bfactor
       if np.sum(mask) < 0.5:
-        # If no known atom positions are reported for the residue then skip it.
         continue
       aatype.append(restype_idx)
       atom_positions.append(pos)
@@ -162,7 +134,6 @@ def _from_bio_structure(
       chain_ids.append(chain.id)
       b_factors.append(res_b_factors)
 
-  # Chain IDs are usually characters so map these to ints.
   unique_chain_ids = np.unique(chain_ids)
   chain_id_mapping = {cid: n for n, cid in enumerate(unique_chain_ids)}
   chain_index = np.array([chain_id_mapping[cid] for cid in chain_ids])
@@ -249,9 +220,8 @@ def to_pdb(prot: Protein) -> str:
   if np.any(aatype > residue_constants.restype_num):
     raise ValueError('Invalid aatypes.')
 
-  # Construct a mapping from chain integer indices to chain ID strings.
   chain_ids = {}
-  for i in np.unique(chain_index):  # np.unique gives sorted output.
+  for i in np.unique(chain_index):
     if i >= PDB_MAX_CHAINS:
       raise ValueError(
           f'The PDB format supports at most {PDB_MAX_CHAINS} chains.')
@@ -260,15 +230,13 @@ def to_pdb(prot: Protein) -> str:
   pdb_lines.append('MODEL     1')
   atom_index = 1
   last_chain_index = chain_index[0]
-  # Add all atom sites.
   for i in range(aatype.shape[0]):
-    # Close the previous chain if in a multichain PDB.
     if last_chain_index != chain_index[i]:
       pdb_lines.append(_chain_end(
           atom_index, res_1to3(aatype[i - 1]), chain_ids[chain_index[i - 1]],
           residue_index[i - 1]))
       last_chain_index = chain_index[i]
-      atom_index += 1  # Atom index increases at the TER symbol.
+      atom_index += 1
 
     res_name_3 = res_1to3(aatype[i])
     for atom_name, pos, mask, b_factor in zip(
@@ -281,9 +249,8 @@ def to_pdb(prot: Protein) -> str:
       alt_loc = ''
       insertion_code = ''
       occupancy = 1.00
-      element = atom_name[0]  # Protein supports only C, N, O, S, this works.
+      element = atom_name[0]
       charge = ''
-      # PDB is a columnar format, every space matters here!
       atom_line = (f'{record_type:<6}{atom_index:>5} {name:<4}{alt_loc:>1}'
                    f'{res_name_3:>3} {chain_ids[chain_index[i]]:>1}'
                    f'{residue_index[i]:>4}{insertion_code:>1}   '
@@ -293,15 +260,13 @@ def to_pdb(prot: Protein) -> str:
       pdb_lines.append(atom_line)
       atom_index += 1
 
-  # Close the final chain.
   pdb_lines.append(_chain_end(atom_index, res_1to3(aatype[-1]),
                               chain_ids[chain_index[-1]], residue_index[-1]))
   pdb_lines.append('ENDMDL')
   pdb_lines.append('END')
 
-  # Pad all lines to 80 characters.
   pdb_lines = [line.ljust(80) for line in pdb_lines]
-  return '\n'.join(pdb_lines) + '\n'  # Add terminating newline.
+  return '\n'.join(pdb_lines) + '\n'
 
 
 def ideal_atom_mask(prot: Protein) -> np.ndarray:
@@ -408,10 +373,8 @@ def to_mmcif(
   chain_index = prot.chain_index.astype(np.int32)
   b_factors = prot.b_factors
 
-  # Construct a mapping from chain integer indices to chain ID strings.
   chain_ids = {}
-  # We count unknown residues as protein residues.
-  for entity_id in np.unique(chain_index):  # np.unique gives sorted output.
+  for entity_id in np.unique(chain_index):
     chain_ids[entity_id] = _int_id_to_str_id(entity_id + 1)
 
   mmcif_dict = collections.defaultdict(list)
@@ -420,21 +383,16 @@ def to_mmcif(
   mmcif_dict['_entry.id'] = file_id.upper()
 
   label_asym_id_to_entity_id = {}
-  # Entity and chain information.
   for entity_id, chain_id in chain_ids.items():
-    # Add all chain information to the _struct_asym table.
     label_asym_id_to_entity_id[str(chain_id)] = str(entity_id)
     mmcif_dict['_struct_asym.id'].append(chain_id)
     mmcif_dict['_struct_asym.entity_id'].append(str(entity_id))
-    # Add information about the entity to the _entity_poly table.
     mmcif_dict['_entity_poly.entity_id'].append(str(entity_id))
     mmcif_dict['_entity_poly.type'].append(residue_constants.PROTEIN_CHAIN)
     mmcif_dict['_entity_poly.pdbx_strand_id'].append(chain_id)
-    # Generate the _entity table.
     mmcif_dict['_entity.id'].append(str(entity_id))
     mmcif_dict['_entity.type'].append(residue_constants.POLYMER_CHAIN)
 
-  # Add the residues to the _entity_poly_seq table.
   for entity_id, (res_ids, aas) in _get_entity_poly_seq(
       aatype, residue_index, chain_index
   ).items():
@@ -445,14 +403,12 @@ def to_mmcif(
           residue_constants.resnames[aa]
       )
 
-  # Populate the chem comp table.
   for chem_type, chem_comp in _CHEM_COMP.items():
     for chem_id, chem_name in chem_comp:
       mmcif_dict['_chem_comp.id'].append(chem_id)
       mmcif_dict['_chem_comp.type'].append(chem_type)
       mmcif_dict['_chem_comp.name'].append(chem_name)
 
-  # Add all atom sites.
   atom_index = 1
   for i in range(aatype.shape[0]):
     res_name_3 = residue_constants.resnames[aatype[i]]
@@ -513,7 +469,7 @@ def _int_id_to_str_id(num: int) -> str:
   if num <= 0:
     raise ValueError(f'Only positive integers allowed, got {num}.')
 
-  num = num - 1  # 1-based indexing.
+  num = num - 1
   output = []
   while num >= 0:
     output.append(chr(num % 26 + ord('A')))
@@ -543,16 +499,14 @@ def _get_entity_poly_seq(
         'aatypes, residue_indices, chain_indices must have the same length.'
     )
 
-  # Group the present residues by chain index.
   present = collections.defaultdict(list)
   for chain_id, res_id, aa in zip(chain_indices, residue_indices, aatypes):
     present[chain_id].append((res_id, aa))
 
-  # Add any missing residues (from 1 to the first residue and for any gaps).
   entity_poly_seq = {}
   for chain_id, present_residues in present.items():
     present_residue_indices = set([x[0] for x in present_residues])
-    min_res_id = min(present_residue_indices)  # Could be negative.
+    min_res_id = min(present_residue_indices)
     max_res_id = max(present_residue_indices)
 
     new_residue_indices = []
@@ -564,7 +518,7 @@ def _get_entity_poly_seq(
         new_aatypes.append(present_residues[present_index][1])
         present_index += 1
       else:
-        new_aatypes.append(20)  # Unknown amino acid type.
+        new_aatypes.append(20)
     entity_poly_seq[chain_id] = (new_residue_indices, new_aatypes)
   return entity_poly_seq
 

@@ -36,7 +36,6 @@ def memory(devices):
 
 
 def run_worker(args):
-    # Set before any JAX/model imports. A missing CUDA backend must fail loudly.
     os.environ["CUDA_VISIBLE_DEVICES"] = args.devices
     os.environ["JAX_PLATFORMS"] = "cuda"
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
@@ -120,7 +119,6 @@ def run_worker(args):
 
         class Probe(LossTerm):
             def __call__(self, sequence, output, key):
-                # Smooth, arbitrary software probe; not a binding/design objective.
                 ca = output.backbone_coordinates[:, 1, :].astype(jnp.float32)
                 centered = ca - ca.mean(axis=0)
                 coordinate_probe = jnp.square(centered).mean() / 100
@@ -148,7 +146,6 @@ def run_worker(args):
         forward = eqx.filter_jit(objective)
         backward = eqx.filter_jit(eqx.filter_value_and_grad(objective, has_aux=True))
         logits = jnp.zeros((2, 20)).at[jnp.arange(2), jnp.array([0, 7])].set(4.0)
-        # Same key/input on every call, including finite differences.
         baseline, _ = measured("forward", lambda: forward(logits, loss, key))
         (value, aux), grad = measured("backward", lambda: backward(logits, loss, key))
         (repeat_value, repeat_aux), repeat_grad = measured(

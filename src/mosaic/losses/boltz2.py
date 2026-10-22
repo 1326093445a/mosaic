@@ -31,7 +31,7 @@ def _build_boltz_atom37_table() -> np.ndarray:
     int table where -1 means "atom not in atom37 layout for this residue".
     """
     n_slots = len(const.tokens)
-    aa_3letter = const.tokens[2:22]  # 'ALA' .. 'VAL'
+    aa_3letter = const.tokens[2:22]
     max_tokatom = max(len(ref_atoms[r]) for r in aa_3letter)
     table = -np.ones((n_slots, max_tokatom), dtype=np.int32)
     for slot, three_letter in enumerate(const.tokens):
@@ -58,14 +58,12 @@ def load_boltz2(checkpoint_path: Path | None = None):
         checkpoint_path,
         strict=True,
         map_location="cpu",
-        # Note: these args ARE NOT USED during prediction, but are needed to load the model
         predict_args={
             "recycling_steps": 0,
             "sampling_steps": 25,
             "diffusion_samples": 1,
         },
         diffusion_process_args=asdict(boltz_main.Boltz2DiffusionParams()),
-        # ema=False,
         msa_args=asdict(
             boltz_main.MSAModuleArgs(
                 subsample_msa=True,
@@ -81,7 +79,6 @@ def load_boltz2(checkpoint_path: Path | None = None):
     return eqx.combine(jax.device_put(_model_params), _model_static)
 
 
-## Duplicated code
 class StructureWriter:
     writer: boltz_main.BoltzWriter
     atom_pad_mask: torch.Tensor
@@ -139,13 +136,11 @@ def load_features_and_structure_writer(
     cache = resolve_cache(cache, "boltz", create=True)
     out_dir_handle = (
         TemporaryDirectory()
-    )  # this is sketchy -- we have to remember not to let this get garbage collected
+    )
     out_dir = Path(out_dir_handle.name)
-    # dump the yaml to a file
     input_data_path = out_dir / "input.yaml"
     input_data_path.write_text(input_yaml_str)
     data = boltz_main.check_inputs(input_data_path)
-    # Process inputs
     ccd_path = cache / "ccd.pkl"
     mol_dir = cache / "mols"
     manifest = boltz_main.process_inputs(
@@ -159,7 +154,6 @@ def load_features_and_structure_writer(
         boltz2=True,
     )
 
-    # Load processed data
     processed_dir = out_dir / "processed"
     if manifest is None:
         print("Something odd happened with manifest, trying to reload.")
@@ -184,7 +178,6 @@ def load_features_and_structure_writer(
         ),
     )
 
-    # Create data module
     data_module = boltz_main.Boltz2InferenceDataModule(
         manifest=manifest,
         target_dir=processed.targets_dir,
@@ -197,17 +190,12 @@ def load_features_and_structure_writer(
         override_method=None,
     )
 
-    # Load the features for the single example
     features_dict = list(data_module.predict_dataloader())[0]
 
-    # convert features to numpy arrays
     features = {k: np.array(v) for k, v in features_dict.items() if k != "record"}
 
-    ## one-hot the MSA
 
     features["msa"] = jax.nn.one_hot(features["msa"], const.num_tokens)
-    # fix up some dtypes
-    # features["method_feature"] = features["method_feature"].astype(np.int32)
 
     writer = StructureWriter(
         features_dict=features_dict,
@@ -224,7 +212,6 @@ def set_binder_sequence(
     features: PyTree,
 ):
     """Replace features related to first N tokens with `new_sequence.` Used for hallucination/binder design."""
-    # features = jax.tree.map(lambda v: v.astype(jnp.float32), features)
     features["res_type"] = features["res_type"].astype(jnp.float32)
     features["msa"] = features["msa"].astype(jnp.float32)
     features["profile"] = features["profile"].astype(jnp.float32)
@@ -232,13 +219,10 @@ def set_binder_sequence(
     assert new_sequence.shape[1] == 20
     binder_len = new_sequence.shape[0]
 
-    # We only use the standard 20 amino acids, but boltz has 33 total tokens.
-    # zero out non-standard AA types
     zero_padded_sequence = jnp.pad(new_sequence, ((0, 0), (2, 11)))
     n_msa = features["msa"].shape[1]
     print("n_msa", n_msa)
 
-    # We assume there are no MSA hits for the binder sequence
     binder_profile = jnp.zeros_like(features["profile"][0, :binder_len])
     binder_profile = binder_profile.at[:binder_len].set(zero_padded_sequence) / n_msa
     binder_profile = binder_profile.at[:, 1].set((n_msa - 1) / n_msa)
@@ -347,7 +331,6 @@ def boltz2_forward_from_trunk(
         deterministic=deterministic,
     )
 
-    # Backbone coordinates (N, CA, C, O)
     features_unbatched = jax.tree.map(lambda x: x[0], features)
     assert ref_atoms["UNK"][:4] == ["N", "CA", "C", "O"]
     first_atom_idx = jax.vmap(lambda atoms: jnp.nonzero(atoms, size=1)[0][0])(
@@ -358,11 +341,9 @@ def boltz2_forward_from_trunk(
         [all_atom_coords[first_atom_idx + i] for i in range(4)], -2
     )
 
-    # Atom37 view: scatter all-atom coords into the canonical heavy-atom layout.
-    # `atom_pad_mask` is 0 on padding atoms; sentinel them to -1 so they're dropped.
     n_tokens = features_unbatched["res_type"].shape[0]
-    res_slot = features_unbatched["res_type"].argmax(-1)             # [N_token]
-    atom_to_token = features_unbatched["atom_to_token"].argmax(-1)   # [N_atom]
+    res_slot = features_unbatched["res_type"].argmax(-1)
+    atom_to_token = features_unbatched["atom_to_token"].argmax(-1)
     tokatom_idx = jnp.arange(atom_to_token.shape[0]) - first_atom_idx[atom_to_token]
     atom37_idx = jnp.asarray(_BOLTZ_TOKATOM_TO_ATOM37)[res_slot[atom_to_token], tokatom_idx]
     atom37_idx = jnp.where(

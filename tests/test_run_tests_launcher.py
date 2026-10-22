@@ -166,8 +166,6 @@ def test_a_dependency_is_skipped_exactly_when_it_is_unusable(tmp_path):
 
     entries = optional_deps()
     assert entries, "the table should not be empty"
-    # A target can be guarded by more than one module; it is skipped if any of
-    # them is unusable.
     unusable = {}
     for module, kind, target in entries:
         unusable[(kind, target)] = unusable.get((kind, target), False) or (
@@ -181,8 +179,6 @@ def test_a_dependency_is_skipped_exactly_when_it_is_unusable(tmp_path):
         if kind == "ignore":
             assert plan.count(flag) <= 1, "a target must not be skipped twice"
 
-    # test_cache's other three tests pass either way, so the file itself is
-    # never ignored wholesale.
     assert "--ignore=tests/test_cache.py " not in plan
 
 
@@ -231,8 +227,6 @@ def test_a_present_dependency_brings_its_tests_back_with_no_edit(tmp_path):
 def test_slow_marker_override_is_an_empty_m_not_a_removed_addopts(tmp_path):
     plain = invoke("--dry-run", path_prefix=fake_nvidia_smi(tmp_path))
     slow = invoke("--dry-run", "--slow", path_prefix=fake_nvidia_smi(tmp_path))
-    # `python -m pytest` always contains a -m, so the marker flag is the
-    # empty-argument form specifically.
     assert "-m  ''" not in plain.stdout
     assert "not slow (pass --slow" in plain.stdout
     assert "-m  ''" in slow.stdout

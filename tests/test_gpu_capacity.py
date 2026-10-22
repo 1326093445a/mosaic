@@ -17,6 +17,5 @@ def test_the_gpu_capacity_checks_pass():
         ["bash", str(SCRIPT)], capture_output=True, text=True, timeout=300
     )
     assert done.returncode == 0, done.stdout + done.stderr
-    # Not vacuous: the script must actually have run its cases.
     assert "passed, 0 failed" in done.stdout, done.stdout
     assert done.stdout.count("  PASS") >= 10, done.stdout

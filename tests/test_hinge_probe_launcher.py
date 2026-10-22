@@ -53,10 +53,6 @@ esac
 """
 
 
-# A stand-in `nvidia-smi` on PATH. These are control-flow tests: without it the
-# launcher's capacity check reads the HOST's GPUs, so the suite passed or failed
-# according to what happened to be resident on the machine running it. The stub
-# reports eight idle 140 GB devices, which is the cluster the launchers target.
 IDLE_EIGHT = """#!/usr/bin/env bash
 case "$*" in
   *--query-gpu*) for i in 0 1 2 3 4 5 6 7; do echo "$i, 143771, 1024"; done ;;
@@ -163,10 +159,6 @@ def test_more_runs_than_devices_is_refused(probe, tmp_path):
     assert "Refusing to start" in done.stderr
 
 
-# --------------------------------------------------------------------------- #
-# A second review round found three more. Each is a guard that the first set of
-# tests did not ask for, which is why they passed while these failed.
-# --------------------------------------------------------------------------- #
 
 
 def test_an_output_directory_holding_other_results_is_refused(probe, tmp_path):

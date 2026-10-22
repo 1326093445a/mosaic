@@ -81,7 +81,6 @@ def test_mapping_audit_localizes_invalid_coordinates(modules, reference, failure
     if failure == "bad_mapping":
         assert report["raw_passed"]
         assert not report["mapping_agrees"]
-    # Invalid coordinates must still be serializable as evidence.
     json.dumps(report, allow_nan=False)
 
 
@@ -207,8 +206,6 @@ def test_collection_distinguishes_geometry_failure_from_execution_failure(
             ]
         },
     )
-    # A real worker declares completion and writes one report per repeat; the
-    # collector now requires both before calling the worker complete.
     (path / "summary.json").write_text(
         json.dumps(
             dict(
@@ -460,7 +457,7 @@ def test_template_cache_is_prepared_on_cpu_before_workers(
 
     def launch(stage, jobs, devices, root):
         assert stage == "wt"
-        assert len(calls) == 6  # five version-checked patches, then cache preparation
+        assert len(calls) == 6
         assert calls[-1][0][1] == "-c"
         assert calls[-1][1]["env"]["JAX_PLATFORMS"] == "cpu"
         assert os.environ["JAX_PLATFORMS"] == "cuda"

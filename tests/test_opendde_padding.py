@@ -18,8 +18,6 @@ from mosaic.models.opendde import _atom_template_shapes
 
 
 def _synthetic_design():
-    # Two residue tokens, four structural tokens. The first residue's six-slot
-    # allocation shrinks to four atoms; the target's four atoms follow it.
     a2t = jnp.array([0] * 6 + [1] * 4)
     pos = jnp.arange(30, dtype=jnp.float32).reshape(10, 3)
     d_lm, v_lm, pad = _rebuild_dense_trunk(pos, a2t)
@@ -95,8 +93,6 @@ def test_padding_cannot_contribute_to_either_token_aggregation(compiled):
         (feat.atom_to_token_idx, 2),
         (feat.atom_to_structural_token_idx, 4),
     ):
-        # Large padding values make both numerator leakage and incorrect
-        # contribution counts visible in the real downstream aggregation.
         values = jnp.where(feat.ref_mask[:, None] > 0.5, 1.0, 999.0)
         observed = aggregate_atom_to_token(values, indices, n_token)
         np.testing.assert_array_equal(observed, np.ones((n_token, 1)))
@@ -157,8 +153,6 @@ def test_structural_expansion_threads_masks_through_the_refiner(compiled):
 
     def refiner(s, z, pair_mask, extra_attn_bias):
         assert pair_mask is not None
-        # Deliberately create nonzero output on the empty query too. The real
-        # expansion boundary must mask both its inputs and returned state.
         return jax.nn.softmax(extra_attn_bias, axis=-1) @ s, z + 17
 
     model = SimpleNamespace(

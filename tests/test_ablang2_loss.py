@@ -219,7 +219,7 @@ def test_setpositions_vs_designable_positions_gradients(ablang2_jax):
         "EVQLLESGGEVKKPGASVKVSCRASGYTFRNYGLTWVRQAPGQGLEWMGWISAYNGNTNYAQKFQG"
         "RVTLTTDTSTSTAYMELRSLRSDDTAVYFCARDVPGHGAAFMDVWGTGTTVTVSS"
     )
-    designable = list(range(95, 103))  # 8 positions in CDR3
+    designable = list(range(95, 103))
     n = len(heavy)
     m = len(designable)
 
@@ -235,7 +235,6 @@ def test_setpositions_vs_designable_positions_gradients(ablang2_jax):
         len(TOKENS),
     )
 
-    # --- Approach 1: designable_positions passed explicitly ---
     loss_with_dp = Ablang2PseudoLikelihood(
         model=model,
         tokenizer=tok,
@@ -246,15 +245,13 @@ def test_setpositions_vs_designable_positions_gradients(ablang2_jax):
     _, grad_full = optimizers_module._eval_loss_and_grad(
         loss_with_dp, seq_full, jax.random.key(0)
     )
-    grad_at_variable = np.array(grad_full[variable_positions])  # (M, 20)
+    grad_at_variable = np.array(grad_full[variable_positions])
     grad_at_fixed = np.array(
         grad_full[jnp.array([i for i in range(n) if i not in designable])]
     )
 
-    # Fixed positions should have zero gradient when designable_positions is set
     np.testing.assert_allclose(grad_at_fixed, 0.0, atol=1e-6)
 
-    # --- Approach 2: SetPositions wrapping, no designable_positions ---
     wildtype_tokens = jnp.array(
         [TOKENS.index(aa) if aa != "X" else -1 for aa in wildtype_with_x],
         dtype=jnp.int32,
@@ -267,12 +264,11 @@ def test_setpositions_vs_designable_positions_gradients(ablang2_jax):
     )
     set_pos_loss = SetPositions(wildtype_tokens, variable_positions, loss_no_dp)
 
-    seq_variable = seq_full[variable_positions]  # (M, 20) — variable positions only
+    seq_variable = seq_full[variable_positions]
     _, grad_variable = optimizers_module._eval_loss_and_grad(
         set_pos_loss, seq_variable, jax.random.key(0)
     )
 
-    # Approach 2 gradient = Approach 1 gradient * (M / N) due to differing normalisers
     np.testing.assert_allclose(
         np.array(grad_variable),
         grad_at_variable * (m / n),
@@ -309,9 +305,8 @@ def test_setpositions_combined_with_designable_positions(ablang2_jax):
         jnp.array([TOKENS.index(aa) for aa in heavy], dtype=jnp.int32),
         len(TOKENS),
     )
-    seq_variable = seq_full[variable_positions]  # (M, 20)
+    seq_variable = seq_full[variable_positions]
 
-    # --- Approach 1: designable_positions, full sequence input ---
     loss_dp = Ablang2PseudoLikelihood(
         model=model,
         tokenizer=tok,
@@ -323,7 +318,6 @@ def test_setpositions_combined_with_designable_positions(ablang2_jax):
         loss_dp, seq_full, jax.random.key(0)
     )
 
-    # --- Approach 3: SetPositions + designable_positions, variable-only input ---
     wildtype_tokens = jnp.array(
         [TOKENS.index(aa) if aa != "X" else -1 for aa in wildtype_with_x],
         dtype=jnp.int32,
@@ -343,10 +337,8 @@ def test_setpositions_combined_with_designable_positions(ablang2_jax):
         loss_combined, seq_variable, jax.random.key(0)
     )
 
-    # Loss values must be identical
     assert float(loss_value_combined) == pytest.approx(float(loss_value_dp), rel=1e-3)
 
-    # Gradients at variable positions must be identical
     np.testing.assert_allclose(
         np.array(grad_variable),
         np.array(grad_full[variable_positions]),

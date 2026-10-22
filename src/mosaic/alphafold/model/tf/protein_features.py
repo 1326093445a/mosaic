@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Contains descriptions of various protein features."""
 import enum
@@ -18,28 +5,22 @@ from typing import Dict, Optional, Sequence, Tuple, Union
 from alphafold.common import residue_constants
 import tensorflow.compat.v1 as tf
 
-# Type aliases.
 FeaturesMetadata = Dict[str, Tuple[tf.dtypes.DType, Sequence[Union[str, int]]]]
 
 
 class FeatureType(enum.Enum):
-  ZERO_DIM = 0  # Shape [x]
-  ONE_DIM = 1  # Shape [num_res, x]
-  TWO_DIM = 2  # Shape [num_res, num_res, x]
-  MSA = 3  # Shape [msa_length, num_res, x]
+  ZERO_DIM = 0
+  ONE_DIM = 1
+  TWO_DIM = 2
+  MSA = 3
 
 
-# Placeholder values that will be replaced with their true value at runtime.
 NUM_RES = "num residues placeholder"
 NUM_SEQ = "length msa placeholder"
 NUM_TEMPLATES = "num templates placeholder"
-# Sizes of the protein features, NUM_RES and NUM_SEQ are allowed as placeholders
-# to be replaced with the number of residues and the number of sequences in the
-# multiple sequence alignment, respectively.
 
 
 FEATURES = {
-    #### Static features of a protein sequence ####
     "aatype": (tf.float32, [NUM_RES, 21]),
     "between_segment_residues": (tf.int64, [NUM_RES, 1]),
     "deletion_matrix": (tf.float32, [NUM_SEQ, NUM_RES, 1]),

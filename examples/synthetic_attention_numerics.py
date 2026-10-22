@@ -62,7 +62,6 @@ def difference(actual, reference):
 
 
 def run(output_dir):
-    # Set before importing either backend. This script is a standalone process.
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
     os.environ["JAX_PLATFORMS"] = "cpu"
     import jax

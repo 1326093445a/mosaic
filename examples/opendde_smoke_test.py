@@ -36,11 +36,6 @@ Usage:
 """
 import os
 
-# XLA's autotuner benchmarks candidate kernels by transiently grabbing large
-# scratch buffers during compilation -- on this size of GPU that alone can
-# trigger a spurious CUDA OOM before the real forward pass ever runs. Set
-# before jax's backend initializes (must happen before the `import jax`
-# below); mirrors the same self-set boltzgen_vhh_guided.py's run() now does.
 os.environ.setdefault("XLA_FLAGS", "--xla_gpu_autotune_level=0")
 
 import time
@@ -66,8 +61,6 @@ print(
 model = OpenDDEModelAbag()
 print(f"  done ({time.time() - t0:.1f}s)", flush=True)
 
-# A short synthetic binder + target -- enough to exercise cross-chain features
-# without making this wiring smoke compete with production-sized predictions.
 BINDER_LEN = 15
 TARGET_SEQ = "MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQAPILSRV"
 

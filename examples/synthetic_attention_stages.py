@@ -460,7 +460,6 @@ def run(
                     "output": compare(np.asarray(out), baselines["eager"][1]),
                     "input_gradient": compare(np.asarray(grad), baselines["eager"][2]),
                 }
-                # Use dependency order from the eager Python graph, not sorted pytree order.
                 result["first_observed_value_stage_outside_fp32_tolerance"] = next(
                     (
                         label
@@ -579,7 +578,6 @@ def main():
             variants=args.variants.split(",") if args.variants else None,
         )
     except Exception as exc:
-        # Preserve exception details even when setup fails before model-free evaluation.
         if root.exists():
             (root / "failure.json").write_text(
                 json.dumps(

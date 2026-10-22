@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 """A collection of common Haiku modules for use in protein folding."""
 import numbers
 from typing import Union, Sequence
@@ -22,7 +9,6 @@ import jax
 
 
 
-# Constant from scipy.stats.truncnorm.std(a=-2, b=2, loc=0., scale=1.)
 TRUNCATED_NORMAL_STDDEV_FACTOR = np.asarray(.87962566103423978,
                                             dtype=np.float32)
 
@@ -33,7 +19,6 @@ def get_initializer_scale(initializer_name, input_shape):
   if initializer_name == 'zeros':
     w_init = hk.initializers.Constant(0.0)
   else:
-    # fan-in scaling
     scale = 1.
     for channel_dim in input_shape:
       scale /= channel_dim
@@ -43,7 +28,6 @@ def get_initializer_scale(initializer_name, input_shape):
     noise_scale = scale
 
     stddev = np.sqrt(noise_scale)
-    # Adjust stddev for truncation.
     stddev = stddev / TRUNCATED_NORMAL_STDDEV_FACTOR
     w_init = hk.initializers.TruncatedNormal(mean=0.0, stddev=stddev)
 
@@ -156,7 +140,6 @@ class LayerNorm(hk.LayerNorm):
         eps=eps,
         scale_init=None,
         offset_init=None,
-        # ironically we get NaNs if fast_variance is FALSE
         use_fast_variance=True,
         name=name,
         param_axis=param_axis)
@@ -179,12 +162,10 @@ class LayerNorm(hk.LayerNorm):
     if self._temp_create_scale:
       scale = hk.get_parameter(
           'scale', param_shape, x.dtype, init=self.scale_init)
-      #scale = scale.reshape(param_broadcast_shape)
 
     if self._temp_create_offset:
       offset = hk.get_parameter(
           'offset', param_shape, x.dtype, init=self.offset_init)
-      # = offset.reshape(param_broadcast_shape)
 
     mean = jnp.mean(x, axis=param_axis, keepdims=True)
     var = ((x - mean) ** 2).mean(axis=param_axis, keepdims=True)

@@ -19,9 +19,6 @@ import sys
 
 REPO = Path(__file__).resolve().parent.parent
 
-# Structural seeds reserved for held-out evaluation: never used to tune
-# guidance, thresholds or retention. The plan and the coverage check read the
-# same constant so they cannot drift apart.
 HELDOUT_SEEDS = (101, 102, 103)
 
 
@@ -162,7 +159,6 @@ def run_stage(stage, jobs, devices, root):
                 code = process.wait()
                 print(f"Finished {stage}/{job['name']}: exit {code}", flush=True)
         finally:
-            # Also handles Ctrl-C, SIGTERM (via main), failed spawn, or failed wait.
             for _, _, process, _ in workers:
                 if process.poll() is None:
                     try:

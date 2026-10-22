@@ -97,8 +97,6 @@ def load_boltzgen_if(
         strict=True,
         map_location="cpu",
         weights_only=False,
-        # Official checkpoints retain training validators, some of which carry
-        # CUDA metric state and defeat map_location="cpu" during Lightning load.
         validators=None,
     ).eval()
     model.structure_module.sampling_temperature = float(temperature)
@@ -161,12 +159,8 @@ def prepare_boltzgen_if_features(
             f"Expected designable mask shape {(token_count,)}, got {tuple(mask.shape)}"
         )
 
-    # IF's geometry encoder expects (batch, atoms, xyz), whereas the regular
-    # BoltzGen featurizer stores one conformation as (batch, 1, atoms, xyz).
     features["coords"] = coords_tensor.unsqueeze(0)
 
-    # Protein token center is CA, represented by bb4 slot 1 ([N, CA, C, O]).
-    # Recompute it from the diffused coordinates so KNN edges match the sample.
     ca_to_atom = features["token_to_bb4_atoms"][:, :, 1].float()
     updated_centers = torch.bmm(ca_to_atom, coords_tensor.unsqueeze(0))
     has_ca = ca_to_atom.sum(dim=-1, keepdim=True) > 0
@@ -222,8 +216,6 @@ def decode_with_boltzgen_if(
     sampled = output["res_type"][0, :, canonical_slice]
     sequence_ids = sampled.argmax(dim=-1).cpu().numpy().astype(np.int32)
 
-    # Native IF already preserves these positions, but enforcing the contract
-    # here protects Mosaic if upstream decoder behavior changes.
     parent_ids = np.asarray(parent_sequence).argmax(axis=-1).astype(np.int32)
     designable = np.asarray(designable_mask, dtype=bool)
     sequence_ids = np.where(designable, sequence_ids, parent_ids)

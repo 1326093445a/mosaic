@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Functions for parsing various file formats."""
 import collections
@@ -20,7 +7,6 @@ import re
 import string
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Set
 
-# Internal import (7716).
 
 
 DeletionMatrix = Sequence[Sequence[int]]
@@ -84,11 +70,11 @@ def parse_fasta(fasta_string: str) -> Tuple[Sequence[str], Sequence[str]]:
     line = line.strip()
     if line.startswith('>'):
       index += 1
-      descriptions.append(line[1:])  # Remove the '>' at the beginning.
+      descriptions.append(line[1:])
       sequences.append('')
       continue
     elif not line:
-      continue  # Skip blank lines.
+      continue
     sequences[index] += line
 
   return sequences, descriptions
@@ -128,16 +114,13 @@ def parse_stockholm(stockholm_string: str) -> Msa:
   keep_columns = []
   for seq_index, sequence in enumerate(name_to_sequence.values()):
     if seq_index == 0:
-      # Gather the columns with gaps from the query
       query = sequence
       keep_columns = [i for i, res in enumerate(query) if res != '-']
 
-    # Remove the columns with gaps in the query from all sequences.
     aligned_sequence = ''.join([sequence[c] for c in keep_columns])
 
     msa.append(aligned_sequence)
 
-    # Count the number of deletions w.r.t. query.
     deletion_vec = []
     deletion_count = 0
     for seq_res, query_res in zip(sequence, query):
@@ -183,7 +166,6 @@ def parse_a3m(a3m_string: str) -> Msa:
         deletion_count = 0
     deletion_matrix.append(deletion_vec)
 
-  # Make the MSA matrix out of aligned (deletion-free) sequences.
   deletion_table = str.maketrans('', '', string.ascii_lowercase)
   aligned_sequences = [s.translate(deletion_table) for s in sequences]
   return Msa(sequences=aligned_sequences,
@@ -211,8 +193,6 @@ def convert_stockholm_to_a3m(stockholm_format: str,
   for line in stockholm_format.splitlines():
     reached_max_sequences = max_sequences and len(sequences) >= max_sequences
     if line.strip() and not line.startswith(('#', '//')):
-      # Ignore blank lines, markup and end symbols - remainder are alignment
-      # sequence parts.
       seqname, aligned_seq = line.split(maxsplit=1)
       if seqname not in sequences:
         if reached_max_sequences:
@@ -222,8 +202,6 @@ def convert_stockholm_to_a3m(stockholm_format: str,
 
   for line in stockholm_format.splitlines():
     if line[:4] == '#=GS':
-      # Description row - example format is:
-      # #=GS UniRef90_Q9H5Z4/4-78            DE [subseq from] cDNA: FLJ22755 ...
       columns = line.split(maxsplit=3)
       seqname, feature = columns[1:3]
       value = columns[3] if len(columns) == 4 else ''
@@ -235,14 +213,11 @@ def convert_stockholm_to_a3m(stockholm_format: str,
       if len(descriptions) == len(sequences):
         break
 
-  # Convert sto format to a3m line by line
   a3m_sequences = {}
   if remove_first_row_gaps:
-    # query_sequence is assumed to be the first sequence
     query_sequence = next(iter(sequences.values()))
     query_non_gaps = [res != '-' for res in query_sequence]
   for seqname, sto_sequence in sequences.items():
-    # Dots are optional in a3m format and are commonly removed.
     out_sequence = sto_sequence.replace('.', '')
     if remove_first_row_gaps:
       out_sequence = ''.join(
@@ -251,25 +226,25 @@ def convert_stockholm_to_a3m(stockholm_format: str,
 
   fasta_chunks = (f">{k} {descriptions.get(k, '')}\n{a3m_sequences[k]}"
                   for k in a3m_sequences)
-  return '\n'.join(fasta_chunks) + '\n'  # Include terminating newline.
+  return '\n'.join(fasta_chunks) + '\n'
 
 
 def _keep_line(line: str, seqnames: Set[str]) -> bool:
   """Function to decide which lines to keep."""
   if not line.strip():
     return True
-  if line.strip() == '//':  # End tag
+  if line.strip() == '//':
     return True
-  if line.startswith('# STOCKHOLM'):  # Start tag
+  if line.startswith('# STOCKHOLM'):
     return True
-  if line.startswith('#=GC RF'):  # Reference Annotation Line
+  if line.startswith('#=GC RF'):
     return True
-  if line[:4] == '#=GS':  # Description lines - keep if sequence in list.
+  if line[:4] == '#=GS':
     _, seqname, _ = line.split(maxsplit=2)
     return seqname in seqnames
-  elif line.startswith('#'):  # Other markup - filter out
+  elif line.startswith('#'):
     return False
-  else:  # Alignment data - keep if sequence in list.
+  else:
     seqname = line.partition(' ')[0]
     return seqname in seqnames
 
@@ -282,8 +257,6 @@ def truncate_stockholm_msa(stockholm_msa_path: str, max_sequences: int) -> str:
   with open(stockholm_msa_path) as f:
     for line in f:
       if line.strip() and not line.startswith(('#', '//')):
-        # Ignore blank lines, markup and end symbols - remainder are alignment
-        # sequence parts.
         seqname = line.partition(' ')[0]
         seqnames.add(seqname)
         if len(seqnames) >= max_sequences:
@@ -305,7 +278,6 @@ def remove_empty_columns_from_stockholm_msa(stockholm_msa: str) -> str:
     if line.startswith('#=GC RF'):
       reference_annotation_i = i
       reference_annotation_line = line
-      # Reached the end of this chunk of the alignment. Process chunk.
       _, _, first_alignment = line.rpartition(' ')
       mask = []
       for j in range(len(first_alignment)):
@@ -314,12 +286,11 @@ def remove_empty_columns_from_stockholm_msa(stockholm_msa: str) -> str:
           if alignment[j] != '-':
             mask.append(True)
             break
-        else:  # Every row contained a hyphen - empty column.
+        else:
           mask.append(False)
-      # Add reference annotation for processing with mask.
       unprocessed_lines[reference_annotation_i] = reference_annotation_line
 
-      if not any(mask):  # All columns were empty. Output empty lines for chunk.
+      if not any(mask):
         for line_index in unprocessed_lines:
           processed_lines[line_index] = ''
       else:
@@ -328,7 +299,6 @@ def remove_empty_columns_from_stockholm_msa(stockholm_msa: str) -> str:
           masked_alignment = ''.join(itertools.compress(alignment, mask))
           processed_lines[line_index] = f'{prefix} {masked_alignment}'
 
-      # Clear raw_alignments.
       unprocessed_lines = {}
     elif line.strip() and not line.startswith(('#', '//')):
       unprocessed_lines[i] = line
@@ -341,10 +311,7 @@ def deduplicate_stockholm_msa(stockholm_msa: str) -> str:
   """Remove duplicate sequences (ignoring insertions wrt query)."""
   sequence_dict = collections.defaultdict(str)
 
-  # First we must extract all sequences from the MSA.
   for line in stockholm_msa.splitlines():
-    # Only consider the alignments - ignore reference annotation, empty lines,
-    # descriptions or markup.
     if line.strip() and not line.startswith(('#', '//')):
       line = line.strip()
       seqname, alignment = line.split()
@@ -352,11 +319,9 @@ def deduplicate_stockholm_msa(stockholm_msa: str) -> str:
 
   seen_sequences = set()
   seqnames = set()
-  # First alignment is the query.
   query_align = next(iter(sequence_dict.values()))
-  mask = [c != '-' for c in query_align]  # Mask is False for insertions.
+  mask = [c != '-' for c in query_align]
   for seqname, alignment in sequence_dict.items():
-    # Apply mask to remove all insertions from the string.
     masked_alignment = ''.join(itertools.compress(alignment, mask))
     if masked_alignment in seen_sequences:
       continue
@@ -407,11 +372,9 @@ def _parse_hhr_hit(detailed_lines: Sequence[str]) -> TemplateHit:
   Raises:
     RuntimeError: If a certain line cannot be processed
   """
-  # Parse first 2 lines.
   number_of_hit = int(detailed_lines[0].split()[-1])
   name_hit = detailed_lines[1][1:]
 
-  # Parse the summary line.
   pattern = (
       'Probab=(.*)[\t ]*E-value=(.*)[\t ]*Score=(.*)[\t ]*Aligned_cols=(.*)[\t'
       ' ]*Identities=(.*)%[\t ]*Similarity=(.*)[\t ]*Sum_probs=(.*)[\t '
@@ -424,10 +387,6 @@ def _parse_hhr_hit(detailed_lines: Sequence[str]) -> TemplateHit:
   (_, _, _, aligned_cols, _, _, sum_probs, _) = [float(x)
                                                  for x in match.groups()]
 
-  # The next section reads the detailed comparisons. These are in a 'human
-  # readable' format which has a fixed length. The strategy employed is to
-  # assume that each block starts with the query sequence line, and to parse
-  # that with a regexp in order to deduce the fixed length used for that block.
   query = ''
   hit_sequence = ''
   indices_query = []
@@ -435,44 +394,32 @@ def _parse_hhr_hit(detailed_lines: Sequence[str]) -> TemplateHit:
   length_block = None
 
   for line in detailed_lines[3:]:
-    # Parse the query sequence line
     if (line.startswith('Q ') and not line.startswith('Q ss_dssp') and
         not line.startswith('Q ss_pred') and
         not line.startswith('Q Consensus')):
-      # Thus the first 17 characters must be 'Q <query_name> ', and we can parse
-      # everything after that.
-      #              start    sequence       end       total_sequence_length
       patt = r'[\t ]*([0-9]*) ([A-Z-]*)[\t ]*([0-9]*) \([0-9]*\)'
       groups = _get_hhr_line_regex_groups(patt, line[17:])
 
-      # Get the length of the parsed block using the start and finish indices,
-      # and ensure it is the same as the actual block length.
-      start = int(groups[0]) - 1  # Make index zero based.
+      start = int(groups[0]) - 1
       delta_query = groups[1]
       end = int(groups[2])
       num_insertions = len([x for x in delta_query if x == '-'])
       length_block = end - start + num_insertions
       assert length_block == len(delta_query)
 
-      # Update the query sequence and indices list.
       query += delta_query
       _update_hhr_residue_indices_list(delta_query, start, indices_query)
 
     elif line.startswith('T '):
-      # Parse the hit sequence.
       if (not line.startswith('T ss_dssp') and
           not line.startswith('T ss_pred') and
           not line.startswith('T Consensus')):
-        # Thus the first 17 characters must be 'T <hit_name> ', and we can
-        # parse everything after that.
-        #              start    sequence       end     total_sequence_length
         patt = r'[\t ]*([0-9]*) ([A-Z-]*)[\t ]*[0-9]* \([0-9]*\)'
         groups = _get_hhr_line_regex_groups(patt, line[17:])
-        start = int(groups[0]) - 1  # Make index zero based.
+        start = int(groups[0]) - 1
         delta_hit_sequence = groups[1]
         assert length_block == len(delta_hit_sequence)
 
-        # Update the hit sequence and indices list.
         hit_sequence += delta_hit_sequence
         _update_hhr_residue_indices_list(delta_hit_sequence, start, indices_hit)
 
@@ -492,15 +439,12 @@ def parse_hhr(hhr_string: str) -> Sequence[TemplateHit]:
   """Parses the content of an entire HHR file."""
   lines = hhr_string.splitlines()
 
-  # Each .hhr file starts with a results table, then has a sequence of hit
-  # "paragraphs", each paragraph starting with a line 'No <hit number>'. We
-  # iterate through each paragraph to parse each hit.
 
   block_starts = [i for i, line in enumerate(lines) if line.startswith('No ')]
 
   hits = []
   if block_starts:
-    block_starts.append(len(lines))  # Add the end of the final block.
+    block_starts.append(len(lines))
     for i in range(len(block_starts) - 1):
       hits.append(_parse_hhr_hit(lines[block_starts[i]:block_starts[i + 1]]))
   return hits
@@ -510,9 +454,6 @@ def parse_e_values_from_tblout(tblout: str) -> Dict[str, float]:
   """Parse target to e-value mapping parsed from Jackhmmer tblout string."""
   e_values = {'query': 0}
   lines = [line for line in tblout.splitlines() if line[0] != '#']
-  # As per http://eddylab.org/software/hmmer/Userguide.pdf fields are
-  # space-delimited. Relevant fields are (1) target name:  and
-  # (5) E-value (full sequence) (numbering from 1).
   for line in lines:
     fields = line.split()
     e_value = fields[4]
@@ -526,13 +467,10 @@ def _get_indices(sequence: str, start: int) -> List[int]:
   indices = []
   counter = start
   for symbol in sequence:
-    # Skip gaps but add a placeholder so that the alignment is preserved.
     if symbol == '-':
       indices.append(-1)
-    # Skip deleted residues, but increase the counter.
     elif symbol.islower():
       counter += 1
-    # Normal aligned residue. Increase the counter and append to indices.
     else:
       indices.append(counter)
       counter += 1
@@ -551,8 +489,6 @@ class HitMetadata:
 
 def _parse_hmmsearch_description(description: str) -> HitMetadata:
   """Parses the hmmsearch A3M sequence description line."""
-  # Example 1: >4pqx_A/2-217 [subseq from] mol:protein length:217  Free text
-  # Example 2: >5g3r_A/1-55 [subseq from] mol:protein length:352
   match = re.match(
       r'^>?([a-z0-9]+)_(\w+)/([0-9]+)-([0-9]+).*protein length:([0-9]+) *(.*)$',
       description.strip())
@@ -582,7 +518,6 @@ def parse_hmmsearch_a3m(query_sequence: str,
   Returns:
     A sequence of `TemplateHit` results.
   """
-  # Zip the descriptions and MSAs together, skip the first query sequence.
   parsed_a3m = list(zip(*parse_fasta(a3m_string)))
   if skip_first:
     parsed_a3m = parsed_a3m[1:]
@@ -592,9 +527,8 @@ def parse_hmmsearch_a3m(query_sequence: str,
   hits = []
   for i, (hit_sequence, hit_description) in enumerate(parsed_a3m, start=1):
     if 'mol:protein' not in hit_description:
-      continue  # Skip non-protein chains.
+      continue
     metadata = _parse_hmmsearch_description(hit_description)
-    # Aligned columns are only the match states.
     aligned_cols = sum([r.isupper() and r != '-' for r in hit_sequence])
     indices_hit = _get_indices(hit_sequence, start=metadata.start - 1)
 

@@ -49,10 +49,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 VHH72_WT_BINDER_SEQ = (
     "QVQLQESGGGLVQAGGSLRLSCAASGRTFSEYAMGWFRQAPGKEREFVATISWSGGSTYYTDSVKGRFTISRDNAKNTVYLQMNSLKPDDTAVYYCAAAGLGTVVSEWDYDYDYWGQGTQVTVSS"
 )
-# Prefer combined.csv's own edit_count=0 row when present. Partial
-# architecture-test sweeps that start the discrete search from APGM sample/topk
-# seeds may not contain an edit_count=0 row, so fall back to the fixed VHH72 WT
-# binder sequence used by vhh72_hallucination_search.py.
 
 
 def build_position_aa_favorability(dist1_pairs, seqs):
@@ -66,7 +62,6 @@ def build_position_aa_favorability(dist1_pairs, seqs):
         pos = p["positions_0idx"][0]
         aa_a = seqs[p["ag_a"]][pos]
         aa_b = seqs[p["ag_b"]][pos]
-        # delta = kd_a - kd_b; delta > 0 means a is the better binder
         favors_a = p["delta"] > 0
         index.setdefault((pos, aa_a), []).append(favors_a)
         index.setdefault((pos, aa_b), []).append(not favors_a)

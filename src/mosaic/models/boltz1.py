@@ -79,7 +79,7 @@ sequences:"""
             joltz1=self.model,
             features=features,
             recycling_steps=recycling_steps
-            - 1,  # Really awkward off-by-one issue in Joltz1 :/
+            - 1,
             sampling_steps=sampling_steps if sampling_steps is not None else 25,
             loss=loss,
             deterministic=True,
@@ -101,7 +101,7 @@ sequences:"""
         trunk_outputs = boltz1_trunk(
             self.model, features,
             recycling_steps=recycling_steps
-            - 1,  # Really awkward off-by-one issue in Joltz1 :/
+            - 1,
             deterministic=True,
             key=key,
         )

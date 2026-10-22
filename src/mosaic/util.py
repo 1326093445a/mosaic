@@ -111,7 +111,6 @@ def kabsch_conditioning(
     s = jnp.linalg.svd(centered_P.T @ centered_Q, compute_uv=False)
     largest = s[0]
     scale = jnp.where(largest > 0, largest, 1.0)
-    # Mask the diagonal with `where`: `eye * inf` leaves 0 * inf = nan offdiagonal.
     pairwise = jnp.abs(s[:, None] - s[None, :])
     gaps = jnp.where(jnp.eye(s.shape[0], dtype=bool), jnp.inf, pairwise)
     min_relative_gap = jnp.min(gaps) / scale
@@ -140,7 +139,6 @@ def calculate_rmsd(
     return unaligned_rmsd(P@R + t, Q)
 
 def fold_in(key: jax.dtypes.prng_key, name: str) -> jax.dtypes.prng_key:
-    # hash name to int
     h = hashlib.sha256(name.encode("utf-8")).digest()
     h = int.from_bytes(h[-4:], "big")
     return jax.random.fold_in(key, h)
@@ -150,7 +148,7 @@ def fold_in(key: jax.dtypes.prng_key, name: str) -> jax.dtypes.prng_key:
 class _At:
     path: list[object]
     pytree: object
-    cur_val: object  # we track this only so we can distinguish between DictKeys and SequenceKeys, seems a bit silly
+    cur_val: object
 
     def _accessor(self, node):
         for key in self.path:

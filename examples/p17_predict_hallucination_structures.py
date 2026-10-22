@@ -57,9 +57,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPLEX_PDB = REPO_ROOT / "P17_JN1.pdb"
 BINDER_CHAIN = "B"
 TARGET_CHAIN = "T"
-N_DIFFUSION_STEPS = 8  # matches vhh72_opendde_structure_prediction.py's real-prediction default
+N_DIFFUSION_STEPS = 8
 RECYCLING_STEPS = 4
-IPSAE_PAE_CUTOFF = 10.0  # Dunbrack ipSAE paper default
+IPSAE_PAE_CUTOFF = 10.0
 
 
 def seq_to_one_hot(seq: str) -> np.ndarray:
@@ -129,7 +129,7 @@ def main():
     selected = parse_select(args.select, rows)
     wt_row = [r for r in rows if int(r["edit_count"]) == 0]
     if args.include_wt and wt_row and not any(int(r["edit_count"]) == 0 for r in selected):
-        selected = [wt_row[0]] + selected  # always include the JN.1-baseline for comparison
+        selected = [wt_row[0]] + selected
     print(f"predicting real structures for {len(selected)} candidates "
           f"(including WT/JN.1 reference): "
           f"{[(r['seed'], r['edit_count']) for r in selected]}", flush=True)
@@ -146,9 +146,6 @@ def main():
     tb_ipsae_loss = TargetBinderIPSAE(pae_cutoff=IPSAE_PAE_CUTOFF)
     ipsae_min_loss = IPSAE_min(pae_cutoff=IPSAE_PAE_CUTOFF)
 
-    # MUST be jitted at real complex sizes -- see module docstring and
-    # vhh72_predict_hallucination_structures.py's docstring for the exact
-    # 234GiB OOM this avoids at eager call.
     _forward_jit = eqx.filter_jit(
         functools.partial(
             opendde_forward_from_trunk,

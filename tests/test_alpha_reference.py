@@ -48,8 +48,6 @@ def test_alpha_loads_with_solvent_and_glycan_dropped(alpha):
     assert len(alpha["target_seq"]) == 195
     assert len(alpha["binder_ca"]) == 123
     assert len(alpha["target_ca"]) == 195
-    # The crystal file interleaves solvent with protein in both chains, so a
-    # naive residue walk would pick it up; these counts prove it was dropped.
     assert alpha["binder_dropped_residues"] > 0
     assert alpha["target_dropped_residues"] > 0
     assert set(alpha["binder_seq"]) <= set(AMINO_ACIDS)
@@ -97,7 +95,6 @@ def test_contact_epitope_is_a_subset_of_the_target_and_nonempty(alpha):
     assert epitope.size > 0
     assert epitope.max() < len(alpha["target_seq"])
     assert np.all(np.diff(epitope) > 0), "sorted and unique"
-    # A tighter cutoff can only select a subset.
     tighter = contact_epitope(alpha["binder_ca"], alpha["target_ca"], 6.0)
     assert set(tighter.tolist()) <= set(epitope.tolist())
 

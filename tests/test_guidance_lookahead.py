@@ -21,14 +21,11 @@ from mosaic.models.boltzgen import Sampler, guided_partial_diffusion
 from mosaic.models.guidance_lookahead import build_lookahead_grad_fn
 
 B, M = 1, 6
-ATOM_PARTIAL_MASK = jnp.array([1.0, 1.0, 1.0, 1.0, 0.0, 0.0])  # unbatched, matches guided_partial_diffusion's own doc
+ATOM_PARTIAL_MASK = jnp.array([1.0, 1.0, 1.0, 1.0, 0.0, 0.0])
 ATOM_MASK = jnp.ones((M,))
 
 
 def _fake_denoiser(coords):
-    # Deterministic, genuinely nonlinear (tanh) -- so its Jacobian is
-    # nontrivial and look-ahead's through-denoiser gradient can differ from
-    # a stop-gradient gradient evaluated at the same output.
     return jnp.tanh(coords * 0.3) * 1.5
 
 
@@ -53,15 +50,12 @@ def test_build_lookahead_grad_fn_matches_direct_composition():
 
 
 def test_build_lookahead_grad_fn_differs_from_stopgrad_gradient():
-    # The whole point of look-ahead: differentiating through the denoiser's
-    # Jacobian must give a genuinely different gradient than the existing
-    # one-shot/NOS paths' d(loss)/d(x0_hat) computed with x0_hat frozen.
     loss = _quadratic_loss(_TARGET)
     x = jnp.array(np.random.RandomState(1).randn(M, 3))
     x0_hat = _fake_denoiser(x)
 
     grad_lookahead = build_lookahead_grad_fn(_fake_denoiser, loss)(x)
-    grad_stopgrad = jax.grad(loss)(x0_hat)  # what the one-shot/NOS paths compute
+    grad_stopgrad = jax.grad(loss)(x0_hat)
     assert not np.allclose(np.array(grad_lookahead), np.array(grad_stopgrad), atol=1e-4)
 
 
@@ -87,8 +81,6 @@ def _fake_sampler_and_structure_module():
 
 
 def test_lookahead_disabled_matches_prior_one_shot_behavior():
-    # guidance_lookahead=False (default) must be byte-identical to the
-    # pre-existing one-shot path -- regression safety for the refactor.
     sampler, structure_module = _fake_sampler_and_structure_module()
     initial_coords = jnp.array(np.random.RandomState(2).randn(M, 3))
     common = dict(
@@ -120,14 +112,6 @@ def test_lookahead_enabled_runs_and_changes_result():
 
 
 def test_lookahead_actually_reduces_the_guidance_loss():
-    # The property "runs and changes the result" (previous test) does not
-    # catch a wrong-sign implementation -- an earlier version of this
-    # mechanism changed the result, just in the direction that made the toy
-    # loss WORSE (caught by review: guidance_loss(x0_hat)=9.12 vs 12.67 after
-    # one guided step, the sign-flipped bug; fixed to 5.17, a real decrease).
-    # This test directly checks the one property that actually matters: does
-    # enabling look-ahead guidance make the final structure score BETTER on
-    # the same loss it was guided by, relative to no guidance at all.
     sampler, structure_module = _fake_sampler_and_structure_module()
     initial_coords = jnp.array(np.random.RandomState(5).randn(M, 3))
     loss = _quadratic_loss(_TARGET)

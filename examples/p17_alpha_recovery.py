@@ -38,17 +38,10 @@ import sys
 
 REPO = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO / "examples"
-# The Alpha control's reference. `None` elsewhere means the search script's
-# own default reference, which is JN.1.
 ALPHA_COMPLEX_PDB = REPO / "P17_Alpha.pdb"
 SELECTION_SEEDS = (0, 1)
 HELDOUT_SEEDS = (101, 102, 103)
 
-# Provisional, declared before execution, from the historical native control in
-# section 19.1: P17+JN.1 spans ipSAE 0.0000-0.1629 and P17+Alpha 0.7949-0.7954.
-# A rung counts as damaged when its mean ipSAE falls at or below the top of the
-# non-binding range. This is a threshold on one predictor's confidence, not a
-# validated boundary between binding and non-binding.
 NON_BINDING_IPSAE_CEILING = 0.1629
 
 
@@ -113,11 +106,6 @@ def run_workers(jobs, devices, log_dir):
     Each worker preallocates most of its GPU, so devices are not shared within
     a batch. Returns the per-job exit codes in order.
     """
-    # Distinct devices, checked here and not only in the shell launchers.
-    # `["0", "0"]` reads as two free slots and puts two OpenDDE processes on
-    # GPU 0, each preallocating most of it. The two reviewed launchers refuse
-    # duplicates, but this function is also called directly and by other
-    # wrappers, so the guard belongs where the scheduling decision is made.
     devices = [str(d) for d in devices]
     if not devices:
         raise ValueError("run_workers needs at least one device")
@@ -133,13 +121,6 @@ def run_workers(jobs, devices, log_dir):
     for start in range(0, len(jobs), len(devices)):
         batch = list(enumerate(jobs[start : start + len(devices)], start=start))
         running = []
-        # Cleanup covers the WAIT as well as the launch. Two ways to leave
-        # workers running otherwise: a later Popen raising (a missing
-        # interpreter, a bad path, EMFILE) while earlier workers are already
-        # up, or a KeyboardInterrupt arriving while this process is blocked in
-        # `wait()` with jobs still pending. Each worker preallocates most of a
-        # device, so a survivor makes the next attempt fail for a reason
-        # unrelated to the first.
         reaped = set()
         try:
             for slot, (index, job) in enumerate(batch):
@@ -412,30 +393,14 @@ def search_jobs(root, policies, seeds, start_sequence, budget, args, complex_pdb
                 ("--acceptance-temperature", "acceptance_temperature"),
                 ("--weight-pose", "weight_pose"),
                 ("--width", "width"),
-                # Registry restraint (section 26). Forwarded like any other
-                # weight so a cell that sets it is recorded in the worker's
-                # own config, not only in the launcher's plan.
                 ("--weight-registry", "weight_registry"),
                 ("--registry-contact-distance", "registry_contact_distance"),
-                # Whether the edit budget is measured from the search's own
-                # start or from the reference. A continuous seeding stage has
-                # already spent budget to build that start, so `reference`
-                # keeps one budget across both stages instead of two.
                 ("--budget-anchor", "budget_anchor"),
-                # Positions one proposal may change at once. 2 crosses a valley
-                # whose midpoint the accept test would reject; it does not make
-                # the first-order ranking see synergy.
                 ("--move-arity", "move_arity"),
             ):
                 value = getattr(args, attr, None)
                 if value is not None:
                     command += [flag, str(value)]
-            # One append, explicit precedence. These used to be two separate
-            # appends -- one here from the CLI flag and one at the end of the
-            # loop from the `start_sequence` parameter -- so on the `search`
-            # subcommand, where the Alpha ladder passes a rung sequence, a
-            # user-supplied --start-sequence was silently dropped by argparse
-            # taking the last occurrence. A conflict is now an error.
             cli_start = getattr(args, "start_sequence", None)
             if start_sequence is not None and cli_start and cli_start != start_sequence:
                 raise ValueError(
@@ -516,12 +481,6 @@ def heldout(args):
         raise RuntimeError(f"no completed search runs under {root / 'search'}")
     print(f"Found {len(runs)} completed search run(s) in {root / 'search'}")
 
-    # Resolved and checked BEFORE the stage runs, and against the archive's own
-    # record rather than this invocation's defaults. Two separate bugs lived
-    # here: `run_heldout` was called without `seeds` and so evaluated
-    # HELDOUT_SEEDS while the writers below recorded whatever was requested,
-    # and the disjointness check used CLI defaults that an archive searched on
-    # other seeds does not share.
     selection_seeds, heldout_seeds = resolve_seed_sets(
         args, selection_override=archived_selection_seeds(root)
     )
@@ -555,9 +514,6 @@ def jn1(args):
     """
     devices = [d for d in args.devices.replace(" ", "").split(",") if d]
     root = Path(args.output_dir)
-    # Resolved and checked BEFORE any worker launches. The check used to run
-    # after the search finished, so an invalid configuration spent the whole
-    # search before being refused.
     selection_seeds, heldout_seeds = resolve_seed_sets(args)
     (root / "logs").mkdir(parents=True, exist_ok=True)
 
@@ -630,9 +586,6 @@ def write_jn1_table(
                 candidate_id=candidate,
                 is_wt=candidate == "0",
                 **metrics,
-                # Movement relative to this run's own WT, on held-out seeds.
-                # There is no known ceiling here, unlike the Alpha control, so
-                # these are differences and not recovered fractions.
                 ipsae_gain_over_wt=metrics["mean_ipsae"] - wt["mean_ipsae"],
                 pose_change_vs_wt_A=metrics["mean_pose_rmsd_A"]
                 - wt["mean_pose_rmsd_A"],
@@ -648,11 +601,6 @@ def write_jn1_table(
             dict(
                 wt_baseline=wt,
                 heldout_seeds=list(heldout_seeds),
-                # The seeds this run actually selected on, not the module
-                # default. With archived selection seeds [7, 8] this recorded
-                # [0, 1], so the context file disagreed with the run it
-                # described -- and a provenance field that can be wrong is
-                # worse than an absent one.
                 selection_seeds=list(selection_seeds),
                 alpha_binding_regime_reference=(
                     "Compare against the Alpha control's measured reference: "
@@ -703,8 +651,6 @@ def decoy(args):
 
     devices = [d for d in args.devices.replace(" ", "").split(",") if d]
     root = Path(args.output_dir)
-    # Resolved and checked BEFORE any worker launches; the check used to run
-    # after the search finished.
     selection_seeds, heldout_seeds = resolve_seed_sets(args)
     (root / "logs").mkdir(parents=True, exist_ok=True)
 
@@ -736,11 +682,7 @@ def decoy(args):
     args._decoy_sequence = decoy_seq
     print(f"Decoy target: {provenance}")
 
-    # Stage 1: does the decoy target fold? Without this the control can pass
-    # for the wrong reason.
     probe = root / "fold_check"
-    # The fold check must use the same reference the decoy was built from, or
-    # the length guard in the search script refuses it.
     command = score_command(
         probe, None, args.steps, args.opendde_dtype, args.complex
     )
@@ -753,15 +695,6 @@ def decoy(args):
         raise RuntimeError(
             f"decoy fold check failed (exit {codes[0]}); see {root / 'logs'}"
         )
-    # The gate is the decoy target's own pLDDT, not its fit to the reference
-    # target's coordinates. Measured on 2026-10-05: the shuffled decoy's
-    # target fit is 17.40 A, but so would a *perfectly folded* unrelated
-    # protein's be -- `target_aligned_rmsd_A` superimposes the predicted decoy
-    # on JN.1's coordinates, so for a decoy it measures shape difference from
-    # JN.1 and says nothing about folding. pLDDT is intrinsic to the chain.
-    # (The shuffled decoy fails both, at 0.405 target pLDDT against the
-    # binder's 0.843 in the same prediction -- the right verdict, but the
-    # RMSD gate reached it for the wrong reason.)
     plddt = metrics.get("mean_target_plddt")
     if plddt is None:
         raise RuntimeError(
@@ -879,9 +812,6 @@ def search(args):
     calibration = json.loads(Path(args.calibration).read_text())
     devices = [d for d in args.devices.replace(" ", "").split(",") if d]
     root = Path(args.output_dir)
-    # Resolved and checked BEFORE any worker launches. The check used to run
-    # after the search finished, so an invalid configuration spent the whole
-    # search before being refused.
     selection_seeds, heldout_seeds = resolve_seed_sets(args)
 
     selected = args.select_rung or calibration.get("recommended_rung")
@@ -969,10 +899,6 @@ def write_recovery_table(
                 worst_ipsae=min(ipsae),
                 mean_pose_rmsd_A=sum(pose) / len(pose),
                 worst_pose_rmsd_A=max(pose),
-                # Fraction of the damage closed, on confidence. Negative means
-                # worse than the damaged start. 1.0 means the reference's own
-                # measured confidence was reached -- on held-out seeds, which
-                # the search never selected on.
                 ipsae_recovery_fraction=(
                     (mean_ipsae - damaged["mean_ipsae"]) / span if span > 0 else None
                 ),
@@ -990,9 +916,6 @@ def write_recovery_table(
                 edit_budget=budget,
                 reference_metrics=reference,
                 damaged_metrics=damaged,
-                # As in `write_jn1_table`: the seeds this run used, not the
-                # module defaults, which a custom invocation silently
-                # contradicts.
                 heldout_seeds=list(heldout_seeds),
                 selection_seeds=list(selection_seeds),
                 interpretation=(
@@ -1064,9 +987,6 @@ def build_parser():
             help="structural seeds reserved for evaluation, never used for "
             "selection (default: %(default)s).",
         )
-        # Exploration knobs. Already on the search CLI but never threaded
-        # through a launcher, and never swept: section 20.8 found six of eight
-        # runs plateauing under the cold default chain.
         sub_parser.add_argument(
             "--save-saliency",
             action="store_true",
@@ -1074,18 +994,8 @@ def build_parser():
             "gradient step; it cannot be recovered after a run.",
         )
         sub_parser.add_argument("--target-entropy", type=float, default=None)
-        # None leaves p17_confidence_search.py's own default (1) alone, so
-        # omitting it keeps a cell's operator exactly as every recorded run had
-        # it. 2 adds the position-disjoint pair moves.
         sub_parser.add_argument("--move-arity", type=int, default=None)
-        # None means "leave p17_confidence_search.py's own default alone", so
-        # omitting these keeps a cell's objective exactly as it was before
-        # section 26 added the term.
         sub_parser.add_argument("--weight-registry", type=float, default=None)
-        # Start the search from a supplied sequence instead of WT. The
-        # continuous seeding stage (p17_continuous_seed.py) produces one;
-        # p17_confidence_search.py validates that it differs from the
-        # reference only inside the designable mask.
         sub_parser.add_argument("--start-sequence", default=None)
         sub_parser.add_argument(
             "--budget-anchor", choices=["start", "reference"], default=None,

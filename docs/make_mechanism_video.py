@@ -33,7 +33,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import FancyBboxPatch, Rectangle
 
-# --- palette, shared with docs/report.css so the video and the page match ---
 PAPER = "#eef1f4"
 SURFACE = "#f7f9fb"
 INK = "#15191e"
@@ -48,22 +47,20 @@ PASS = "#3f6b54"
 SANS = ["DejaVu Sans"]
 MONO = ["DejaVu Sans Mono"]
 
-N = 29              # designable positions
+N = 29
 BUDGET = 5
-WANTED = 15         # positions whose preferred residue differs from the parent
+WANTED = 15
 SOFT_FROM, SOFT_TO = 40.5, 12.25
 HARD_SCORE = 0.0002
 DISC_FINAL = 0.5801
 STAGES = [("logits", 240), ("logits", 120), ("soft", 216), ("hard", 24)]
 
-# Deterministic per-position pull, so every render is identical.
 _rng = np.random.default_rng(17)
 PULL = _rng.uniform(0.15, 1.0, N)
 ORDER = np.argsort(-PULL)
-KEEP = sorted(ORDER[:BUDGET].tolist())            # what the projection keeps
-WANT = sorted(ORDER[:WANTED].tolist())            # what the relaxation wanted
+KEEP = sorted(ORDER[:BUDGET].tolist())
+WANT = sorted(ORDER[:WANTED].tolist())
 
-# Discrete run: five accepts fill the budget, then every move is an exchange.
 DISC = [
     dict(pos=4, ok=True, score=0.09), dict(pos=19, ok=False, score=0.09),
     dict(pos=11, ok=True, score=0.21), dict(pos=25, ok=False, score=0.21),
@@ -222,7 +219,7 @@ class Scene:
                              "at the parent's score with all five edits already spent, so "
                              "it has nothing to offer and no moves left.")
 
-        else:  # outcome
+        else:
             st["title"] = "5 · What the search does with it"
             st["sub"] = "revert the seed, climb from the parent, land where it always lands"
             g = ease(u)
@@ -273,8 +270,6 @@ class Painter:
             ax.text(0.055, 0.408, st["note"], fontsize=11, color=INK_FAINT,
                     family=MONO, va="top")
 
-        # Meters, then the budget on its own row: stacking them keeps the big
-        # number's column clear, which is where the whole point lands.
         y = 0.330
         for label, frac, value, colour in st["meters"]:
             self._meter(y, label, frac, value, colour)
@@ -286,8 +281,6 @@ class Painter:
                     st["big"], fontsize=42, fontweight="bold",
                     color=NULL, family=MONO, ha="center", va="center")
 
-        # Wrap by hand: matplotlib's own wrap measures against the figure edge,
-        # not the text box, so a long caption runs off the frame.
         cap = "\n".join(textwrap.wrap(st["caption"], width=96)[:3])
         ax.text(0.055, 0.125, cap, fontsize=12.5, color=INK_SOFT,
                 family=SANS, va="top", linespacing=1.5)

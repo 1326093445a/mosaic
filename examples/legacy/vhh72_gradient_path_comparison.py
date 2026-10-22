@@ -89,17 +89,11 @@ from mosaic.legacy.boltzgen_vhh_guided import (
 print(f"  done ({time.time() - t0:.1f}s)", flush=True)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-# Cropped to the CDR-proximal interface (examples/crop_vhh72_wt_rbd.py) --
-# the full 209-residue target OOMs OpenDDE's backward pass on this GPU
-# (see docs/guidance_alphaseq_testing_notes.md section 9 point 1).
 COMPLEX_CIF = REPO_ROOT / "vhh72_wt_wt_rbd_cropped.cif"
 assert COMPLEX_CIF.exists(), (
     f"missing {COMPLEX_CIF} -- run examples/crop_vhh72_wt_rbd.py first"
 )
 
-# CDR boundaries via ANARCI/IMGT on the real WT VHH72 sequence -- see
-# examples/alphaseq_vhh72_cdr_contrast_pairs.py's module docstring. 1-indexed,
-# matching VHHDesignConfig.cdr_residue_indices' label_seq_id convention.
 CDR_RESIDUE_INDICES = list(range(26, 34)) + list(range(51, 59)) + list(range(97, 115))
 
 cfg = VHHDesignConfig(
@@ -112,8 +106,6 @@ cfg = VHHDesignConfig(
     recycling_steps=1,
     num_sampling_steps=200,
     start_sigma_frac=0.3,
-    # Fixed objective per this session's decision: OpenDDE bind + AbLang2 nat
-    # + edit budget, identical in both configs -- only the merge varies.
     weight_opendde_contact=0.5,
     weight_ablang2=0.10,
     weight_edit_budget=5.0,
@@ -184,8 +176,6 @@ print(f"  done ({time.time() - t0:.1f}s)", flush=True)
 
 t0 = time.time()
 print("[6/9] building guidance_fn_bind/nat/edit closures + their raw gradients...", flush=True)
-# Exactly mirrors run()'s _make_guidance_fn (boltzgen_vhh_guided.py) -- x0 ->
-# soft_seq via the differentiable BoltzGen-IF bridge -> loss_term(soft_seq).
 if_context = prepare_jax_boltzgen_if_context(
     models.boltzgen_if_torch,
     writer.torch_features,
@@ -222,13 +212,8 @@ print(f"  done ({time.time() - t0:.1f}s)", flush=True)
 
 t0 = time.time()
 print("[7/9] getting one real x0_hat (real noise + churn + BoltzGen denoise)...", flush=True)
-# Mirrors guided_partial_diffusion's init code + step_body's first iteration
-# (boltzgen.py) exactly -- same sigma schedule, same churn formula, same
-# preconditioned_network_forward call, same optional rigid realignment.
-# Reusing sampler/structure_module means this is the real denoiser, not a
-# stand-in for it.
 structure_module = models.boltzgen.structure_module
-initial_coords_b = initial_coords[None]      # (1, M, 3)
+initial_coords_b = initial_coords[None]
 atom_partial_mask_b = atom_partial_mask[None]
 atom_mask_b = atom_pad_mask[None]
 
@@ -295,17 +280,10 @@ for name, g in [("g_bind_raw", g_bind_raw), ("g_nat_raw", g_nat_raw), ("g_edit_r
     assert jnp.all(jnp.isfinite(g)), f"{name} contains non-finite values"
     print(f"  {name}: rms={float(jnp.sqrt(jnp.mean(g**2))):.6f}", flush=True)
 
-# "raw": sum with no controller machinery at all, scaled by the same overall
-# step-size schedule the controller uses (so a difference in outcome reflects
-# the merge mechanism, not just an arbitrary difference in step magnitude).
 lambda_fn = lambda_schedule_fn(cfg.lambda_schedule, cfg.lambda_max)
 g_total_raw = g_bind_raw + g_nat_raw + g_edit_raw
 delta_raw = lambda_fn(t_hat) * g_total_raw
 
-# "controller": the real production merge -- same private functions
-# step_body calls, same default alpha/beta/tau schedules (not passed by the
-# driver's call site, so they resolve to these defaults; lambda_fn matches
-# what the driver's default cfg.lambda_schedule="sigma_squared" produces).
 g_bind_c = _mask_center_normalize(g_bind_raw, atom_partial_mask_b)
 g_nat_c = _mask_center_normalize(g_nat_raw, atom_partial_mask_b)
 g_edit_c = _mask_center_normalize(g_edit_raw, atom_partial_mask_b)
@@ -316,21 +294,6 @@ g_total_full = (
 )
 delta_full = _clip_rms(lambda_fn(t_hat) * g_total_full, default_tau_schedule(t_hat), atom_partial_mask_b)
 
-# "consistent": controller + a NOS-style (arXiv:2305.20009) prior-consistency
-# term, per docs/guidance_alphaseq_testing_notes.md section 3b/9 -- the
-# candidate mechanism we picked over Gradient Guidance's look-ahead loss
-# (arXiv:2404.14743, requires backprop through the whole denoiser, and its
-# manifold-preservation proof needs a linear-subspace assumption that
-# doesn't hold for BoltzGen anyway). Implemented as a _compat_project of the
-# controller's full merged g_total against unguided_direction -- reusing the
-# exact PCGrad machinery already in production (boltzgen.py's
-# _compat_project), just with unguided_direction as the anchor instead of
-# g_bind. This removes only the component of g_total that actively conflicts
-# with what BoltzGen's own denoiser would have done unguided; components
-# that agree pass through unchanged (same asymmetric behavior _compat_project
-# already has for g_nat/g_edit against g_bind). unguided_direction is
-# mask/center/RMS-normalized first so the conflict dot-product is on the
-# same footing as every other gradient it's compared against.
 unguided_direction_norm = _mask_center_normalize(unguided_direction, atom_partial_mask_b)
 g_total_consistent = _compat_project(g_total_full, unguided_direction_norm)
 delta_consistent = _clip_rms(

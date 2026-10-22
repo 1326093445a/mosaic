@@ -182,7 +182,6 @@ def _(protenix_pred):
 
 @app.cell
 def _(PSSM_sharper, design_features, design_structure, protenix):
-    # repredict design with recycling
     protenix_pred = protenix.predict(
         PSSM=PSSM_sharper,
         features=design_features,

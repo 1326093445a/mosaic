@@ -114,7 +114,7 @@ def per_step_metrics(diagnostics: dict, atom_partial_mask=None) -> dict:
         )
 
     def squeeze_batch(x):
-        return x[:, 0]  # (num_steps, M, 3)
+        return x[:, 0]
 
     unguided_dir = squeeze_batch(unguided_dir)
     guided_dir = squeeze_batch(guided_dir)

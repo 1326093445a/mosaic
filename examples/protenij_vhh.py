@@ -45,7 +45,6 @@ def _():
 
 @app.cell
 def _():
-    # we'll use a sequence + MSA for the VHH. We could also add a template
     masked_framework_sequence = "QVQLVESGGGLVQPGGSLRLSCAASXXXXXXXXXXXLGWFRQAPGQGLEAVAAXXXXXXXXYYADSVKGRFTISRDNSKNTLYLQMNSLRAEDTAVYYCXXXXXXXXXXXXXXXXXXWGQGTLVTVS"
     return (masked_framework_sequence,)
 
@@ -75,14 +74,12 @@ def _(target_structure):
 
 @app.cell
 def _():
-    # for fun we'll incorporate ESMC and AbLang PLLs into our loss function. In theory this should make our sequences more "natural."
     ablang, ablang_tokenizer = load_ablang("heavy")
     ablang_pll = AbLangPseudoLikelihood(
         model=ablang,
         tokenizer=ablang_tokenizer,
         stop_grad=True,
     )
-    # and ESMC PLL
     ESMCPLL = ESMCPseudoLikelihood(load_esmc("esmc_300m"), stop_grad=True)
     return ESMCPLL, ablang_pll
 
@@ -96,7 +93,6 @@ def _():
 @app.cell
 def _(masked_framework_sequence, protenix, target_sequence, target_structure):
     design_features, design_structure = protenix.target_only_features(
-        # instead of binder_features, we'll use target_only_features so we properly handle sidechains on the framework. this shouldn't make a huge difference but feels right.
         chains=[
             TargetChain(
                 masked_framework_sequence,
@@ -127,9 +123,8 @@ def _(
                     i
                     for (i, c) in enumerate(masked_framework_sequence)
                     if c == "X"
-                ]  # encourage binding with the CDRs rather than the framework.
+                ]
             )
-            # if you have a particular hotspot you're going for you could use `epitope_idx` here.
         )
         - 0.0
         * sp.BinderTargetContact(
@@ -138,12 +133,9 @@ def _(
                     i
                     for (i, c) in enumerate(masked_framework_sequence)
                     if c != "X"
-                ]  # discourage binding with the framewor
+                ]
             )
         )
-        # if we really don't like "sidebinders" and want contact ONLY with the CDRs we could add a *negative* BinderTargetContact term here that only applies to framework residues
-        # I set this to zero because it seems silly to me: plenty of natural VHHs have framework-target contacts
-        # to really discourage these kinds of poses you'd also need to downweight some of the terms below that prefer secondary structure within the binder (WithinBinderPAE, pLDDT, etc)
         + 0.05 * sp.TargetBinderPAE()
         + 0.05 * sp.BinderTargetPAE()
         + 0.025 * sp.IPTMLoss()
@@ -157,12 +149,9 @@ def _(
         features=design_features,
         recycling_steps=2,
         sampling_steps=20,
-        # single diffusion sample per gradient eval; we get robustness/diversity from
-        # running a batch of independent designs in parallel (see the batched optimizer below)
         num_samples=1,
     )
 
-    # we use SetPositions to fix the framework AAs
     loss = SetPositions.from_sequence(
         wildtype=masked_framework_sequence,
         loss=0.1 * ESMCPLL + 2 * model_loss + 0.1 * ablang_pll,
@@ -185,14 +174,11 @@ def _(TOKENS, loss, masked_framework_sequence):
         [c for c in masked_framework_sequence if c == "X"]
     )
 
-    # initial soft sequences: [B, N, 20]
     _pssm = 0.5 * jax.random.gumbel(
         key=jax.random.key(np.random.randint(1000000)),
         shape=(batch_size, num_designed_residues, 20),
     )
 
-    # NOTE: stepsize scales with sqrt(N) where N = num_designed_residues (axis 1),
-    # NOT the batch dimension.
     _, partial_pssm = batched_simplex_APGM(
         loss_function=loss,
         x=_pssm,
@@ -255,7 +241,7 @@ def _(loss):
 @app.cell
 def _(batch_greedy_descent, batch_size, j_loss, loss, partial_pssm):
     _score_key = jax.random.key(0)
-    _seqs = partial_pssm.argmax(-1)  # [B, N] discrete
+    _seqs = partial_pssm.argmax(-1)
     _design_vals = []
     for _b in range(batch_size):
         _v, _ = j_loss(jax.nn.one_hot(_seqs[_b], 20), key=_score_key)
@@ -268,9 +254,6 @@ def _(batch_greedy_descent, batch_size, j_loss, loss, partial_pssm):
         _best,
     )
 
-    # Batched greedy descent: each step ranks all single-point mutations by first-order
-    # predicted delta and evaluates the top `batch_size` unseen candidates in parallel,
-    # greedily accepting the best improvement.
     s_greedy, s_greedy_val = batch_greedy_descent(
         loss,
         sequence=jax.device_put(_seqs[_best]),
@@ -297,7 +280,6 @@ def _(loss, s_greedy):
 
 @app.cell
 def _(TOKENS, design_features, design_structure, final_pssm, protenix):
-    # repredict with more recycling steps
     prediction_inpaint = protenix.predict(
         PSSM=final_pssm,
         writer=design_structure,

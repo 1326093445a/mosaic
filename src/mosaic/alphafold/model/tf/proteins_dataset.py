@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Datasets consisting of proteins."""
 from typing import Dict, Mapping, Optional, Sequence
@@ -59,7 +46,6 @@ def parse_reshape_logic(
     features: protein_features.FeaturesMetadata,
     key: Optional[str] = None) -> TensorDict:
   """Transforms parsed serial features to the correct shape."""
-  # Find out what is the number of sequences and the number of alignments.
   num_residues = tf.cast(_first(parsed_features["seq_length"]), dtype=tf.int32)
 
   if "num_alignments" in parsed_features:
@@ -74,9 +60,8 @@ def parse_reshape_logic(
     num_templates = 0
 
   if key is not None and "key" in features:
-    parsed_features["key"] = [key]  # Expand dims from () to (1,).
+    parsed_features["key"] = [key]
 
-  # Reshape the tensors according to the sequence length and num alignments.
   for k, v in parsed_features.items():
     new_shape = protein_features.shape(
         feature_name=k,
@@ -94,7 +79,6 @@ def parse_reshape_logic(
         message="The size of feature %s (%s) could not be reshaped "
         "into %s" % (k, tf.size(v), new_shape))
     if "template" not in k:
-      # Make sure the feature we are reshaping is not empty.
       assert_non_empty = tf.assert_greater(
           tf.size(v), 0, name="assert_%s_non_empty" % k,
           message="The feature %s is not set in the tf.Example. Either do not "
@@ -112,7 +96,6 @@ def parse_reshape_logic(
 def _make_features_metadata(
     feature_names: Sequence[str]) -> protein_features.FeaturesMetadata:
   """Makes a feature name to type and shape mapping from a list of names."""
-  # Make sure these features are always read.
   required_features = ["aatype", "sequence", "seq_length"]
   feature_names = list(set(feature_names) | set(required_features))
 
@@ -160,7 +143,5 @@ def np_to_tensor_dict(
   tensor_dict = {k: tf.constant(v) for k, v in np_example.items()
                  if k in features_metadata}
 
-  # Ensures shapes are as expected. Needed for setting size of empty features
-  # e.g. when no template hits were found.
   tensor_dict = parse_reshape_logic(tensor_dict, features_metadata)
   return tensor_dict

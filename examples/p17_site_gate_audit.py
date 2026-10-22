@@ -35,13 +35,12 @@ from scipy.spatial import cKDTree
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Germinal's published thresholds (filter_utils.py::compute_hotspot_proximity)
 PROXIMITY_A = 5.3
 CONTACT_A = 6.0
 MIN_CONTACTS = 3
 MIN_INTERFACE_CDR = 0.5
-INTERFACE_A = 4.0  # BindCraft's interface enumeration cutoff
-FLIP_DEGREES = 120.0  # above this, call it a flip rather than a displacement
+INTERFACE_A = 4.0
+FLIP_DEGREES = 120.0
 
 
 def heavy(residue):
@@ -99,7 +98,6 @@ def assess(path, epitope, cdr, reference_binder_ca, reference_target_ca):
     if not len(bpos) or not len(tpos):
         return None
 
-    # Per-residue nearest-neighbour distances, both directions.
     d_t, _ = cKDTree(bpos).query(tpos, k=1)
     per_target = np.full(len(target), np.inf)
     np.minimum.at(per_target, tres, d_t)
@@ -107,7 +105,6 @@ def assess(path, epitope, cdr, reference_binder_ca, reference_target_ca):
     per_binder = np.full(len(binder), np.inf)
     np.minimum.at(per_binder, bres, d_b)
 
-    # CDR atoms only, which is what distinguishes paratope from framework.
     cdr_atoms = np.isin(bres, cdr)
     if cdr_atoms.any():
         d_c, _ = cKDTree(bpos[cdr_atoms]).query(tpos, k=1)
@@ -147,7 +144,6 @@ def assess(path, epitope, cdr, reference_binder_ca, reference_target_ca):
         rotation_deg=rotation,
         centroid_shift_A=float(np.linalg.norm(aligned.mean(0) - reference_binder_ca.mean(0))),
         orientation="flipped" if rotation > FLIP_DEGREES else "displaced",
-        # All four criteria. Dropping the last two makes this near-vacuous.
         gate_pass=bool(
             near
             and contacts >= MIN_CONTACTS
@@ -178,7 +174,6 @@ def main(argv=None):
     systems = {
         195: ("Alpha", contact_epitope(alpha["binder_ca"], alpha["target_ca"], 8.0),
               alpha["binder_ca"], alpha["target_ca"]),
-        # JN.1's five literature hotspots: a coarse denominator for recall.
         184: ("JN.1", np.array([114, 116, 145, 147, 149]),
               jn1["binder_ca"], jn1["target_ca"]),
     }

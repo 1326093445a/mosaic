@@ -318,9 +318,6 @@ def _(FixedStructureInverseFoldingLL, mpnn, soft_pred):
 
 @app.cell
 def _():
-    # Alias off the leading underscore: marimo treats `_`-prefixed names as
-    # cell-local and mangles them, which breaks the `jacobi` closure when it is
-    # called from another cell.
     from mosaic.optimizers import _eval_loss_and_grad as eval_loss_and_grad
 
     def jacobi(loss, iters, sequence, key):

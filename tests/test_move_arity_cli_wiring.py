@@ -19,9 +19,6 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "examples"))
 
 
-# --------------------------------------------------------------------------
-# the search driver: CLI -> SearchConfig
-# --------------------------------------------------------------------------
 
 ALPHA = REPO / "P17_Alpha.pdb"
 
@@ -68,9 +65,6 @@ def test_arity_one_is_the_default_so_recorded_results_stay_reproducible():
     assert SearchConfig().move_arity == 1
 
 
-# --------------------------------------------------------------------------
-# the recovery driver: CLI -> worker command line
-# --------------------------------------------------------------------------
 
 def fake_args(**overrides):
     """The attributes search_jobs() reads, with nothing else set."""

@@ -93,8 +93,6 @@ def _fetch_msa(sequence: str, max_sequences: int = 8192):
             use_pairing=False,
             host_url=_DEFAULT_MSA_SERVER,
         )
-        # run_mmseqs2 returns either list[str] or tuple of lists depending on
-        # version; unwrap defensively.
         a3m_strings = result[0] if isinstance(result, tuple) else result
         a3m_path.write_text(a3m_strings[0])
 
@@ -195,13 +193,7 @@ def _featurize(
             design_positions.extend(
                 offset + j for j, ch in enumerate(seq) if ch == design_char
             )
-            # Hand the builder a clean placeholder backbone at designed
-            # positions (the trunk reads geometry here; res_type is overwritten
-            # by the PSSM and input_ids is blanked to UNK downstream).
             seq = seq.replace(design_char, design_geometry)
-        # The Fast checkpoint has no MSA encoder but still uses query row 0 as
-        # the `profile` aggregate, so passing the MSA through is correct in
-        # both modes.
         msa = _fetch_msa(c.sequence) if c.use_msa else None
         proteins.append(
             ProteinInput(id=chain_letters[i], sequence=seq, msa=msa)
@@ -212,10 +204,6 @@ def _featurize(
     builder = ESMFold2InputBuilder()
     raw_features, chain_infos = builder.prepare_input(spi)
 
-    # Note: we intentionally do NOT re-stamp the binder `token_bonds` block.
-    # A standard-residue placeholder ("A"/"G") leaves it empty (chain
-    # connectivity is implicit via residue_index, exactly as for a real chain
-    # and as the target_only reprediction sees it).
 
     return raw_features, chain_infos, np.array(design_positions, dtype=np.int64)
 
@@ -264,14 +252,10 @@ class ESMFold2(StructurePredictionModel):
     esmc: ESMC
     res_type_perm: Float[Array, "20 33"]
     distogram_bins: Float[Array, " Bins"]
-    # ESMC input-id for each mosaic-20 residue (LM re-encoding).
     esmc_token_of_aa: Int[Array, "20"]
     unk_input_id: int = eqx.field(static=True)
 
     def _check_msa_compat(self, chains: list[TargetChain]) -> None:
-        # The Fast checkpoint has no MSA encoder; an MSA would put its
-        # `profile` aggregate off-distribution, so refuse rather than
-        # silently produce bad predictions.
         if self.esmf.msa_encoder is None and any(c.use_msa for c in chains):
             raise ValueError(
                 "ESMFold2-Fast does not support MSAs (model.esmf.msa_encoder is "
@@ -335,10 +319,8 @@ class ESMFold2(StructurePredictionModel):
         """
         pack, chain_infos = self.target_only_features(
             [TargetChain("X" * binder_length, use_msa=False), *chains],
-            # "W" = the 14-atom (max) allocation the in-loop geom refresh needs.
             design_char="X", design_geometry="W",
         )
-        # Tie geom + LM refresh on for the design pack.
         return dataclasses.replace(pack, refresh=True), chain_infos
 
     def build_loss(
@@ -419,8 +401,6 @@ class ESMFold2(StructurePredictionModel):
         msa_max_depth: int | None = 1024,
         key,
     ):
-        # Geometry + LM refresh are tied to the pack (`features.refresh`): on for
-        # a `binder_features` design pack, off for a native pack.
         return forward_with_pssm(
             self.esmf, features, PSSM,
             self.res_type_perm,
@@ -475,22 +455,11 @@ class ESMFold2(StructurePredictionModel):
 
         if features.refresh:
             if PSSM is None:
-                # The refresh (geom + LM) is gated on `pssm is not None`, so with
-                # no PSSM the forward leaves the W/atom14 placeholder geometry
-                # (14-atom Trp, all-Ala identities) untouched — `to_structure`
-                # would then write that garbage. A refresh pack is a design pack;
-                # it always has a binder to splice, so require it explicitly.
                 raise ValueError(
                     "predict() on a refresh (design) pack needs a PSSM; "
                     "PSSM=None leaves the placeholder binder geometry unrefreshed. "
                     "Use a native target_only_features pack for target-only folds."
                 )
-            # The in-loop geom refresh repacks the binder into the placeholder
-            # (W/atom14) buffer, so the pack's flat atom names/elements no longer
-            # match the coordinates. The atom37 view IS rebuilt to match (see
-            # `refresh_binder_geometry`), and `to_structure` writes from it with
-            # identities taken from `full_sequence` (the spliced PSSM) — so no
-            # `chain_infos` relabeling is needed.
             st = out.to_structure()
         else:
             if writer is None:
@@ -513,16 +482,11 @@ class ESMFold2(StructurePredictionModel):
                 gemmi.cif.read_string(mmcif_str).sole_block()
             )
             if PSSM is not None:
-                # Residue names come from the placeholder `chain_infos` (e.g. all
-                # ALA for an "A"*N binder), never from the PSSM — so relabel the
-                # binder residues to the designed sequence (argmax of the PSSM).
-                # Atom geometry stays at the placeholder (backbone + CB); only the
-                # residue identities are corrected.
                 binder_names = [
                     gemmi.expand_one_letter(TOKENS[int(k)], gemmi.ResidueKind.AA)
                     for k in np.argmax(np.asarray(PSSM), axis=-1)
                 ]
-                binder_chain = st[0][0]  # asym_id 0 → first chain → the binder
+                binder_chain = st[0][0]
                 for res, name in zip(binder_chain, binder_names):
                     res.name = name
         return StructurePrediction(
@@ -565,7 +529,6 @@ def _probe_alphabets() -> tuple[np.ndarray, int, np.ndarray]:
     for i in range(len(TOKENS)):
         res_type_perm[i, int(res_type[i])] = 1.0
 
-    # ESMC input-id per residue (same 20-AA chain, in TOKENS order).
     esmc_token_of_aa = np.asarray(feats["input_ids"])[0].astype(np.int32)
     assert esmc_token_of_aa.shape == (len(TOKENS),)
 
@@ -605,8 +568,6 @@ def _make(checkpoint: str, *, experimental: bool = False) -> ESMFold2:
     esmf = _staticize_scalar_config(esmf)
     esmc = _staticize_scalar_config(esmc)
     res_type_perm, unk_input_id, esmc_token_of_aa = _probe_alphabets()
-    # Distogram range (release 2.0–22.0 Å; experimental 2.0–52.0 Å, matching
-    # its confidence head).
     min_dist, max_dist = (2.0, 52.0) if experimental else (2.0, 22.0)
     n_bins = int(esmf.distogram_head.weight.shape[0])
     return ESMFold2(

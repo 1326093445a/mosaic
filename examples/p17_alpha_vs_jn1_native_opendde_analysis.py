@@ -199,7 +199,7 @@ def main():
             fd = json.load(open(fd_path))
             pae_matrix = np.array(fd["token_pair_pae"], dtype=np.float64)
             asym_id = np.array(fd["token_asym_id"], dtype=np.int64)
-            chain1_val, chain2_val = asym_id[0], asym_id[-1]  # binder first, target second
+            chain1_val, chain2_val = asym_id[0], asym_id[-1]
 
             pred_st = gemmi.read_structure(str(cif_path))
             pred_st.setup_entities()
@@ -215,15 +215,12 @@ def main():
             assert pred_target_ca.shape[0] == n_target, "target length mismatch"
             assert pae_matrix.shape[0] == n_binder + n_target, "token count mismatch"
 
-            # target-aligned binder pose RMSD (mosaic's BinderPoseRMSD convention)
             R, t = kabsch(pred_target_ca, ref_target_ca)
             aligned_target_ca = pred_target_ca @ R.T + t
             aligned_binder_ca = pred_binder_ca @ R.T + t
             target_rmsd_after_align = rmsd(aligned_target_ca, ref_target_ca)
             binder_pose_rmsd = rmsd(aligned_binder_ca, ref_binder_ca)
 
-            # unaligned (raw superposition-free) binder-vs-reference RMSD, for context:
-            # how far apart are the two binder CA clouds without any fitting at all
             raw_binder_rmsd = rmsd(pred_binder_ca, ref_binder_ca)
 
             bt_ipsae, bt_n_int_binder, bt_n_int_target = ipsae_d0res_asym_max(

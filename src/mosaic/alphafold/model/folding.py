@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Modules and utilities for the structure module."""
 
@@ -97,7 +84,6 @@ class InvariantPointAttention(hk.Module):
     """
     num_residues, _ = inputs_1d.shape
 
-    # Improve readability by removing a large number of 'self's.
     num_head = self.config.num_head
     num_scalar_qk = self.config.num_scalar_qk
     num_point_qk = self.config.num_point_qk
@@ -109,16 +95,12 @@ class InvariantPointAttention(hk.Module):
     assert num_point_qk > 0
     assert num_point_v > 0
 
-    # Construct scalar queries of shape:
-    # [num_query_residues, num_head, num_points]
     q_scalar = common_modules.Linear(
         num_head * num_scalar_qk, name='q_scalar')(
             inputs_1d)
     q_scalar = jnp.reshape(
         q_scalar, [num_residues, num_head, num_scalar_qk])
 
-    # Construct scalar keys/values of shape:
-    # [num_target_residues, num_head, num_points]
     kv_scalar = common_modules.Linear(
         num_head * (num_scalar_v + num_scalar_qk), name='kv_scalar')(
             inputs_1d)
@@ -127,52 +109,35 @@ class InvariantPointAttention(hk.Module):
                              num_scalar_v + num_scalar_qk])
     k_scalar, v_scalar = jnp.split(kv_scalar, [num_scalar_qk], axis=-1)
 
-    # Construct query points of shape:
-    # [num_residues, num_head, num_point_qk]
 
-    # First construct query points in local frame.
     q_point_local = common_modules.Linear(
         num_head * 3 * num_point_qk, name='q_point_local')(
             inputs_1d)
     q_point_local = jnp.split(q_point_local, 3, axis=-1)
-    # Project query points into global frame.
     q_point_global = affine.apply_to_point(q_point_local, extra_dims=1)
-    # Reshape query point for later use.
     q_point = [
         jnp.reshape(x, [num_residues, num_head, num_point_qk])
         for x in q_point_global]
 
-    # Construct key and value points.
-    # Key points have shape [num_residues, num_head, num_point_qk]
-    # Value points have shape [num_residues, num_head, num_point_v]
 
-    # Construct key and value points in local frame.
     kv_point_local = common_modules.Linear(
         num_head * 3 * (num_point_qk + num_point_v), name='kv_point_local')(
             inputs_1d)
     kv_point_local = jnp.split(kv_point_local, 3, axis=-1)
-    # Project key and value points into global frame.
     kv_point_global = affine.apply_to_point(kv_point_local, extra_dims=1)
     kv_point_global = [
         jnp.reshape(x, [num_residues,
                         num_head, (num_point_qk + num_point_v)])
         for x in kv_point_global]
-    # Split key and value points.
     k_point, v_point = list(
         zip(*[
             jnp.split(x, [num_point_qk,], axis=-1)
             for x in kv_point_global
         ]))
 
-    # We assume that all queries and keys come iid from N(0, 1) distribution
-    # and compute the variances of the attention logits.
-    # Each scalar pair (q, k) contributes Var q*k = 1
     scalar_variance = max(num_scalar_qk, 1) * 1.
-    # Each point pair (q, k) contributes Var [0.5 ||q||^2 - <q, k>] = 9 / 2
     point_variance = max(num_point_qk, 1) * 9. / 2
 
-    # Allocate equal variance to scalar, point and attention 2d parts so that
-    # the sum is 1.
 
     num_logit_terms = 3
 
@@ -180,10 +145,8 @@ class InvariantPointAttention(hk.Module):
     point_weights = np.sqrt(1.0 / (num_logit_terms * point_variance))
     attention_2d_weights = np.sqrt(1.0 / (num_logit_terms))
 
-    # Trainable per-head weights for points.
     trainable_point_weights = jax.nn.softplus(hk.get_parameter(
         'trainable_point_weights', shape=[num_head],
-        # softplus^{-1} (1)
         init=hk.initializers.Constant(np.log(np.exp(1.) - 1.))))
     point_weights *= jnp.expand_dims(trainable_point_weights, axis=1)
 
@@ -216,30 +179,19 @@ class InvariantPointAttention(hk.Module):
     mask_2d = mask * jnp.swapaxes(mask, -1, -2)
     attn_logits -= 1e5 * (1. - mask_2d)
 
-    # [num_head, num_query_residues, num_target_residues]
     attn = jax.nn.softmax(attn_logits)
 
-    # [num_head, num_query_residues, num_head * num_scalar_v]
     result_scalar = jnp.matmul(attn, v)
 
-    # For point result, implement matmul manually so that it will be a float32
-    # on TPU.  This is equivalent to
-    # result_point_global = [jnp.einsum('bhqk,bhkc->bhqc', attn, vx)
-    #                        for vx in v_point]
-    # but on the TPU, doing the multiply and reduce_sum ensures the
-    # computation happens in float32 instead of bfloat16.
     result_point_global = [jnp.sum(
         attn[:, :, :, None] * vx[:, None, :, :],
         axis=-2) for vx in v_point]
 
-    # [num_query_residues, num_head, num_head * num_(scalar|point)_v]
     result_scalar = jnp.swapaxes(result_scalar, -2, -3)
     result_point_global = [
         jnp.swapaxes(x, -2, -3)
         for x in result_point_global]
 
-    # Features used in the linear output projection. Should have the size
-    # [num_query_residues, ?]
     output_features = []
 
     result_scalar = jnp.reshape(
@@ -257,10 +209,6 @@ class InvariantPointAttention(hk.Module):
                                     jnp.square(result_point_local[1]) +
                                     jnp.square(result_point_local[2])))
 
-    # Dimensions: h = heads, i and j = residues,
-    # c = inputs_2d channels
-    # Contraction happens over the second residue dimension, similarly to how
-    # the usual attention is performed.
     result_attention_over_2d = jnp.einsum('hij, ijc->ihc', attn, inputs_2d)
     num_out = num_head * result_attention_over_2d.shape[-1]
     output_features.append(
@@ -320,7 +268,6 @@ class FoldIteration(hk.Module):
 
     act = activations['act']
     attention_module = InvariantPointAttention(self.config, self.global_config)
-    # Attention
     attn = attention_module(
         inputs_1d=act,
         inputs_2d=static_feat_2d,
@@ -339,7 +286,6 @@ class FoldIteration(hk.Module):
 
     final_init = 'zeros' if self.global_config.zero_init else 'linear'
 
-    # Transition
     input_act = act
     for i in range(c.num_layer_in_transition):
       init = 'relu' if i < c.num_layer_in_transition - 1 else final_init
@@ -359,11 +305,8 @@ class FoldIteration(hk.Module):
         name='transition_layer_norm')(act)
 
     if update_affine:
-      # This block corresponds to
-      # Jumper et al. (2021) Alg. 23 "Backbone update"
       affine_update_size = 6
 
-      # Affine update
       affine_update = common_modules.Linear(
           affine_update_size,
           initializer=final_init,
@@ -454,7 +397,6 @@ def generate_affines(representations, batch, config, global_config,
     outputs.append(output)
 
   output = jax.tree.map(lambda *x: jnp.stack(x), *outputs)
-  # Include the activations in the output dict for use by the LDDT-Head.
   output['act'] = activations['act']
 
   return output
@@ -497,16 +439,16 @@ class StructureModule(hk.Module):
     ret['sidechains'] = output['sc']
 
     atom14_pred_positions = r3.vecs_to_tensor(output['sc']['atom_pos'])[-1]
-    ret['final_atom14_positions'] = atom14_pred_positions  # (N, 14, 3)
-    ret['final_atom14_mask'] = restype_atom14_mask[batch['aatype']] #batch['atom14_atom_exists']  # (N, 14)
+    ret['final_atom14_positions'] = atom14_pred_positions
+    ret['final_atom14_mask'] = restype_atom14_mask[batch['aatype']]
 
     atom37_pred_positions = all_atom.atom14_to_atom37(atom14_pred_positions,
                                                       batch)
     atom37_exists = restype_atom37_mask[batch['aatype']]
     atom37_pred_positions *= atom37_exists[:, :, None]
-    ret['final_atom_positions'] = atom37_pred_positions  # (N, 37, 3)
+    ret['final_atom_positions'] = atom37_pred_positions
 
-    ret['final_atom_mask'] = atom37_exists #(N, 37)
+    ret['final_atom_mask'] = atom37_exists
 
     ret['final_affines'] = ret['traj'][-1]
 
@@ -522,15 +464,12 @@ class StructureModule(hk.Module):
     ret = {'loss': 0.}
 
     ret['metrics'] = {}
-    # If requested, compute in-graph metrics.
     if self.config.compute_in_graph_metrics:
       atom14_pred_positions = value['final_atom14_positions']
-      # Compute renaming and violations.
       value.update(compute_renamed_ground_truth(batch, atom14_pred_positions))
       value['violations'] = find_structural_violations(
           batch, atom14_pred_positions, self.config)
 
-      # Several violation metrics:
       violation_metrics = compute_violation_metrics(
           batch=batch,
           atom14_pred_positions=atom14_pred_positions,
@@ -610,9 +549,9 @@ def compute_renamed_ground_truth(
       + alt_naming_is_better[:, None] * batch['atom14_alt_gt_exists'])
 
   return {
-      'alt_naming_is_better': alt_naming_is_better,  # (N)
-      'renamed_atom14_gt_positions': renamed_atom14_gt_positions,  # (N, 14, 3)
-      'renamed_atom14_gt_exists': renamed_atom14_gt_mask,  # (N, 14)
+      'alt_naming_is_better': alt_naming_is_better,
+      'renamed_atom14_gt_positions': renamed_atom14_gt_positions,
+      'renamed_atom14_gt_exists': renamed_atom14_gt_mask,
   }
 
 
@@ -649,7 +588,6 @@ def backbone_loss(ret, batch, value, config):
                            backbone_mask)
 
   if 'use_clamped_fape' in batch:
-    # Jumper et al. (2021) Suppl. Sec. 1.11.5 "Loss clamping details"
     use_clamped_fape = jnp.asarray(batch['use_clamped_fape'], jnp.float32)
     unclamped_fape_loss_fn = functools.partial(
         all_atom.frame_aligned_point_error,
@@ -672,8 +610,6 @@ def backbone_loss(ret, batch, value, config):
 
 def sidechain_loss(batch, value, config):
   """All Atom FAPE Loss using renamed rigids."""
-  # Rename Frames
-  # Jumper et al. (2021) Suppl. Alg. 26 "renameSymmetricGroundTruthAtoms" line 7
   alt_naming_is_better = value['alt_naming_is_better']
   renamed_gt_frames = (
       (1. - alt_naming_is_better[:, None, None])
@@ -689,7 +625,6 @@ def sidechain_loss(batch, value, config):
       jnp.reshape(value['renamed_atom14_gt_positions'], [-1, 3]))
   flat_positions_mask = jnp.reshape(value['renamed_atom14_gt_exists'], [-1])
 
-  # Compute frame_aligned_point_error score for the final layer.
   pred_frames = value['sidechains']['frames']
   pred_positions = value['sidechains']['atom_pos']
 
@@ -699,7 +634,6 @@ def sidechain_loss(batch, value, config):
       _slice_last_layer_and_flatten, pred_frames)
   flat_pred_positions = jax.tree.map(
       _slice_last_layer_and_flatten, pred_positions)
-  # FAPE Loss on sidechains
   fape = all_atom.frame_aligned_point_error(
       pred_frames=flat_pred_frames,
       target_frames=flat_gt_frames,
@@ -719,7 +653,6 @@ def structural_violation_loss(ret, batch, value, config):
   """Computes loss for structural violations."""
   assert config.sidechain.weight_frac
 
-  # Put all violation losses together to one large loss.
   violations = value['violations']
   num_atoms = jnp.sum(batch['atom14_atom_exists']).astype(jnp.float32)
   ret['loss'] += (config.structural_violation_loss_weight * (
@@ -734,12 +667,11 @@ def structural_violation_loss(ret, batch, value, config):
 
 def find_structural_violations(
     batch: Dict[str, jnp.ndarray],
-    atom14_pred_positions: jnp.ndarray,  # (N, 14, 3)
+    atom14_pred_positions: jnp.ndarray,
     config: ml_collections.ConfigDict
     ):
   """Computes several checks for structural violations."""
 
-  # Compute between residue backbone violations of bonds and angles.
   connection_violations = all_atom.between_residue_bond_loss(
       pred_atom_positions=atom14_pred_positions,
       pred_atom_mask=batch['atom14_atom_exists'].astype(jnp.float32),
@@ -748,9 +680,6 @@ def find_structural_violations(
       tolerance_factor_soft=config.violation_tolerance_factor,
       tolerance_factor_hard=config.violation_tolerance_factor)
 
-  # Compute the Van der Waals radius for every atom
-  # (the first letter of the atom name is the element type).
-  # Shape: (N, 14).
   atomtype_radius = jnp.array([
       residue_constants.van_der_waals_radius[name[0]]
       for name in residue_constants.atom_types
@@ -758,7 +687,6 @@ def find_structural_violations(
   atom14_atom_radius = batch['atom14_atom_exists'] * utils.batched_gather(
       atomtype_radius, batch['residx_atom14_to_atom37'])
 
-  # Compute the between residue clash loss.
   between_residue_clashes = all_atom.between_residue_clash_loss(
       atom14_pred_positions=atom14_pred_positions,
       atom14_atom_exists=batch['atom14_atom_exists'],
@@ -767,8 +695,6 @@ def find_structural_violations(
       overlap_tolerance_soft=config.clash_overlap_tolerance,
       overlap_tolerance_hard=config.clash_overlap_tolerance)
 
-  # Compute all within-residue violations (clashes,
-  # bond length and angle violations).
   restype_atom14_bounds = residue_constants.make_atom14_dists_bounds(
       overlap_tolerance=config.clash_overlap_tolerance,
       bond_length_tolerance_factor=config.violation_tolerance_factor)
@@ -783,7 +709,6 @@ def find_structural_violations(
       atom14_dists_upper_bound=atom14_dists_upper_bound,
       tighten_bounds_for_loss=0.0)
 
-  # Combine them to a single per-residue violation mask (used later for LDDT).
   per_residue_violations_mask = jnp.max(jnp.stack([
       connection_violations['per_residue_violation_mask'],
       jnp.max(between_residue_clashes['per_atom_clash_mask'], axis=-1),
@@ -793,36 +718,36 @@ def find_structural_violations(
   return {
       'between_residues': {
           'bonds_c_n_loss_mean':
-              connection_violations['c_n_loss_mean'],  # ()
+              connection_violations['c_n_loss_mean'],
           'angles_ca_c_n_loss_mean':
-              connection_violations['ca_c_n_loss_mean'],  # ()
+              connection_violations['ca_c_n_loss_mean'],
           'angles_c_n_ca_loss_mean':
-              connection_violations['c_n_ca_loss_mean'],  # ()
+              connection_violations['c_n_ca_loss_mean'],
           'connections_per_residue_loss_sum':
-              connection_violations['per_residue_loss_sum'],  # (N)
+              connection_violations['per_residue_loss_sum'],
           'connections_per_residue_violation_mask':
-              connection_violations['per_residue_violation_mask'],  # (N)
+              connection_violations['per_residue_violation_mask'],
           'clashes_mean_loss':
-              between_residue_clashes['mean_loss'],  # ()
+              between_residue_clashes['mean_loss'],
           'clashes_per_atom_loss_sum':
-              between_residue_clashes['per_atom_loss_sum'],  # (N, 14)
+              between_residue_clashes['per_atom_loss_sum'],
           'clashes_per_atom_clash_mask':
-              between_residue_clashes['per_atom_clash_mask'],  # (N, 14)
+              between_residue_clashes['per_atom_clash_mask'],
       },
       'within_residues': {
           'per_atom_loss_sum':
-              within_residue_violations['per_atom_loss_sum'],  # (N, 14)
+              within_residue_violations['per_atom_loss_sum'],
           'per_atom_violations':
-              within_residue_violations['per_atom_violations'],  # (N, 14),
+              within_residue_violations['per_atom_violations'],
       },
       'total_per_residue_violations_mask':
-          per_residue_violations_mask,  # (N)
+          per_residue_violations_mask,
   }
 
 
 def compute_violation_metrics(
     batch: Dict[str, jnp.ndarray],
-    atom14_pred_positions: jnp.ndarray,  # (N, 14, 3)
+    atom14_pred_positions: jnp.ndarray,
     violations: Dict[str, jnp.ndarray],
     ) -> Dict[str, jnp.ndarray]:
   """Compute several metrics to assess the structural violations."""
@@ -888,7 +813,6 @@ def supervised_chi_loss(ret, batch, value, config):
   cos_true_chi = jnp.cos(true_chi)
   sin_cos_true_chi = jnp.stack([sin_true_chi, cos_true_chi], axis=-1)
 
-  # This is -1 if chi is pi-periodic and +1 if it's 2pi-periodic
   shifted_mask = (1 - 2 * chi_pi_periodic)[..., None]
   sin_cos_true_chi_shifted = shifted_mask * sin_cos_true_chi
 
@@ -952,12 +876,10 @@ class MultiRigidSidechain(hk.Module):
             name='input_projection')(jax.nn.relu(x))
         for x in representations_list
     ]
-    # Sum the activation list (equivalent to concat then Linear).
     act = sum(act)
 
     final_init = 'zeros' if self.global_config.zero_init else 'linear'
 
-    # Mapping with some residual blocks.
     for _ in range(self.config.num_residual_block):
       old_act = act
       act = common_modules.Linear(
@@ -972,7 +894,6 @@ class MultiRigidSidechain(hk.Module):
               jax.nn.relu(act))
       act += old_act
 
-    # Map activations to torsion angles. Shape: (num_res, 14).
     num_res = act.shape[0]
     unnormalized_angles = common_modules.Linear(
         14, name='unnormalized_angles')(
@@ -982,29 +903,24 @@ class MultiRigidSidechain(hk.Module):
     angles = l2_normalize(unnormalized_angles, axis=-1)
 
     outputs = {
-        'angles_sin_cos': angles,  # jnp.ndarray (N, 7, 2)
+        'angles_sin_cos': angles,
         'unnormalized_angles_sin_cos':
-            unnormalized_angles,  # jnp.ndarray (N, 7, 2)
+            unnormalized_angles,
     }
 
-    # Map torsion angles to frames.
     backb_to_global = r3.rigids_from_quataffine(affine)
 
-    # Jumper et al. (2021) Suppl. Alg. 24 "computeAllAtomCoordinates"
 
-    # r3.Rigids with shape (N, 8).
     all_frames_to_global = all_atom.torsion_angles_to_frames(
         aatype,
         backb_to_global,
         angles)
 
-    # Use frames and literature positions to create the final atom coordinates.
-    # r3.Vecs with shape (N, 14).
     pred_positions = all_atom.frames_and_literature_positions_to_atom14_pos(
         aatype, all_frames_to_global)
 
     outputs.update({
-        'atom_pos': pred_positions,  # r3.Vecs (N, 14)
-        'frames': all_frames_to_global,  # r3.Rigids (N, 8)
+        'atom_pos': pred_positions,
+        'frames': all_frames_to_global,
     })
     return outputs

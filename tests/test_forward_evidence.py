@@ -95,7 +95,6 @@ def test_reference_digest_reads_a_file_and_tolerates_a_missing_one(tmp_path):
     present = tmp_path / "ref.pdb"
     present.write_bytes(b"ATOM\n")
     assert reference_digest(present) == hashlib.sha256(b"ATOM\n").hexdigest()
-    # A missing reference must not crash the gate; it downgrades the check.
     assert reference_digest(tmp_path / "absent.pdb") is None
 
 

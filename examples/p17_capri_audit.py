@@ -37,17 +37,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import statistics as st
 
-# DockQ's own published classification thresholds.
 CAPRI_BOUNDS = ((0.80, "high"), (0.49, "medium"), (0.23, "acceptable"))
 
-# THIS PROJECT'S OWN BAR, which is not CAPRI's. Set by the user on 2026-10-07
-# and reaffirmed on 2026-10-08: a candidate counts when its interface RMSD is
-# at or under this, because the designed chain is allowed to shift relative to
-# the original interface and reproducing exact native contacts is not the goal.
-# fnat and DockQ are still reported and still do not gate. Anything written for
-# a reader outside this project must label this threshold explicitly, since a
-# docking audience will assume CAPRI's acceptable class (<= 4 A, DockQ >= 0.23)
-# and read the same table to the opposite conclusion.
 IRMSD_THRESHOLD = 10.0
 
 
@@ -131,7 +122,6 @@ def run_dockq(dockq_bin, model_path, native_path, mapping):
                 f"DockQ wrote no JSON for {model_path}\n{proc.stderr[-800:]}"
             )
         payload = json.loads(out.read_text())
-    # One interface, so the single `best_result` entry carries the metrics.
     (result,) = payload["best_result"].values()
     return result
 
@@ -200,12 +190,6 @@ def discover(screen_root, cells):
             native = shard / "reference.pdb"
             if not native.exists():
                 stranded = len(list((shard / "structures").glob("candidate_*/seed_*.pdb")))
-                # An idle shard is not a problem. The held-out driver shards
-                # over its devices, so 5 sequences across 8 shards leaves three
-                # workers with `sequences: 0, completed: true` and no reference
-                # written. Reporting that as data loss sent me looking for a
-                # failure that never happened on 2026-10-12. Only a shard with
-                # structures it cannot score has actually lost something.
                 incomplete.append(dict(
                     cell=cell, shard=shard.name, path=shard,
                     reason="no reference.pdb", stranded=stranded,
@@ -254,10 +238,6 @@ def summarize(rows, label, threshold=IRMSD_THRESHOLD):
     worst_first = ", ".join(
         f"{n} {c}" for c, n in sorted(classes.items(), key=lambda kv: -kv[1])
     )
-    # The project's own bar, per candidate. Reported first because it is the
-    # criterion this work is actually judged against; the CAPRI classes stay
-    # because they carry information the bar does not -- candidates have
-    # cleared 10 A with fnat 0.000, so the bar can be met by placement alone.
     cand = per_candidate_irmsd(rows)
     hits = sum(1 for v in cand.values() if v <= threshold)
     mean_c = st.mean(cand.values())
@@ -308,14 +288,10 @@ def main(argv=None):
     idle = [e for e in incomplete if e["kind"] == "idle"]
     lost = [e for e in incomplete if e["kind"] == "data-loss"]
     if idle:
-        # One quiet line. These are workers that were allocated and had nothing
-        # assigned, which is what sharding N sequences over M > N devices does.
         print(f"note: {len(idle)} shard(s) held no structures and were skipped "
               f"({', '.join(e['cell'] + '/' + e['shard'] for e in idle)}); "
               "a shard with nothing assigned is idle, not failed")
     if lost:
-        # Before the numbers, never after. A reader who sees the counts first
-        # has already formed the conclusion by the time they reach the caveat.
         total = sum(e["stranded"] for e in lost)
         print(
             f"WARNING: {len(lost)} shard(s) hold structures that cannot be "
@@ -340,9 +316,6 @@ def main(argv=None):
           f"(designed chain {designed_len} residues), {args.workers} workers",
           flush=True)
     if d_designed or d_target:
-        # Not an error -- see derive_mapping -- but say it, because a large
-        # difference means the reference resolves residues the model never had
-        # and DockQ is scoring the intersection.
         print(f"  native has {d_designed:+d} designed and {d_target:+d} target "
               "residues relative to the model; DockQ aligns them and scores "
               "the common interface", flush=True)
@@ -375,8 +348,6 @@ def main(argv=None):
         writer.writerows({k: r[k] for k in fields} for r in rows)
 
     if lost:
-        # Repeated at the point of use, but only for real loss. A reader who
-        # scrolls straight to the counts would otherwise never see it.
         total = sum(e["stranded"] for e in lost)
         print(f"\n({len(lost)} shard(s) excluded above, {total} structure(s) "
               "stranded -- the counts below are over what remains)")

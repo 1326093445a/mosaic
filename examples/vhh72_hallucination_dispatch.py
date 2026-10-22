@@ -37,15 +37,12 @@ import sys
 import time
 from pathlib import Path
 
-# Real exit code, not always 0 -- so a shell wrapper chaining this into
-# vhh72_hallucination_aggregate.py under `set -e` stops before aggregating
-# an incomplete result set instead of silently continuing.
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SEARCH_SCRIPT = REPO_ROOT / "examples" / "vhh72_hallucination_search.py"
 
 POLICIES = ["greedy", "mcmc"]
-STOP_GRAD_SETTINGS = [1, 0]  # 1 = cheap default, 0 = real backprop through AbLang2 (ablation)
+STOP_GRAD_SETTINGS = [1, 0]
 
 
 def _parse_csv_strs(value: str) -> list[str]:

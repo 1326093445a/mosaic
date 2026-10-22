@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Modules and code used in the core part of AlphaFold.
 
@@ -38,7 +25,6 @@ def softmax_cross_entropy(logits, labels):
 def sigmoid_cross_entropy(logits, labels):
   """Computes sigmoid cross entropy given logits and multiple class labels."""
   log_p = jax.nn.log_sigmoid(logits)
-  # log(1 - sigmoid(x)) = log_sigmoid(-x), the latter is more numerically stable
   log_not_p = jax.nn.log_sigmoid(-logits)
   loss = -labels * log_p - (1. - labels) * log_not_p
   return jnp.asarray(loss)
@@ -73,7 +59,6 @@ def dropout_wrapper(module,
   residual = module(input_act, mask, is_training=is_training, **kwargs)
   dropout_rate = 0.0 if gc.deterministic else module.config.dropout_rate
 
-  # Will override `is_training` to True if want to use dropout.
   should_apply_dropout = True if gc.eval_dropout else is_training
 
   if module.config.shared_dropout:
@@ -112,7 +97,6 @@ def create_extra_msa_feature(batch):
   Returns:
     Concatenated tensor of extra MSA features.
   """
-  # 23 = 20 amino acids + 'X' for unknown + gap + bert mask
   msa_1hot = jax.nn.one_hot(batch['extra_msa'], 23)
   msa_feat = [msa_1hot,
               jnp.expand_dims(batch['extra_has_deletion'], axis=-1),
@@ -160,23 +144,17 @@ class AlphaFoldIteration(hk.Module):
     heads = {}
     for name, head_config in sorted(self.config.heads.items()):
       if not head_config.weight:
-        continue  # Do not instantiate zero-weight heads.
+        continue
 
-      #heads[head_name] = (head_config,
-      #                    head_factory(head_config, self.global_config))
       heads[name] = head_factory[name](head_config, self.global_config)
 
     ret = {'representations': representations}
     for name, head in heads.items():
-      # Skip PredictedLDDTHead and PredictedAlignedErrorHead until
-      # StructureModule is executed.
       if name in ('predicted_lddt', 'predicted_aligned_error'):
         continue
       else:
         ret[name] = head(representations, batch, is_training)
         if 'representations' in ret[name]:
-          # Extra representations from the head. Used by the structure module
-          # to provide activations for the PredictedLDDTHead.
           representations.update(ret[name].pop('representations'))
     for name in ('predicted_lddt', 'predicted_aligned_error'):
       ret[name] = heads[name](representations, batch, is_training)
@@ -396,7 +374,6 @@ class Attention(hk.Module):
     Returns:
       A float32 tensor of shape [batch_size, N_queries, output_dim].
     """
-    # Sensible default for when the config keys are missing
     key_dim = self.config.get('key_dim', int(q_data.shape[-1]))
     value_dim = self.config.get('value_dim', int(m_data.shape[-1]))
     num_head = self.config.num_head
@@ -494,7 +471,6 @@ class GlobalAttention(hk.Module):
     Returns:
       A float32 tensor of size [batch_size, N_queries, output_dim].
     """
-    # Sensible default for when the config keys are missing
     key_dim = self.config.get('key_dim', int(q_data.shape[-1]))
     value_dim = self.config.get('value_dim', int(m_data.shape[-1]))
     num_head = self.config.num_head
@@ -728,7 +704,6 @@ class MSAColumnGlobalAttention(hk.Module):
     attn_mod = GlobalAttention(
         c, self.global_config, msa_act.shape[-1],
         name='attention')
-    # [N_seq, N_res, 1]
     msa_mask = jnp.expand_dims(msa_mask, axis=-1)
     msa_act = mapping.inference_subbatch(
         attn_mod,
@@ -910,24 +885,16 @@ class PredictedLDDTHead(hk.Module):
         initializer=utils.final_init(self.global_config),
         name='logits')(
             act)
-    # Shape (batch_size, num_res, num_bins)
     return dict(logits=logits)
 
   def loss(self, value, batch):
-    # Shape (num_res, 37, 3)
     pred_all_atom_pos = value['structure_module']['final_atom_positions']
-    # Shape (num_res, 37, 3)
     true_all_atom_pos = batch['all_atom_positions']
-    # Shape (num_res, 37)
     all_atom_mask = batch['all_atom_mask']
 
-    # Shape (num_res,)
     lddt_ca = lddt.lddt(
-        # Shape (batch_size, num_res, 3)
         predicted_points=pred_all_atom_pos[None, :, 1, :],
-        # Shape (batch_size, num_res, 3)
         true_points=true_all_atom_pos[None, :, 1, :],
-        # Shape (batch_size, num_res, 1)
         true_points_mask=all_atom_mask[None, :, 1:2].astype(jnp.float32),
         cutoff=15.,
         per_residue=True)
@@ -936,21 +903,17 @@ class PredictedLDDTHead(hk.Module):
     num_bins = self.config.num_bins
     bin_index = jnp.floor(lddt_ca * num_bins).astype(jnp.int32)
 
-    # protect against out of range for lddt_ca == 1
     bin_index = jnp.minimum(bin_index, num_bins - 1)
     lddt_ca_one_hot = jax.nn.one_hot(bin_index, num_classes=num_bins)
 
-    # Shape (num_res, num_channel)
     logits = value['predicted_lddt']['logits']
     errors = softmax_cross_entropy(labels=lddt_ca_one_hot, logits=logits)
 
-    # Shape (num_res,)
     mask_ca = all_atom_mask[:, residue_constants.atom_order['CA']]
     mask_ca = mask_ca.astype(jnp.float32)
     loss = jnp.sum(errors * mask_ca) / (jnp.sum(mask_ca) + 1e-8)
 
     if self.config.filter_by_resolution:
-      # NMR & distillation have resolution = 0
       loss *= ((batch['resolution'] >= self.config.min_resolution)
                & (batch['resolution'] <= self.config.max_resolution)).astype(
                    jnp.float32)
@@ -989,34 +952,25 @@ class PredictedAlignedErrorHead(hk.Module):
 
     act = representations['pair']
 
-    # Shape (num_res, num_res, num_bins)
     logits = common_modules.Linear(
         self.config.num_bins,
         initializer=utils.final_init(self.global_config),
         name='logits')(act)
-    # Shape (num_bins,)
     breaks = jnp.linspace(
         0., self.config.max_error_bin, self.config.num_bins - 1)
     return dict(logits=logits, breaks=breaks)
 
   def loss(self, value, batch):
-    # Shape (num_res, 7)
     predicted_affine = quat_affine.QuatAffine.from_tensor(
         value['structure_module']['final_affines'])
-    # Shape (num_res, 7)
     true_affine = quat_affine.QuatAffine.from_tensor(
         batch['backbone_affine_tensor'])
-    # Shape (num_res)
     mask = batch['backbone_affine_mask']
-    # Shape (num_res, num_res)
     square_mask = mask[:, None] * mask[None, :]
     num_bins = self.config.num_bins
-    # (1, num_bins - 1)
     breaks = value['predicted_aligned_error']['breaks']
-    # (1, num_bins)
     logits = value['predicted_aligned_error']['logits']
 
-    # Compute the squared error for each alignment.
     def _local_frame_points(affine):
       points = [jnp.expand_dims(x, axis=-2) for x in affine.translation]
       return affine.invert_point(points, extra_dims=1)
@@ -1025,8 +979,6 @@ class PredictedAlignedErrorHead(hk.Module):
         for a, b in zip(_local_frame_points(predicted_affine),
                         _local_frame_points(true_affine))]
     error_dist2 = sum(error_dist2_xyz)
-    # Shape (num_res, num_res)
-    # First num_res are alignment frames, second num_res are the residues.
     error_dist2 = jax.lax.stop_gradient(error_dist2)
 
     sq_breaks = jnp.square(breaks)
@@ -1040,7 +992,6 @@ class PredictedAlignedErrorHead(hk.Module):
             (1e-8 + jnp.sum(square_mask, axis=(-2, -1))))
 
     if self.config.filter_by_resolution:
-      # NMR & distillation have resolution = 0
       loss *= ((batch['resolution'] >= self.config.min_resolution)
                & (batch['resolution'] <= self.config.max_resolution)).astype(
                    jnp.float32)
@@ -1078,7 +1029,7 @@ class ExperimentallyResolvedHead(hk.Module):
             can be converted to probability by applying sigmoid.
     """
     logits = common_modules.Linear(
-        37,  # atom_exists.shape[-1]
+        37,
         initializer=utils.final_init(self.global_config),
         name='logits')(representations['single'])
     return dict(logits=logits)
@@ -1087,17 +1038,13 @@ class ExperimentallyResolvedHead(hk.Module):
     logits = value['logits']
     assert len(logits.shape) == 2
 
-    # Does the atom appear in the amino acid?
     atom_exists = batch['atom37_atom_exists']
-    # Is the atom resolved in the experiment? Subset of atom_exists,
-    # *except for OXT*
     all_atom_mask = batch['all_atom_mask'].astype(jnp.float32)
 
     xent = sigmoid_cross_entropy(labels=all_atom_mask, logits=logits)
     loss = jnp.sum(xent * atom_exists) / (1e-8 + jnp.sum(atom_exists))
 
     if self.config.filter_by_resolution:
-      # NMR & distillation examples have resolution = 0.
       loss *= ((batch['resolution'] >= self.config.min_resolution)
                & (batch['resolution'] <= self.config.max_resolution)).astype(
                    jnp.float32)
@@ -1186,12 +1133,6 @@ class TriangleMultiplication(hk.Module):
     left_proj_act *= left_gate_values
     right_proj_act *= right_gate_values
 
-    # "Outgoing" edges equation: 'ikc,jkc->ijc'
-    # "Incoming" edges equation: 'kjc,kic->ijc'
-    # Note on the Suppl. Alg. 11 & 12 notation:
-    # For the "outgoing" edges, a = left_proj_act and b = right_proj_act
-    # For the "incoming" edges, it's swapped:
-    #   b = left_proj_act and a = right_proj_act
     act = jnp.einsum(c.equation, left_proj_act, right_proj_act)
 
     act = common_modules.LayerNorm(
@@ -1226,12 +1167,10 @@ class TriangleMultiplication(hk.Module):
 
     left_act = _layer_norm(axis=-1, name='left_norm_input')(left_act)
 
-    # Both left and right projections are fused into projection.
     projection = common_modules.Linear(
         2*c.num_intermediate_channel, name='projection')
     proj_act = mask * projection(left_act)
 
-    # Both left + right gate are fused into gate_values.
     gate_values = common_modules.Linear(
         2 * c.num_intermediate_channel,
         name='gate',
@@ -1398,12 +1337,6 @@ class OuterProductMean(hk.Module):
         init=hk.initializers.Constant(0.0))
 
     def compute_chunk(left_act):
-      # This is equivalent to
-      #
-      # act = jnp.einsum('abc,ade->dceb', left_act, right_act)
-      # act = jnp.einsum('dceb,cef->bdf', act, output_w) + output_b
-      #
-      # but faster.
       left_act = jnp.transpose(left_act, [0, 2, 1])
       act = jnp.einsum('acb,ade->dceb', left_act, right_act)
       act = jnp.einsum('dceb,cef->dbf', act, output_w) + output_b
@@ -1628,9 +1561,6 @@ class EmbeddingsAndEvoformer(hk.Module):
     if safe_key is None:
       safe_key = prng.SafeKey(hk.next_rng_key())
 
-    # Embed clustered MSA.
-    # Jumper et al. (2021) Suppl. Alg. 2 "Inference" line 5
-    # Jumper et al. (2021) Suppl. Alg. 3 "InputEmbedder"
     preprocess_1d = common_modules.Linear(
         c.msa_channel, name='preprocess_1d')(
             batch['target_feat'])
@@ -1650,9 +1580,6 @@ class EmbeddingsAndEvoformer(hk.Module):
     pair_activations = left_single[:, None] + right_single[None]
     mask_2d = batch['seq_mask'][:, None] * batch['seq_mask'][None, :]
 
-    # Inject previous outputs for recycling.
-    # Jumper et al. (2021) Suppl. Alg. 2 "Inference" line 6
-    # Jumper et al. (2021) Suppl. Alg. 32 "RecyclingEmbedder"
     if c.recycle_pos:
       prev_pseudo_beta = pseudo_beta_fn(
           batch['aatype'], batch['prev_pos'], None)
@@ -1677,11 +1604,7 @@ class EmbeddingsAndEvoformer(hk.Module):
           name='prev_pair_norm')(
               batch['prev_pair'])
 
-    # Relative position encoding.
-    # Jumper et al. (2021) Suppl. Alg. 4 "relpos"
-    # Jumper et al. (2021) Suppl. Alg. 5 "one_hot"
     if c.max_relative_feature:
-      # Add one-hot-encoded clipped residue distances to the pair activations.
       pos = batch['residue_index']
       offset = pos[:, None] - pos[None, :]
       rel_pos = jax.nn.one_hot(
@@ -1694,8 +1617,6 @@ class EmbeddingsAndEvoformer(hk.Module):
           c.pair_channel, name='pair_activiations')(
               rel_pos)
 
-    # Embed templates into the pair activations.
-    # Jumper et al. (2021) Suppl. Alg. 2 "Inference" lines 9-13
     if c.template.enabled:
       template_batch = {k: batch[k] for k in batch if k.startswith('template_')}
       template_pair_representation = TemplateEmbedding(c.template, gc)(
@@ -1706,16 +1627,12 @@ class EmbeddingsAndEvoformer(hk.Module):
 
       pair_activations += template_pair_representation
 
-    # Embed extra MSA features.
-    # Jumper et al. (2021) Suppl. Alg. 2 "Inference" lines 14-16
     extra_msa_feat = create_extra_msa_feature(batch)
     extra_msa_activations = common_modules.Linear(
         c.extra_msa_channel,
         name='extra_msa_activations')(
             extra_msa_feat)
 
-    # Extra MSA Stack.
-    # Jumper et al. (2021) Suppl. Alg. 18 "ExtraMsaStack"
     extra_msa_stack_input = {
         'msa': extra_msa_activations,
         'pair': pair_activations,
@@ -1755,21 +1672,15 @@ class EmbeddingsAndEvoformer(hk.Module):
 
     evoformer_masks = {'msa': batch['msa_mask'], 'pair': mask_2d}
 
-    # Append num_templ rows to msa_activations with template embeddings.
-    # Jumper et al. (2021) Suppl. Alg. 2 "Inference" lines 7-8
     if c.template.enabled and c.template.embed_torsion_angles:
       num_templ, num_res = batch['template_aatype'].shape
 
-      # Embed the templates aatypes.
       aatype_one_hot = jax.nn.one_hot(batch['template_aatype'], 22, axis=-1)
 
-      # Embed the templates aatype, torsion angles and masks.
-      # Shape (templates, residues, msa_channels)
       ret = all_atom.atom37_to_torsion_angles(
           aatype=batch['template_aatype'],
           all_atom_pos=batch['template_all_atom_positions'],
           all_atom_mask=batch['template_all_atom_masks'],
-          # Ensure consistent behaviour during testing:
           placeholder_for_undefined=not gc.zero_init)
 
       template_features = jnp.concatenate([
@@ -1792,20 +1703,14 @@ class EmbeddingsAndEvoformer(hk.Module):
           name='template_projection')(
               template_activations)
 
-      # Concatenate the templates to the msa.
       evoformer_input['msa'] = jnp.concatenate(
           [evoformer_input['msa'], template_activations], axis=0)
-      # Concatenate templates masks to the msa masks.
-      # Use mask from the psi angle, as it only depends on the backbone atoms
-      # from a single residue.
       torsion_angle_mask = ret['torsion_angles_mask'][:, :, 2]
       torsion_angle_mask = torsion_angle_mask.astype(
           evoformer_masks['msa'].dtype)
       evoformer_masks['msa'] = jnp.concatenate(
           [evoformer_masks['msa'], torsion_angle_mask], axis=0)
 
-    # Main trunk of the network
-    # Jumper et al. (2021) Suppl. Alg. 2 "Inference" lines 17-18
     evoformer_iteration = EvoformerIteration(
         c.evoformer, gc, is_extra_msa=False, name='evoformer_iteration')
 
@@ -1838,7 +1743,6 @@ class EmbeddingsAndEvoformer(hk.Module):
     output = {
         'single': single_activations,
         'pair': pair_activations,
-        # Crop away template rows such that they are not used in MaskedMsaHead.
         'msa': msa_activations[:num_sequences, :, :],
         'msa_first_row': msa_activations[0],
     }
@@ -1871,8 +1775,6 @@ class SingleTemplateEmbedding(hk.Module):
     Returns:
       A template embedding [N_res, N_res, c_z].
     """
-    #print("mask_2d", mask_2d.dtype, "query_embedding", query_embedding.dtype)
-    #assert mask_2d.dtype == query_embedding.dtype
     dtype = query_embedding.dtype
     num_res = batch['template_aatype'].shape[0]
     num_channels = (self.config.template_pair_stack
@@ -1907,8 +1809,6 @@ class SingleTemplateEmbedding(hk.Module):
     inv_distance_scalar = jax.lax.rsqrt(
         1e-6 + sum([jnp.square(x) for x in affine_vec]))
 
-    # Backbone affine mask: whether the residue has C, CA, N
-    # (the template mask defined above only considers pseudo CB).
     template_mask = (
         batch['template_all_atom_masks'][..., n] *
         batch['template_all_atom_masks'][..., ca] *
@@ -1929,18 +1829,14 @@ class SingleTemplateEmbedding(hk.Module):
 
     act = jnp.concatenate(to_concat, axis=-1)
 
-    # Mask out non-template regions so we don't get arbitrary values in the
-    # distogram for these regions.
     act *= template_mask_2d[..., None]
 
-    # Jumper et al. (2021) Suppl. Alg. 2 "Inference" line 9
     act = common_modules.Linear(
         num_channels,
         initializer='relu',
         name='embedding2d')(
             act)
 
-    # Jumper et al. (2021) Suppl. Alg. 2 "Inference" line 11
     act = TemplatePairStack(
         self.config.template_pair_stack, self.global_config)(
             act, mask_2d, is_training)
@@ -1986,9 +1882,6 @@ class TemplateEmbedding(hk.Module):
 
     query_num_channels = query_embedding.shape[-1]
 
-    # Make sure the weights are shared across templates by constructing the
-    # embedder here.
-    # Jumper et al. (2021) Suppl. Alg. 2 "Inference" lines 9-12
     template_embedder = SingleTemplateEmbedding(self.config, self.global_config)
 
     def map_fn(batch):
@@ -1997,9 +1890,6 @@ class TemplateEmbedding(hk.Module):
     template_pair_representation = mapping.sharded_map(map_fn, in_axes=0)(
         template_batch)
 
-    # Cross attend from the query to the templates along the residue
-    # dimension by flattening everything else into the batch dimension.
-    # Jumper et al. (2021) Suppl. Alg. 17 "TemplatePointwiseAttention"
     flat_query = jnp.reshape(query_embedding,
                              [num_res * num_res, 1, query_num_channels])
 
@@ -2023,7 +1913,6 @@ class TemplateEmbedding(hk.Module):
     embedding = jnp.reshape(embedding,
                             [num_res, num_res, query_num_channels])
 
-    # No gradients if no templates.
     embedding *= (jnp.sum(template_mask) > 0.).astype(embedding.dtype)
 
     return embedding

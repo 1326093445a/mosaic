@@ -61,9 +61,6 @@ from mosaic.structure_prediction import (
     TargetChain,
 )
 
-# ---------------------------------------------------------------------------
-# Template feature computation from gemmi.Chain
-# ---------------------------------------------------------------------------
 
 
 def _extract_residue_atoms(
@@ -93,7 +90,6 @@ def _extract_residue_atoms(
             frame_coords[i, 1] = atoms["CA"]
         if "C" in atoms:
             frame_coords[i, 2] = atoms["C"]
-        # Pseudo-beta: CB for non-glycine, CA for glycine
         if res.name == "GLY":
             if "CA" in atoms:
                 pseudo_beta_coords[i] = atoms["CA"]
@@ -118,24 +114,20 @@ def _make_frames(frame_coords: np.ndarray) -> np.ndarray:
         rotations: [N, 3, 3] — rotation matrices (columns are e0, e1, e2)
         translations: [N, 3] — CA positions
     """
-    n_pos = frame_coords[:, 0]  # N
-    ca_pos = frame_coords[:, 1]  # CA
-    c_pos = frame_coords[:, 2]  # C
+    n_pos = frame_coords[:, 0]
+    ca_pos = frame_coords[:, 1]
+    c_pos = frame_coords[:, 2]
 
-    # e0 = normalize(C - CA)
     e0 = c_pos - ca_pos
     e0 = e0 / (np.linalg.norm(e0, axis=-1, keepdims=True) + 1e-8)
 
-    # e1 = GS orthogonalize (N - CA) against e0, then normalize
     e1 = n_pos - ca_pos
     e1 = e1 - np.sum(e1 * e0, axis=-1, keepdims=True) * e0
     e1 = e1 / (np.linalg.norm(e1, axis=-1, keepdims=True) + 1e-8)
 
-    # e2 = e0 x e1
     e2 = np.cross(e0, e1)
 
-    # Rotation matrix: rows are e0, e1, e2 (to match from_two_vectors convention)
-    rotations = np.stack([e0, e1, e2], axis=-2)  # [N, 3, 3]
+    rotations = np.stack([e0, e1, e2], axis=-2)
     return rotations, ca_pos
 
 
@@ -152,22 +144,16 @@ def _compute_template_unit_vectors(
     Returns:
         unit_vectors: [N, N, 3]
     """
-    # Replace NaN with 0 for computation
     frame_coords = np.nan_to_num(frame_coords, nan=0.0)
-    rotations, translations = _make_frames(frame_coords)  # [N,3,3], [N,3]
+    rotations, translations = _make_frames(frame_coords)
 
-    # For each pair (i, j): R_i^T @ (CA_j - CA_i), normalized
-    # delta[i, j] = CA_j - CA_i
-    delta = translations[None, :, :] - translations[:, None, :]  # [N, N, 3]
+    delta = translations[None, :, :] - translations[:, None, :]
 
-    # Rotate into local frame: R_i @ delta[i,j] (R has rows as basis vectors)
-    local = np.einsum("ijk,ilk->ilj", rotations, delta)  # [N, N, 3]
+    local = np.einsum("ijk,ilk->ilj", rotations, delta)
 
-    # Normalize
     norms = np.linalg.norm(local, axis=-1, keepdims=True) + 1e-8
     unit_vectors = local / norms
 
-    # Apply 2D mask
     mask_2d = backbone_frame_mask[:, None] * backbone_frame_mask[None, :]
     return unit_vectors * mask_2d[..., None]
 
@@ -190,17 +176,14 @@ def _compute_template_distogram(
         distogram: [N, N, 39]
     """
     coords = np.nan_to_num(pseudo_beta_coords, nan=0.0)
-    # Squared pairwise distances
-    diff = coords[:, None, :] - coords[None, :, :]  # [N, N, 3]
-    sq_dist = np.sum(diff**2, axis=-1, keepdims=True)  # [N, N, 1]
+    diff = coords[:, None, :] - coords[None, :, :]
+    sq_dist = np.sum(diff**2, axis=-1, keepdims=True)
 
-    # Bin edges (squared)
     lower = np.linspace(min_bin, max_bin, n_bins) ** 2
     upper = np.concatenate([lower[1:], np.array([inf_value])])
 
     distogram = ((sq_dist > lower) & (sq_dist < upper)).astype(np.float32)
 
-    # Apply mask
     mask_2d = pseudo_beta_mask[:, None] * pseudo_beta_mask[None, :]
     return distogram * mask_2d[..., None]
 
@@ -211,7 +194,7 @@ def _compute_template_restype(res_names: list[str], n_tokens: int) -> np.ndarray
     Returns: [n_tokens, 32] with GAP for positions beyond the template.
     """
 
-    n_classes = len(STANDARD_RESIDUES_WITH_GAP_3)  # 32
+    n_classes = len(STANDARD_RESIDUES_WITH_GAP_3)
     gap_idx = RESTYPE_INDEX_3["GAP"]
     unk_idx = RESTYPE_INDEX_3["UNK"]
 
@@ -254,30 +237,25 @@ def compute_template_features(
     frame_coords, pseudo_beta_coords, res_names = _extract_residue_atoms(template_chain)
     n_res = len(res_names)
 
-    # Masks: valid where not NaN
     backbone_frame_mask = (~np.isnan(frame_coords).any(axis=(-2, -1))).astype(
         np.float32
     )
     pseudo_beta_mask = (~np.isnan(pseudo_beta_coords).any(axis=-1)).astype(np.float32)
 
-    # Compute per-chain features
     distogram = _compute_template_distogram(pseudo_beta_coords, pseudo_beta_mask)
     unit_vector = _compute_template_unit_vectors(frame_coords, backbone_frame_mask)
     restype = _compute_template_restype(res_names, n_res)
 
-    # Place into full [n_tokens, ...] arrays at the right offset
     full_distogram = np.zeros((n_tokens, n_tokens, 39), dtype=np.float32)
     full_unit_vector = np.zeros((n_tokens, n_tokens, 3), dtype=np.float32)
     full_restype = np.zeros((n_tokens, 32), dtype=np.int32)
     full_backbone_mask = np.zeros(n_tokens, dtype=np.float32)
     full_pseudo_beta_mask = np.zeros(n_tokens, dtype=np.float32)
 
-    # Fill GAP for all positions in restype
 
     gap_idx = RESTYPE_INDEX_3["GAP"]
     full_restype[:, gap_idx] = 1
 
-    # Insert template features at the right positions
     end = min(token_offset + n_res, n_tokens)
     src_end = end - token_offset
     s = token_offset
@@ -288,7 +266,6 @@ def compute_template_features(
     full_backbone_mask[s:end] = backbone_frame_mask[:src_end]
     full_pseudo_beta_mask[s:end] = pseudo_beta_mask[:src_end]
 
-    # Expand to [n_templates, ...], only slot 0 is filled
     def pad_templates(arr):
         shape = (n_templates,) + arr.shape
         out = np.zeros(shape, dtype=arr.dtype)
@@ -304,9 +281,6 @@ def compute_template_features(
     }
 
 
-# ---------------------------------------------------------------------------
-# Featurization helpers
-# ---------------------------------------------------------------------------
 
 
 def _build_query_set(chains: list[TargetChain], seed: int = 0):
@@ -350,11 +324,9 @@ def _compute_msas(query_set, chains: list[TargetChain], msa_dir: Path):
     if not msa_chains:
         return augment_main_msa_with_query_sequence(query_set, settings)
 
-    # Build a subset query set with only MSA-needing chains
     msa_query_set = _build_query_set(msa_chains)
     msa_query_set = preprocess_colabfold_msas(msa_query_set, settings)
 
-    # Map ColabFold results back: match by sequence
     msa_by_seq = {}
     for q in msa_query_set.queries.values():
         for c in q.chains:
@@ -366,7 +338,6 @@ def _compute_msas(query_set, chains: list[TargetChain], msa_dir: Path):
             if c.sequence in msa_by_seq:
                 c.main_msa_file_paths = msa_by_seq[c.sequence]
 
-    # Fill remaining chains with dummy MSAs
     return augment_main_msa_with_query_sequence(query_set, settings)
 
 
@@ -406,15 +377,12 @@ def _inject_templates(batch: Batch, chains: list[TargetChain]) -> Batch:
     if not template_chains:
         return batch
 
-    # Figure out token offsets per chain from sequence lengths
     offsets = []
     offset = 0
     for tc in chains:
         offsets.append(offset)
         offset += len(tc.sequence)
 
-    # Compute and merge template features
-    # Start from the existing (zero) template features
     merged = {
         "template_distogram": np.array(batch.template_distogram[0]),
         "template_unit_vector": np.array(batch.template_unit_vector[0]),
@@ -431,11 +399,9 @@ def _inject_templates(batch: Batch, chains: list[TargetChain]) -> Batch:
             token_offset=offsets[chain_idx],
             n_templates=merged["template_distogram"].shape[0],
         )
-        # Add features (they don't overlap — each chain writes to different token positions)
         for key in feats:
             merged[key] = merged[key] + feats[key]
 
-    # Inject into batch (add back batch dim)
     return eqx.tree_at(
         lambda b: (
             b.template_distogram,
@@ -455,9 +421,6 @@ def _inject_templates(batch: Batch, chains: list[TargetChain]) -> Batch:
     )
 
 
-# ---------------------------------------------------------------------------
-# biotite → gemmi conversion
-# ---------------------------------------------------------------------------
 
 
 def _biotite_array_to_gemmi_struct(atom_array, pred_coord=None):
@@ -501,10 +464,8 @@ class OF3(StructurePredictionModel):
     default_num_samples: int = 1
 
     def __init__(self, default_sampling_steps: int = 20, default_num_samples: int = 1):
-        # load the model...
 
         jax_model = OpenFold3.load(cache_dir() / "openfold3" / "jax" / "of3")
-        # Switch to vanilla ODE sampler
         jax_model = eqx.tree_at(
             lambda m: (
                 m.sample_diffusion.gamma_0,
@@ -537,7 +498,6 @@ class OF3(StructurePredictionModel):
         features, atom_array = _featurize(query_set)
         batch = Batch.from_torch_dict(features)
 
-        # Inject template features if any chain has a template_chain
         batch = _inject_templates(batch, chains)
 
         return batch, atom_array

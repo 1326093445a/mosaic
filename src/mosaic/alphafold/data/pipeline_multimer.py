@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Functions for building the features for the AlphaFold multimer model."""
 
@@ -27,10 +14,8 @@ from absl import logging
 from ..common import protein
 from ..common import residue_constants
 from ..data import feature_processing, msa_pairing, parsers, pipeline
-# from ..data.tools import jackhmmer
 import numpy as np
 
-# Internal import (7716).
 
 
 @dataclasses.dataclass(frozen=True)
@@ -76,10 +61,8 @@ def convert_monomer_features(
       'sequence', 'domain_name', 'num_alignments', 'seq_length'}
   for feature_name, feature in monomer_features.items():
     if feature_name in unnecessary_leading_dim_feats:
-      # asarray ensures it's a np.ndarray.
       feature = np.asarray(feature[0], dtype=feature.dtype)
     elif feature_name == 'aatype':
-      # The multimer model performs the one-hot operation itself.
       feature = np.argmax(feature, axis=-1).astype(np.int32)
     elif feature_name == 'template_aatype':
       feature = np.argmax(feature, axis=-1).astype(np.int32)
@@ -105,7 +88,7 @@ def int_id_to_str_id(num: int) -> str:
   if num <= 0:
     raise ValueError(f'Only positive integers allowed, got {num}.')
 
-  num = num - 1  # 1-based indexing.
+  num = num - 1
   output = []
   while num >= 0:
     output.append(chr(num % 26 + ord('A')))
@@ -128,7 +111,6 @@ def add_assembly_features(
       chains from a homodimer would have keys A_1 and A_2. Two chains from a
       heterodimer would have keys A_1 and B_1.
   """
-  # Group the chains by sequence
   seq_to_entity_id = {}
   grouped_chains = collections.defaultdict(list)
   for chain_id, chain_features in all_chain_features.items():
@@ -210,8 +192,6 @@ class DataPipeline:
           input_fasta_path=chain_fasta_path,
           msa_output_dir=chain_msa_output_dir)
 
-      # We only construct the pairing features if there are 2 or more unique
-      # sequences.
       if not is_homomer_or_monomer:
         all_seq_msa_features = self._all_seq_msa_features(chain_fasta_path,
                                                           chain_msa_output_dir)
@@ -275,7 +255,6 @@ class DataPipeline:
     np_example = feature_processing.pair_and_merge(
         all_chain_features=all_chain_features)
 
-    # Pad MSA to avoid zero-sized extra_msa.
     np_example = pad_msa(np_example, 512)
 
     return np_example

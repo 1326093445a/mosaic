@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Transformations for 3D coordinates.
 
@@ -37,17 +24,11 @@ from . import quat_affine
 import jax.numpy as jnp
 import tree
 
-# Array of 3-component vectors, stored as individual array for
-# each component.
 Vecs = collections.namedtuple('Vecs', ['x', 'y', 'z'])
 
-# Array of 3x3 rotation matrices, stored as individual array for
-# each component.
 Rots = collections.namedtuple('Rots', ['xx', 'xy', 'xz',
                                        'yx', 'yy', 'yz',
                                        'zx', 'zy', 'zz'])
-# Array of rigid 3D transformations, stored as array of rotations and
-# array of translations.
 Rigids = collections.namedtuple('Rigids', ['rot', 'trans'])
 
 
@@ -71,10 +52,10 @@ def invert_rots(m: Rots) -> Rots:
 
 
 def rigids_from_3_points(
-    point_on_neg_x_axis: Vecs,  # shape (...)
-    origin: Vecs,  # shape (...)
-    point_on_xy_plane: Vecs,  # shape (...)
-) -> Rigids:  # shape (...)
+    point_on_neg_x_axis: Vecs,
+    origin: Vecs,
+    point_on_xy_plane: Vecs,
+) -> Rigids:
   """Create Rigids from 3 points.
 
   Jumper et al. (2021) Suppl. Alg. 21 "rigidFrom3Points"
@@ -109,8 +90,8 @@ def rigids_from_quataffine(a: quat_affine.QuatAffine) -> Rigids:
 
 
 def rigids_from_tensor4x4(
-    m: jnp.ndarray  # shape (..., 4, 4)
-) -> Rigids:  # shape (...)
+    m: jnp.ndarray
+) -> Rigids:
   """Construct Rigids object from an 4x4 array.
 
   Here the 4x4 is representing the transformation in homogeneous coordinates.
@@ -130,8 +111,8 @@ def rigids_from_tensor4x4(
 
 
 def rigids_from_tensor_flat9(
-    m: jnp.ndarray  # shape (..., 9)
-) -> Rigids:  # shape (...)
+    m: jnp.ndarray
+) -> Rigids:
   """Flat9 encoding: first two columns of rotation matrix + translation."""
   assert m.shape[-1] == 9
   e0 = Vecs(m[..., 0], m[..., 1], m[..., 2])
@@ -142,11 +123,11 @@ def rigids_from_tensor_flat9(
 
 
 def rigids_from_tensor_flat12(
-    m: jnp.ndarray  # shape (..., 12)
-) -> Rigids:  # shape (...)
+    m: jnp.ndarray
+) -> Rigids:
   """Flat12 encoding: rotation matrix (9 floats) + translation (3 floats)."""
   assert m.shape[-1] == 12
-  x = jnp.moveaxis(m, -1, 0)  # Unstack
+  x = jnp.moveaxis(m, -1, 0)
   return Rigids(Rots(*x[:9]), Vecs(*x[9:]))
 
 
@@ -183,8 +164,8 @@ def rigids_to_quataffine(r: Rigids) -> quat_affine.QuatAffine:
 
 
 def rigids_to_tensor_flat9(
-    r: Rigids  # shape (...)
-) -> jnp.ndarray:  # shape (..., 9)
+    r: Rigids
+) -> jnp.ndarray:
   """Flat9 encoding: first two columns of rotation matrix + translation."""
   return jnp.stack(
       [r.rot.xx, r.rot.yx, r.rot.zx, r.rot.xy, r.rot.yy, r.rot.zy]
@@ -192,15 +173,15 @@ def rigids_to_tensor_flat9(
 
 
 def rigids_to_tensor_flat12(
-    r: Rigids  # shape (...)
-) -> jnp.ndarray:  # shape (..., 12)
+    r: Rigids
+) -> jnp.ndarray:
   """Flat12 encoding: rotation matrix (9 floats) + translation (3 floats)."""
   return jnp.stack(list(r.rot) + list(r.trans), axis=-1)
 
 
 def rots_from_tensor3x3(
-    m: jnp.ndarray,  # shape (..., 3, 3)
-) -> Rots:  # shape (...)
+    m: jnp.ndarray,
+) -> Rots:
   """Convert rotations represented as (3, 3) array to Rots."""
   assert m.shape[-1] == 3
   assert m.shape[-2] == 3
@@ -221,17 +202,14 @@ def rots_from_two_vecs(e0_unnormalized: Vecs, e1_unnormalized: Vecs) -> Rots:
   Returns:
     Rotations resulting from Gram-Schmidt procedure.
   """
-  # Normalize the unit vector for the x-axis, e0.
   e0 = vecs_robust_normalize(e0_unnormalized)
 
-  # make e1 perpendicular to e0.
   c = vecs_dot_vecs(e1_unnormalized, e0)
   e1 = Vecs(e1_unnormalized.x - c * e0.x,
             e1_unnormalized.y - c * e0.y,
             e1_unnormalized.z - c * e0.z)
   e1 = vecs_robust_normalize(e1)
 
-  # Compute e2 as cross product of e0 and e1.
   e2 = vecs_cross_vecs(e0, e1)
 
   return Rots(e0.x, e1.x, e2.x, e0.y, e1.y, e2.y, e0.z, e1.z, e2.z)
@@ -269,8 +247,8 @@ def vecs_cross_vecs(v1: Vecs, v2: Vecs) -> Vecs:
               v1.x * v2.y - v1.y * v2.x)
 
 
-def vecs_from_tensor(x: jnp.ndarray  # shape (..., 3)
-                    ) -> Vecs:  # shape (...)
+def vecs_from_tensor(x: jnp.ndarray
+                    ) -> Vecs:
   """Converts from tensor of shape (3,) to Vecs."""
   num_components = x.shape[-1]
   assert num_components == 3
@@ -314,7 +292,7 @@ def vecs_squared_distance(v1: Vecs, v2: Vecs) -> jnp.ndarray:
           squared_difference(v1.z, v2.z))
 
 
-def vecs_to_tensor(v: Vecs  # shape (...)
-                  ) -> jnp.ndarray:  # shape(..., 3)
+def vecs_to_tensor(v: Vecs
+                  ) -> jnp.ndarray:
   """Converts 'v' to tensor with shape 3, inverse of 'vecs_from_tensor'."""
   return jnp.stack([v.x, v.y, v.z], axis=-1)

@@ -1,6 +1,3 @@
-# Very simple *absolute* (delta G, ~not~ delta-delta G) stability model trained on top of frozen ESMC on the Megascale dataset
-# Specifically this is trained to minimize MSE on the split described here: https://github.com/SimonKitSangChu/EsmTherm?tab=readme-ov-file
-# Could almost certainly be improved but seems to work fine.
 
 
 from pathlib import Path
@@ -25,8 +22,6 @@ class StabilityModel(LossTerm):
         *,
         key,
     ):
-        # convert from standard tokenization to ESM tokenization
-        # add cls and eos tokens
         vocab = esmc_vocab()
         esm_toks = jnp.concatenate(
             [
@@ -35,12 +30,11 @@ class StabilityModel(LossTerm):
                 jax.nn.one_hot([vocab["<eos>"]], ESMC_VOCAB_SIZE),
             ]
         )
-        # this isn't very accurate, so let's clip it
         x = esm_toks @ self.esm.esmc.embed.weight
         x, _ = self.esm.esmc.transformer(x[None], None, collect_hidden_states=False)
         estimated_delta_g = self.head(x[0].mean(axis=0))
         estimated_delta_g = estimated_delta_g.clip(-10, 3)
-        return -estimated_delta_g, {"delta_g": estimated_delta_g}  # sign error?
+        return -estimated_delta_g, {"delta_g": estimated_delta_g}
 
     @staticmethod
     def from_pretrained(esm: ESMCForMaskedLM, path: Path = Path("stability.eqx")):

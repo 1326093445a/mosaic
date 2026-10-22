@@ -1,6 +1,3 @@
-# Log-likelihood losses for proteinMPNN
-# 1. BoltzProteinMPNNLoss: Average log-likelihood of soft binder sequence given Boltz-predicted complex structure
-# 2. FixedChainInverseFoldingLL: Average log-likelihood of fixed monomer sequence given fixed monomer structure
 
 import gemmi
 import jax
@@ -74,15 +71,12 @@ class FixedStructureInverseFoldingLL(LossTerm):
     ):
         binder_length = binder_sequence.shape[0]
         complex_length = self.sequence_boltz.shape[0]
-        # assert self.coords.shape[0] == self.encoded_state.shape[1], "Sequence length mismatch"
 
-        # replace binder sequence
         sequence = self.sequence_boltz.at[:binder_length].set(binder_sequence)
 
         sequence_mpnn = sequence @ boltz_to_mpnn_matrix()
         mpnn_mask = jnp.ones(complex_length, dtype=jnp.int32)
 
-        # generate a decoding order that ends with binder
         decoding_order = jax.random.uniform(key, shape=(complex_length,))
         decoding_order = decoding_order.at[:binder_length].add(2.0)
         logits = self.mpnn.decode(
@@ -128,15 +122,13 @@ class FixedStructureInverseFoldingLL(LossTerm):
             ]
         )
         coords = np.concatenate([c for (_, c) in sequences_and_coords])
-        # encode the structure
         h_V, h_E, E_idx = mpnn.encode(
             X=coords,
             mask=jnp.ones(coords.shape[0], dtype=jnp.int32),
-            residue_idx=residue_idx,  # jnp.arange(len(chain)),
-            chain_encoding_all=chain_encoding,  # jnp.zeros(len(chain), dtype=jnp.int32),
+            residue_idx=residue_idx,
+            chain_encoding_all=chain_encoding,
             key=jax.random.key(np.random.randint(1000000)),
         )
-        # one hot sequence
         full_sequence = "".join(s for (s, _) in sequences_and_coords)
 
         return FixedStructureInverseFoldingLL(
@@ -171,17 +163,12 @@ class ProteinMPNNLoss(LossTerm):
         output: StructureModelOutput,
         key,
     ):
-        # Get the atoms required for proteinMPNN:
-        # In order these are N, C-alpha, C, O
         coords = output.backbone_coordinates
         if self.stop_grad:
             coords = jax.lax.stop_gradient(coords)
 
         binder_length = sequence.shape[0]
 
-        # NOTE: this will completely fail if any tokens are non-protein!
-        # all_atom_coords = structure_output.sample_atom_coords
-        # coords = jnp.stack([all_atom_coords[first_atom_idx + i] for i in range(4)], -2)
         full_sequence = output.full_sequence.at[:binder_length].set(sequence)
         total_length = full_sequence.shape[0]
 
@@ -198,9 +185,6 @@ class ProteinMPNNLoss(LossTerm):
         )
 
         def decoder_LL(key):
-            # MPNN is cheap, let's call the decoder a few times to average over random decoding order
-            # generate a decoding order
-            # this should be random but end with the binder
             decoding_order = (
                 jax.random.uniform(key, shape=(total_length,))
                 .at[:binder_length]
@@ -228,8 +212,6 @@ class ProteinMPNNLoss(LossTerm):
 
         return -binder_ll, {"protein_mpnn_ll": binder_ll}
 
-# TODO: implement autoregressive sampling
-# for now though the jacobi method converges quickly enough
 def inverse_fold(
     mpnn: ProteinMPNN,
     binder_length: int,
@@ -372,11 +354,10 @@ class AllResiduePLLLoss(LossTerm):
         binder_length = sequence.shape[0]
         total_length = output.full_sequence.shape[0]
 
-        b2m = boltz_to_mpnn_matrix()  # [20, 21] numpy
+        b2m = boltz_to_mpnn_matrix()
         mpnn_mask = jnp.ones(total_length, dtype=jnp.int32)
         residue_idx = _per_chain_residue_idx(output.asym_id, output.residue_idx)
 
-        # Full sequence in MPNN tokens: target from output, binder from current PSSM.
         full_seq = output.full_sequence.at[:binder_length].set(sequence)
         sequence_mpnn = full_seq @ b2m
 
@@ -402,7 +383,7 @@ class AllResiduePLLLoss(LossTerm):
             log_p = self.mpnn.decode(
                 S=sequence_mpnn, h_V=h_V, h_E=h_E, E_idx=E_idx,
                 mask=mpnn_mask, decoding_order=decoding_order,
-            )[0, i]                              # [21] log-probs at i
+            )[0, i]
             return jnp.dot(log_p @ b2m.T, sequence[i])
 
         plls = jax.lax.map(

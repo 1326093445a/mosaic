@@ -120,10 +120,8 @@ def trajectory(events, reference_sequence=None):
                 position_1idx=position + 1,
                 from_residue=from_residue,
                 to_residue=TOKENS[token],
-                # The other position given up to afford this edit, or -1.
                 paired_reversion_0idx=reverted,
                 paid_for_by_reversion=reverted >= 0,
-                # Did this move put the undamaged crystal residue back?
                 restores_reference=(
                     None if reference_sequence is None
                     else TOKENS[token] == reference_sequence[position]
@@ -136,8 +134,6 @@ def trajectory(events, reference_sequence=None):
                 parent_score=parent_score,
                 candidate_score=child_score,
                 realized_score_delta=realized,
-                # The two objectives differ, so this records agreement, not
-                # correctness. See the module docstring.
                 sign_agrees=(
                     None if realized is None
                     else (predicted < 0) == (realized > 0)

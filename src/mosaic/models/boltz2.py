@@ -68,14 +68,13 @@ def target_only_features(chains: list[TargetChain]):
         yaml += template_yaml
 
     features, writer = load_features_and_structure_writer(yaml)
-    if tf is not None: # make sure we actually got a template
+    if tf is not None:
         assert np.sum(features["template_mask"]) > 0
     return (features, writer)
 
 
 
 def build_template_yaml(chain_names: str, chains: list[TargetChain]):
-    # boltz wants perfect .cifs :( 
     templates = {
         chain_id: c.template_chain
         for chain_id, c in zip(chain_names, chains)

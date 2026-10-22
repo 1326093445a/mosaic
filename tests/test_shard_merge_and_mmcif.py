@@ -27,7 +27,6 @@ import p17_rescore_winners as rescore  # noqa: E402
 def write_shard(root, index, seeds, candidate_ids=(0,), dtype="bf16", steps=64):
     directory = root / f"shard_{index}"
     (directory / "tables").mkdir(parents=True)
-    # `seeds=None` stands for a shard written before the signature existed.
     effective = seeds if seeds is not None else [0]
     calls = len(candidate_ids) * len(effective)
     summary = dict(
@@ -59,7 +58,6 @@ def write_shard(root, index, seeds, candidate_ids=(0,), dtype="bf16", steps=64):
             for c in candidate_ids for s in effective
         ],
     }
-    # The merge relocates these, so they have to exist.
     (directory / "art").mkdir()
     for row in rows["predictions.csv"]:
         for field in ("structure_file", "cif_file", "confidence_file"):
@@ -113,9 +111,6 @@ def test_the_signature_is_order_insensitive_in_its_seeds():
     )
 
 
-# --------------------------------------------------------------------------
-# the bundled mmCIF parser
-# --------------------------------------------------------------------------
 
 
 def test_the_bundled_mmcif_parser_parses_the_ubiquitin_fixture():
@@ -127,7 +122,6 @@ def test_the_bundled_mmcif_parser_parses_the_ubiquitin_fixture():
     )
     assert result.errors == {}, result.errors
     assert result.mmcif_object is not None
-    # 1UBQ is a 76-residue single chain at 1.8 A.
     assert result.mmcif_object.chain_to_seqres["A"].startswith("MQIFVKTLTGK")
     assert len(result.mmcif_object.chain_to_seqres["A"]) == 76
     assert result.mmcif_object.header["resolution"] == pytest.approx(1.8)
@@ -143,9 +137,6 @@ def test_the_parser_maps_an_unknown_monomer_to_x():
     assert protein_letters_3to1_extended.get("NOTARESIDUE", "X") == "X"
 
 
-# --------------------------------------------------------------------------
-# Round 8: the signature has to describe what RAN, not what was requested.
-# --------------------------------------------------------------------------
 
 
 def test_inherited_and_explicit_settings_give_the_same_signature():
@@ -181,10 +172,6 @@ def test_shards_differing_only_in_step_count_are_refused(tmp_path):
     assert "not evaluated the same way" in str(caught.value)
 
 
-# --------------------------------------------------------------------------
-# Round 9: tar member names are not filesystem paths, and matching seeds,
-# steps and precision do not establish one evaluation.
-# --------------------------------------------------------------------------
 
 
 WT = "QVQLQESGGG"
@@ -240,9 +227,9 @@ def test_a_directory_of_runs_loads(tmp_path):
 
 
 @pytest.mark.parametrize("layout, prefix", [
-    ("run", ""),          # tar of a directory containing run/
-    ("run", "./"),        # the same, written with a leading ./
-    (".", ""),            # config.json at the archive root
+    ("run", ""),
+    ("run", "./"),
+    (".", ""),
 ])
 def test_common_tar_layouts_load_like_the_directory(tmp_path, layout, prefix):
     source = tmp_path / f"src_{layout.strip('.') or 'root'}_{len(prefix)}"

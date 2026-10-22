@@ -28,8 +28,6 @@ from p17_rescore_winners import (  # noqa: E402
 )
 
 BINDER_LEN = 123
-# Designable positions as the real mask produces them (CDR1 26-33, CDR2 51-58,
-# CDR3 97-109, 1-indexed -> 0-indexed).
 DESIGNABLE = sorted(
     set(range(25, 33)) | set(range(50, 58)) | set(range(96, 109))
 )
@@ -180,7 +178,7 @@ def test_load_candidates_rejects_anchored_drift_outside_the_designable_mask(tmp_
     """The mask check must cover drift from the start as well as from the
     anchor, so swapping the anchor cannot smuggle a fixed-position change in."""
     seed = mutate(REFERENCE_BINDER, DESIGNABLE[:1])
-    winner = mutate(seed, [0])  # position 0 is not designable
+    winner = mutate(seed, [0])
     write_search_run(
         tmp_path, "population_seed0",
         start=seed, winner=winner, target=TARGET_JN1, budget=5,
@@ -248,7 +246,6 @@ def _full_pipeline(tmp_path, *, target, start, reference, budget, n_shards):
                     path = directory / f"{suffix}/{stem}.{suffix}"
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(b"x")
-                # WT scores badly; winners better, and closer in pose.
                 is_wt = candidate["candidate_id"] == 0
                 rows.append(
                     dict(
@@ -328,7 +325,6 @@ def test_alpha_pipeline_runs_end_to_end_from_a_damaged_start(tmp_path):
     assert len(rows) == len(candidates)
     wt = next(r for r in rows if r["candidate_id"] == "0")
     winner = next(r for r in rows if r["candidate_id"] != "0")
-    # Span is 0.80 - 0.00; the damaged start recovers none of it by definition.
     assert float(wt["ipsae_recovery_fraction"]) == pytest.approx(0.01 / 0.80)
     assert float(winner["ipsae_recovery_fraction"]) == pytest.approx(0.30 / 0.80)
 
@@ -376,7 +372,6 @@ def test_merge_refuses_a_shard_whose_artifacts_are_missing(tmp_path):
         merge_shard_tables(tmp_path / "heldout", 2)
 
 
-# The reference-consistency guard: both bug layers from 2026-10-04 ------------
 
 from p17_rescore_winners import check_reference_consistency  # noqa: E402
 
@@ -446,7 +441,7 @@ def test_guard_still_rejects_a_damaged_run_against_the_wrong_reference():
 
 def test_guard_rejects_a_binder_that_is_not_the_recorded_reference():
     """A different binder means different reference CA coordinates."""
-    other = mutate(REFERENCE_BINDER, [5])  # framework, outside the mask
+    other = mutate(REFERENCE_BINDER, [5])
     with pytest.raises(ValueError, match="binder differs from archived"):
         check_reference_consistency(
             other,
@@ -503,11 +498,8 @@ def test_guard_keeps_the_strict_check_for_legacy_jn1_archives():
         )
 
 
-# The decoy archive: the third layer, found on 2026-10-05 ---------------------
 
 
-# The shared JN.1 fixture is a run of one residue, which cannot be permuted
-# into anything different. A decoy needs a target with some variety in it.
 TARGET_VARIED = "".join(
     "ACDEFGHIKLMNPQRSTVWY"[i % 20] for i in range(len(TARGET_JN1))
 )
@@ -611,7 +603,6 @@ def test_guard_still_checks_the_binder_under_a_decoy_archive():
         )
 
 
-# The folded target and the exported target must be one sequence -------------
 
 
 def test_the_rescorer_folds_and_exports_the_same_target():
@@ -673,7 +664,6 @@ def test_the_reference_target_is_not_reusable_after_the_guard():
     import re
 
     lines = (REPO / "examples/p17_rescore_winners.py").read_text().splitlines()
-    # `reference_target_chain` is a different name, so match on word bounds.
     name = re.compile(r"\breference_target\b")
     deletions = [i for i, line in enumerate(lines) if line.strip() == "del reference_target"]
     assert len(deletions) == 1, "the reference target should be released once"

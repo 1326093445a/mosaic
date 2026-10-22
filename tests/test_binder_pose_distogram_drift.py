@@ -12,7 +12,7 @@ from mosaic.losses.structure_prediction import BinderPoseDistogramDrift, Structu
 N_BINDER, N_TARGET = 3, 2
 N = N_BINDER + N_TARGET
 N_BINS = 128
-BINS = jnp.linspace(2.0, 30.0, N_BINS)  # fine bins so nearest-bin quantization error is negligible
+BINS = jnp.linspace(2.0, 30.0, N_BINS)
 
 
 def _make_output_with_expected_distances(target_binder_target_dist):
@@ -50,12 +50,12 @@ def test_zero_when_predicted_matches_reference_exactly():
     loss_fn = BinderPoseDistogramDrift(REFERENCE, tolerance=2.0)
     output = _make_output_with_expected_distances(REFERENCE)
     violation, aux = loss_fn(SEQUENCE, output, key=None)
-    assert float(aux["binder_target_distogram_drift"]) == pytest.approx(0.0, abs=1e-1)  # bin quantization
+    assert float(aux["binder_target_distogram_drift"]) == pytest.approx(0.0, abs=1e-1)
     assert float(violation) == pytest.approx(0.0, abs=1e-1)
 
 
 def test_within_tolerance_is_exactly_zero():
-    perturbed = REFERENCE + 0.5  # small, uniform shift, within tolerance
+    perturbed = REFERENCE + 0.5
     loss_fn = BinderPoseDistogramDrift(REFERENCE, tolerance=2.0)
     output = _make_output_with_expected_distances(perturbed)
     violation, aux = loss_fn(SEQUENCE, output, key=None)
@@ -64,7 +64,7 @@ def test_within_tolerance_is_exactly_zero():
 
 
 def test_beyond_tolerance_produces_positive_violation():
-    perturbed = REFERENCE + 8.0  # large, uniform shift, well beyond tolerance
+    perturbed = REFERENCE + 8.0
     tol = 2.0
     loss_fn = BinderPoseDistogramDrift(REFERENCE, tolerance=tol)
     output = _make_output_with_expected_distances(perturbed)
@@ -82,8 +82,6 @@ def test_gradient_is_zero_within_tolerance_and_nonzero_beyond_it():
         v, _ = loss_fn(SEQUENCE, output, key=None)
         return v
 
-    # Use real (non-saturated) softmax logits for the gradient check --
-    # the extreme-logit trick above is only for exact-value tests.
     def loss_of_shift_smooth(shift, scale=8.0):
         target = REFERENCE + shift
         idx = jnp.arange(N_BINS)

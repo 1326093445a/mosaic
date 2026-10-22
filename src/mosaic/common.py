@@ -33,7 +33,6 @@ class LossTerm(eqx.Module):
 class LinearCombination(eqx.Module):
     """Weighted linear combination of loss terms."""
 
-    # losses: list[tuple[float, any]]
     l: list[LossTerm]
     weights: jax.Array
 
@@ -58,7 +57,7 @@ class LinearCombination(eqx.Module):
 
     def __add__(self, other):
         if isinstance(other, LossTerm):
-            other = 1.0 * other  # lift to LinearCombination
+            other = 1.0 * other
 
         if not isinstance(other, LinearCombination):
             return NotImplemented

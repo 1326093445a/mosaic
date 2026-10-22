@@ -62,8 +62,6 @@ def test_real_reference_pose_precision_and_gradient(modules, precision, compiled
     reference = np.concatenate([binder, target])
 
     def evaluate(shift):
-        # Translate binder in the reference frame, then rotate the entire
-        # complex. Target alignment must recover the imposed shift exactly.
         coords = jnp.asarray(reference).at[: len(binder), 0].add(shift)
         coords = (
             jnp.matmul(
@@ -85,7 +83,6 @@ def test_real_reference_pose_precision_and_gradient(modules, precision, compiled
         if compiled:
             fn = jax.jit(fn)
         (value, aux), gradient = fn(4.0)
-        # The local precision scope must not leak into the surrounding model.
         assert jax.config.jax_default_matmul_precision == precision
     assert max(c["numpy_jax_max_error_A"] for c in controls.values()) < 1e-3
     assert float(value) == pytest.approx(4.0, abs=1e-3)

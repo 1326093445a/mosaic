@@ -110,13 +110,12 @@ def _():
 
 @app.cell
 def _(Path):
-    # PD-L1 IgV domain (target) + design knobs.
     TARGET = (
         "AFTVTVPKDLYVVEYGSNMTIECKFPVEKQLDLAALIVYWEMEDKNIIQFVHGEEDLKVQHSSYRQRAR"
         "LLKDQLSLGNAALQITDVKLQDAGVYRCMISYGGADYKRITVKVNA"
     )
     BINDER_LEN = 80
-    MASK_FRACTION = 0.1  # fraction of binder residues UNK-masked each loss call
+    MASK_FRACTION = 0.1
     OUT = Path("design_out")
     OUT.mkdir(exist_ok=True)
     return BINDER_LEN, OUT, TARGET
@@ -124,7 +123,6 @@ def _(Path):
 
 @app.cell
 def _(JPromeraModel, load_mpnn_sol):
-    # Load Promera and soluble ProteinMPNN (torch loads the MPNN weights only).
     model = JPromeraModel(subsample=1024)
     mpnn = load_mpnn_sol()
     return model, mpnn
@@ -187,8 +185,6 @@ def _(mo):
 
 @app.cell
 def _(BINDER_LEN, TOKENS, des, inverse_fold, jax, mpnn):
-    # Inverse-fold the `des` backbone (all-X binder docked to target) with soluble
-    # ProteinMPNN -> a real designed sequence for that predicted fold.
     des_seq_idx = inverse_fold(
         mpnn, BINDER_LEN, des, temp=0.1, key=jax.random.key(0)
     )
@@ -211,7 +207,6 @@ def _(mo):
 
 @app.cell
 def _(BINDER_LEN, TARGET, TargetChain, model):
-    # to make a full structure prediction we use binder_features (fairly technical detail but des_features will pass incorrect side chain atomic information into the model and omit sidechains on the output)
     features, writer = model.binder_features(
         BINDER_LEN, [TargetChain(TARGET, use_msa=True)]
     )
@@ -404,7 +399,6 @@ def _(
     mpnn,
     sp,
 ):
-    # Composite objective: structure terms + MPNN sequence recovery + ESMC + n-gram priors.
     structure_loss = (
         1.0 * sp.BinderTargetContact()
         + 1.0 * sp.WithinBinderContact()
@@ -424,7 +418,7 @@ def _(
                 features=features,
                 recycling_steps=2,
                 sampling_steps=20,
-                mask_fraction=0.1,  # mask 10% of residues at each call
+                mask_fraction=0.1,
                 num_samples=2,
             ),
             1.0,
@@ -438,8 +432,6 @@ def _(
 
 @app.cell
 def _(BINDER_LEN, jax, np):
-    # Differentiable PSSM design: random init -> soft APGM -> sharpening anneal.
-    # (Re-run this cell with a different SEED for another independent design.)
     SEED = 1
     sqrtN = np.sqrt(BINDER_LEN)
     x0 = 0.5 * jax.random.normal(jax.random.key(SEED), (1, BINDER_LEN, 20))
@@ -448,7 +440,6 @@ def _(BINDER_LEN, jax, np):
 
 @app.cell
 def _(SEED, batched_simplex_APGM, jax, loss, sqrtN, x0):
-    # Soft pass: relax the simplex from the random init.
     _, pssm_soft = batched_simplex_APGM(
         loss_function=loss,
         x=x0,
@@ -465,7 +456,6 @@ def _(SEED, batched_simplex_APGM, jax, loss, sqrtN, x0):
 
 @app.cell
 def _(SEED, batched_simplex_APGM, jax, jnp, loss, pssm_soft, sqrtN):
-    # Sharpening anneal toward a near-one-hot PSSM.
     pssm, _ = batched_simplex_APGM(
         loss_function=loss,
         x=jnp.log(pssm_soft + 1e-5),
@@ -489,7 +479,6 @@ def _(TOKENS, np, pssm):
 
 @app.cell
 def _(BINDER_LEN, TOKENS, features, jax, jnp, model, seq, writer):
-    # Fold the hard argmax sequence in the design context (masked-framework feats).
     hard = jax.nn.one_hot(
         jnp.asarray([TOKENS.index(c) for c in seq]),
         20,
@@ -525,15 +514,13 @@ def _(plt, pred):
 
 @app.cell
 def _(BINDER_LEN, OUT, TARGET, TargetChain, jax, model, seq):
-    # refold the designed binder as a real chain (its own
-    # sequence, full sidechains) + target via target_only_features.
     ref_feats, ref_writer = model.target_only_features(
         [
             TargetChain(
                 seq,
                 use_msa=False,
-            ),  # designed binder
-            TargetChain(TARGET, use_msa=True),  # target (cached MSA)
+            ),
+            TargetChain(TARGET, use_msa=True),
         ]
     )
     ref = model.predict(

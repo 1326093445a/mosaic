@@ -56,7 +56,7 @@ from mosaic.structure_prediction import TargetChain
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPLEX_CIF = REPO_ROOT / "vhh72_wt_wt_rbd.cif"
-N_DIFFUSION_STEPS = 8  # matches examples/vhh72_opendde_structure_prediction.py's real-prediction default
+N_DIFFUSION_STEPS = 8
 RECYCLING_STEPS = 4
 
 
@@ -149,7 +149,7 @@ def main():
     selected = parse_select(args.select, rows)
     wt_row = [r for r in rows if int(r["edit_count"]) == 0]
     if args.include_wt and wt_row and not any(int(r["edit_count"]) == 0 for r in selected):
-        selected = [wt_row[0]] + selected  # always include WT for comparison
+        selected = [wt_row[0]] + selected
     print(f"predicting real structures for {len(selected)} candidates "
           f"(including WT reference): {[(r['policy'], r['stop_grad'], r['edit_count']) for r in selected]}", flush=True)
 
@@ -162,10 +162,6 @@ def main():
 
     rmsd_loss = BinderPoseRMSD(reference_binder_ca, reference_target_ca, rmsd_tolerance=0.0)
 
-    # MUST be jitted at real complex sizes -- see module docstring. eqx.filter_jit
-    # because opendde_forward_from_trunk closes over the eqx.Module `opendde.model`
-    # and Features pytree, not just plain arrays (same reasoning and pattern as
-    # examples/vhh72_opendde_structure_prediction.py).
     _forward_jit = eqx.filter_jit(
         functools.partial(
             opendde_forward_from_trunk,

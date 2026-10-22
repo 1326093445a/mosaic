@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Feature processing logic for multimer data pipeline."""
 
@@ -38,7 +25,6 @@ MSA_CROP_SIZE = 2048
 
 def _is_homomer_or_monomer(chains: Iterable[pipeline.FeatureDict]) -> bool:
   """Checks if a list of chains represents a homomer/monomer example."""
-  # Note that an entity_id of 0 indicates padding.
   num_unique_chains = len(np.unique(np.concatenate(
       [np.unique(chain['entity_id'][chain['entity_id'] > 0]) for
        chain in chains])))
@@ -96,7 +82,6 @@ def crop_chains(
     The chains cropped.
   """
 
-  # Apply the cropping.
   cropped_chains = []
   for chain in chains_list:
     cropped_chain = _crop_single_chain(
@@ -120,17 +105,12 @@ def _crop_single_chain(chain: pipeline.FeatureDict,
     msa_size_all_seq = chain['num_alignments_all_seq']
     msa_crop_size_all_seq = np.minimum(msa_size_all_seq, msa_crop_size // 2)
 
-    # We reduce the number of un-paired sequences, by the number of times a
-    # sequence from this chain's MSA is included in the paired MSA.  This keeps
-    # the MSA size for each chain roughly constant.
     msa_all_seq = chain['msa_all_seq'][:msa_crop_size_all_seq, :]
     num_non_gapped_pairs = np.sum(
         np.any(msa_all_seq != msa_pairing.MSA_GAP_IDX, axis=1))
     num_non_gapped_pairs = np.minimum(num_non_gapped_pairs,
                                       msa_crop_size_all_seq)
 
-    # Restrict the unpaired crop size so that paired+unpaired sequences do not
-    # exceed msa_seqs_per_chain for each chain.
     max_msa_crop_size = np.maximum(msa_crop_size - num_non_gapped_pairs, 0)
     msa_crop_size = np.minimum(msa_size, max_msa_crop_size)
   else:
@@ -203,7 +183,6 @@ def process_unmerged_features(
   """Postprocessing stage for per-chain features before merging."""
   num_chains = len(all_chain_features)
   for chain_features in all_chain_features.values():
-    # Convert deletion matrices to float.
     chain_features['deletion_matrix'] = np.asarray(
         chain_features.pop('deletion_matrix_int'), dtype=np.float32)
     if 'deletion_matrix_int_all_seq' in chain_features:
@@ -213,17 +192,14 @@ def process_unmerged_features(
     chain_features['deletion_mean'] = np.mean(
         chain_features['deletion_matrix'], axis=0)
 
-    # Add all_atom_mask and dummy all_atom_positions based on aatype.
     all_atom_mask = residue_constants.STANDARD_ATOM_MASK[
         chain_features['aatype']]
     chain_features['all_atom_mask'] = all_atom_mask
     chain_features['all_atom_positions'] = np.zeros(
         list(all_atom_mask.shape) + [3])
 
-    # Add assembly_num_chains.
     chain_features['assembly_num_chains'] = np.asarray(num_chains)
 
-  # Add entity_mask.
   for chain_features in all_chain_features.values():
     chain_features['entity_mask'] = (
         chain_features['entity_id'] != 0).astype(np.int32)

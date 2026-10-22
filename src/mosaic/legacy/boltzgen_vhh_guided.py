@@ -100,26 +100,20 @@ from mosaic.util import fold_in
 stage_log("finished importing heavy dependencies")
 
 
-# =============================================================================
-# Config
-# =============================================================================
 
 
 @dataclass
 class VHHDesignConfig:
     """All runtime knobs for the VHH guided-design driver."""
 
-    # ---- Inputs ----
     complex_cif_path: Path
-    binder_chain_id: str           # heavy-chain id in the CIF (e.g. "H")
-    target_chain_ids: list[str]    # target chain id(s) (e.g. ["A"])
-    cdr_residue_indices: list[int] # 1-indexed label_seq_id positions on the binder chain
+    binder_chain_id: str
+    target_chain_ids: list[str]
+    cdr_residue_indices: list[int]
     boltzgen_yaml_path: Optional[Path] = None
 
-    # ---- Constraint ----
     edit_budget: int = 7
 
-    # ---- Guidance composite loss weights ----
     weight_ablang2: float = 0.10
     weight_edit_budget: float = 5.00
     weight_boltz2_ptm_energy: float = 0.0
@@ -129,47 +123,27 @@ class VHHDesignConfig:
     boltz2_guidance_recycling_steps: int = 0
     boltz2_guidance_sampling_steps: int = 5
     boltz2_guidance_target_template: bool = True
-    # OpenDDE alternative to Boltz2 guidance (mutually exclusive -- see
-    # uses_boltz2_guidance/uses_opendde_guidance). PAE/pLDDT are scoring-only
-    # for OpenDDE (see build_opendde_guidance_loss), so these read the
-    # distogram instead of PAE.
     weight_opendde_iptm: float = 0.0
     weight_opendde_contact: float = 0.0
     opendde_guidance_recycling_steps: int = 4
-    # No opendde_guidance_sampling_steps: both OpenDDE guidance losses are
-    # distogram-only (build_opendde_guidance_loss uses
-    # build_distogram_only_loss), which skips diffusion sampling entirely --
-    # a sampling-steps knob here would be dead configuration.
-    opendde_contact_distance: float = 8.0  # BinderTargetContact.contact_distance
-    clip_gradient_norm: float = 1.0  # per-term gradient clip for balance
+    opendde_contact_distance: float = 8.0
+    clip_gradient_norm: float = 1.0
 
-    # ---- Diffusion ----
     num_sampling_steps: int = 200
     start_sigma_frac: float = 0.4
     step_scale: float = 2.0
     noise_scale: float = 0.88
     lambda_max: float = 1.0
-    lambda_schedule: str = "sigma_squared"  # one of {sigma_squared, sigma, constant}
-    # Real iterative NOS-style prior-compatibility mechanism (section 12a of
-    # docs/guidance_alphaseq_testing_notes.md) -- off by default (0 inner
-    # steps = one-shot merge, unchanged behavior). A one-shot squared-distance
-    # translation of NOS's KL term was tried first and found to be
-    # mathematically a no-op; genuine inner iteration is required instead,
-    # see guided_partial_diffusion's docstring in models/boltzgen.py.
+    lambda_schedule: str = "sigma_squared"
     nos_inner_steps: int = 0
     nos_inner_step_size: float = 0.05
     nos_lambda_kl: float = 1.0
-    nos_langevin_noise: float = 0.0  # 0 = deterministic inner descent
-    # Real look-ahead mechanism (section 12b): differentiate through the
-    # full denoiser wrt atom_coords_noisy instead of the frozen x0_hat.
-    # Mutually exclusive with nos_inner_steps > 0 (raises ValueError).
+    nos_langevin_noise: float = 0.0
     lookahead: bool = False
 
-    # ---- Outer loop ----
     n_outer_iterations: int = 3
 
-    # ---- Stage 2 polish ----
-    search_mode: str = "greedy"  # one of {greedy, mcmc, both}
+    search_mode: str = "greedy"
     polish_steps: int = 200
     polish_batch_size: int = 16
     mcmc_steps: int = 100
@@ -177,7 +151,6 @@ class VHHDesignConfig:
     mcmc_proposal_temp: float = 0.01
     mcmc_max_path_length: int = 2
 
-    # ---- JAX BoltzGen inverse folding ----
     sequence_decoder: str = "boltzgen_if"
     boltzgen_if_checkpoint: Optional[Path] = None
     boltzgen_if_device: str = "auto"
@@ -186,40 +159,28 @@ class VHHDesignConfig:
     boltzgen_if_avoid: str = "C"
     weight_boltzgen_if_prior: float = 0.10
 
-    # ---- I/O ----
     output_dir: Path = Path("./vhh_designs")
 
-    # ---- Toggles for incremental testing ----
     skip_guidance: bool = False
     skip_polish: bool = False
-    skip_refold: bool = True  # default off; task #15 wires this back in
+    skip_refold: bool = True
 
-    # ---- Phase 2 guidance diagnostics (docs/legacy/guidance_implementation_todo.md) ----
     log_guidance_diagnostics: bool = False
     guidance_diagnostics_cos_threshold: float = 0.0
     guidance_diagnostics_sigma_bins: int = 4
 
-    # ---- Misc ----
     recycling_steps: int = 3
     refold_sampling_steps: int = 25
     refold_num_samples: int = 1
     refold_batch_size: int = 1
     refold_binder_template: bool = True
-    refold_binder_template_mode: str = "full"  # one of {full, framework, none}
+    refold_binder_template_mode: str = "full"
     ipsae_pae_cutoff: float = 12.0
     refold_rmsd_threshold: float = 2.5
-    # one of {boltz2, opendde}. Defaults to opendde per explicit request --
-    # The differentiable guidance path is GPU-smoke-tested; the full refold
-    # path has a separate smoke in examples/opendde_refold_smoke_test.py and
-    # still needs completion on a GPU with enough free VRAM. Override with
-    # --refold-backend boltz2 when that validation requirement matters.
     refold_backend: str = "opendde"
     seed: int = 0
 
 
-# =============================================================================
-# Helpers
-# =============================================================================
 
 
 def build_complex_yaml(cif_filename: str, binder_chain_id: str,
@@ -549,7 +510,6 @@ def _fit_transform(mobile: np.ndarray, reference: np.ndarray):
     mobile_centered = mobile - mobile_mean
     reference_centered = reference - reference_mean
     u, _, vt = np.linalg.svd(mobile_centered.T @ reference_centered)
-    # Row-vector Kabsch: coordinates are transformed as coords @ rotation.
     rotation = u @ vt
     if np.linalg.det(rotation) < 0:
         vt[-1, :] *= -1
@@ -616,11 +576,6 @@ def target_aligned_rmsd_metrics(
     )
 
     metrics = {
-        # BoltzGen-like RMSD filter columns. In BoltzGen Filter defaults,
-        # from_inverse_folded=True maps filter_rmsd <- bb_rmsd and
-        # filter_rmsd_design <- bb_rmsd_design. Here we use CA-only analogues
-        # because refolded gemmi structures do not retain the full BoltzGen
-        # atom-mask feature tensors.
         "complex_ca_rmsd": _rmsd(ref_complex_aligned, orig_complex),
         "binder_ca_rmsd_self_aligned": _rmsd(ref_binder_self_aligned, orig_binder),
         "filter_rmsd": _rmsd(ref_complex_aligned, orig_complex),
@@ -638,9 +593,6 @@ def target_aligned_rmsd_metrics(
     }
 
     if cdr_residue_indices:
-        # Mosaic/BoltzGen YAML `res_index` values are 1-based chain-order
-        # positions, not necessarily PDB author residue numbers. This matters
-        # for VHHs with Kabat insertion codes such as H52A or H100A-H.
         cdr_set = {int(i) for i in cdr_residue_indices}
         cdr_positions = [
             i for i in range(min(len(orig_binder_keys), len(ref_binder_target_aligned)))
@@ -854,9 +806,6 @@ def _append_option(cmd: list[str], flag: str, value):
 
 
 def uses_boltz2_guidance(cfg: VHHDesignConfig) -> bool:
-    # weight_boltz2_ipsae is deliberately excluded: ipSAE is post-refold-only
-    # (see build_boltz2_guidance_loss), so it never triggers in-loop Boltz2
-    # guidance on its own.
     return (
         cfg.weight_boltz2_ptm_energy > 0
         or cfg.weight_boltz2_interface_pae > 0
@@ -1162,9 +1111,6 @@ def run_many_from_cli(args):
         )
 
 
-# =============================================================================
-# Model loading (one-time setup)
-# =============================================================================
 
 
 @dataclass
@@ -1194,8 +1140,6 @@ def load_guidance_models(cfg: VHHDesignConfig, models: LoadedModels) -> LoadedMo
     until after that stage avoids keeping those model weights resident during
     the BoltzGen sampler allocation.
     """
-    # stop_grad=False on the language model because we need gradients to flow
-    # back to coords through the differentiable IF bridge during guidance.
     if cfg.weight_ablang2 > 0 and models.ablang2_model is None:
         stage_log("loading AbLang2 model")
         models.ablang2_model, models.ablang2_tokenizer = load_ablang2()
@@ -1258,9 +1202,6 @@ def load_all_models(cfg: VHHDesignConfig) -> LoadedModels:
     return load_guidance_models(cfg, models)
 
 
-# =============================================================================
-# Composite loss construction
-# =============================================================================
 
 
 class SequenceSubsetLoss(LossTerm):
@@ -1341,8 +1282,6 @@ def build_boltz2_guidance_loss(
 
     loss_terms = []
     if cfg.weight_boltz2_ptm_energy > 0:
-        # pTMEnergy is negative when confidence is high, so minimizing it
-        # maximizes cross-chain TM-style confidence.
         loss_terms.append(cfg.weight_boltz2_ptm_energy * pTMEnergy())
     if cfg.weight_boltz2_interface_pae > 0:
         mean_interface_pae = 0.5 * BinderTargetPAE() + 0.5 * TargetBinderPAE()
@@ -1350,9 +1289,6 @@ def build_boltz2_guidance_loss(
     if cfg.weight_boltz2_iptm > 0:
         loss_terms.append(cfg.weight_boltz2_iptm * IPTMLoss())
     if cfg.weight_boltz2_ipsae > 0:
-        # ipSAE's hard PAE cutoff and max/best-row reduction are not a stable
-        # differentiable per-step objective. In-loop binding guidance should use
-        # ipTM and interface PAE/iPAE; ipSAE stays a post-refold rank/filter.
         raise ValueError(
             "--weight-boltz2-ipsae is not supported for in-loop guidance; "
             "ipSAE is not differentiable enough for per-step guidance. Use "
@@ -1438,10 +1374,6 @@ def build_opendde_guidance_loss(
     )
     features, _ = models.opendde.binder_features(binder_length, target_chains)
 
-    # Binder-local (0-indexed into the binder-only sequence array) positions
-    # of the designable/CDR residues, for BinderTargetContact's paratope_idx --
-    # mirrors examples/protenij_vhh.py's pattern of restricting contact scoring
-    # to the redesigned positions rather than the whole binder chain.
     paratope_idx = np.nonzero(
         np.asarray(designable_token_mask)[np.asarray(sequence_loss_indices)]
     )[0]
@@ -1515,17 +1447,10 @@ def build_guidance_loss(cfg: VHHDesignConfig, models: LoadedModels,
     )
 
     if cfg.skip_guidance:
-        # v0 path: no guidance at all. Return None so the driver skips
-        # building any guidance_fn_* closures and guided_partial_diffusion
-        # short-circuits the per-step gradient computation.
         return None
 
-    # Edit-budget is the locality/edit-restraint objective (L_edit). It is
-    # always available when guidance is active at all (unlike naturalness or
-    # Boltz2 binding, which are individually optional via their weights).
     edit_loss = cfg.weight_edit_budget * edit_budget_term
 
-    # Naturalness (L_nat): AbLang2, if enabled.
     nat_terms = []
     if cfg.weight_ablang2 > 0:
         ablang2_pll = make_ablang2_loss(
@@ -1540,9 +1465,6 @@ def build_guidance_loss(cfg: VHHDesignConfig, models: LoadedModels,
         )
     nat_loss = sum(nat_terms[1:], start=nat_terms[0]) if nat_terms else None
 
-    # Binding confidence (L_bind): the Boltz2- or OpenDDE-based
-    # interface-confidence surrogate, if either is configured. Mutually
-    # exclusive -- load_guidance_models raises if both are set.
     bind_loss = None
     if uses_boltz2_guidance(cfg):
         boltz2_guidance_loss = build_boltz2_guidance_loss(
@@ -1569,15 +1491,6 @@ def build_guidance_loss(cfg: VHHDesignConfig, models: LoadedModels,
     if bind_loss is not None:
         return GuidanceLosses(bind=bind_loss, nat=nat_loss, edit=edit_loss)
 
-    # No Boltz2/OpenDDE binding signal configured — this is v1's
-    # "EditBudget-only guidance" mode. guided_partial_diffusion requires a
-    # bind objective for guidance to be active at all (it is the anchor
-    # everything else is projected against), so use edit_loss as the anchor
-    # in this case instead of as a separate regularizer. This preserves v1's
-    # original behavior exactly: with no naturalness terms either, guidance
-    # reduces to edit-budget alone driving the trajectory, matching what the
-    # single merged guidance_fn used to do when only weight_edit_budget was
-    # nonzero.
     return GuidanceLosses(bind=edit_loss, nat=nat_loss, edit=None)
 
 
@@ -1609,9 +1522,6 @@ def build_polish_loss(cfg: VHHDesignConfig, models: LoadedModels,
     return sum(terms[1:], start=terms[0])
 
 
-# =============================================================================
-# Driver
-# =============================================================================
 
 
 def run(cfg: VHHDesignConfig):
@@ -1629,12 +1539,6 @@ def run(cfg: VHHDesignConfig):
     if cfg.weight_boltzgen_if_prior < 0:
         raise ValueError("--weight-boltzgen-if-prior must be >= 0")
     if cfg.weight_boltz2_ipsae > 0:
-        # Validated unconditionally here, not inside build_boltz2_guidance_loss:
-        # uses_boltz2_guidance() deliberately excludes weight_boltz2_ipsae (see
-        # its docstring), so if ipSAE were the *only* positive Boltz2 weight,
-        # build_boltz2_guidance_loss would never be called and its ValueError
-        # guard would never fire -- ipSAE would be silently ignored instead of
-        # rejected. Checking here catches that case too.
         raise ValueError(
             "--weight-boltz2-ipsae is not supported for in-loop guidance; "
             "ipSAE is not differentiable enough for per-step guidance. Use "
@@ -1643,9 +1547,6 @@ def run(cfg: VHHDesignConfig):
             "(--skip-refold false) afterward."
         )
     if uses_boltz2_guidance(cfg) and uses_opendde_guidance(cfg):
-        # Same reasoning as the ipSAE check above: validated here (before any
-        # model loading) rather than only inside load_guidance_models, so it
-        # fails fast and is cheaply testable without a real BoltzGen load.
         raise ValueError(
             "Both Boltz2 (--weight-boltz2-*) and OpenDDE (--weight-opendde-*) "
             "in-loop guidance weights are set; only one can own the bind "
@@ -1654,8 +1555,6 @@ def run(cfg: VHHDesignConfig):
     if cfg.refold_backend not in {"boltz2", "opendde"}:
         raise ValueError("--refold-backend must be one of boltz2, opendde")
     if guidance_anchor_is_empty_edit_budget(cfg):
-        # Warned here (before any model loading), same reasoning as the
-        # other config-only checks in this block.
         print(
             "[guidance] WARNING: no Boltz2/OpenDDE binding signal is "
             "configured and --weight-edit-budget <= 0, so the promoted "
@@ -1669,10 +1568,6 @@ def run(cfg: VHHDesignConfig):
             flush=True,
         )
     if not cfg.skip_refold and opendde_refold_ignores_template_config(cfg):
-        # Warned here (before any model loading) rather than only right
-        # before refolding runs, so it's visible before paying for the
-        # entire design/search loop, not immediately before the refold step
-        # at the very end of a run that could take a long time.
         print(
             "[refold] WARNING: --refold-binder-template is set "
             f"(mode={cfg.refold_binder_template_mode!r}) but "
@@ -1683,29 +1578,6 @@ def run(cfg: VHHDesignConfig):
             flush=True,
         )
     if not cfg.skip_refold:
-        # Both refold_pareto_with_boltz2 and refold_pareto_with_opendde score
-        # samples via eqx.filter_jit(jax.vmap(score_one)) -- fusing a whole
-        # trunk-to-confidence-heads forward (with its unrolled per-step
-        # diffusion sampling loop) into one compiled program. That produces a
-        # compiled kernel binary over 1GB; loading it competes with JAX's
-        # preallocated device-memory arena for a *separate* memory pool, and
-        # XLA's autotuner additionally grabs large transient scratch while
-        # benchmarking candidate kernels during compilation. Both cause
-        # spurious CUDA_ERROR_OUT_OF_MEMORY on a single 24GB GPU even for
-        # tiny inputs -- confirmed via jax's compiled memory_analysis(),
-        # whose reported peak *data* usage was ~1.3GB, nowhere near the
-        # failure. Disabling autotuning avoids both; XLA falls back to
-        # default (not empirically-searched) kernel choices, a minor
-        # runtime-speed tradeoff for a program that otherwise won't load at
-        # all on this hardware.
-        #
-        # Set here, before load_core_models (a few lines below) -- the
-        # earliest JAX device touch in this process -- since XLA reads
-        # XLA_FLAGS once, lazily, at backend initialization. Every
-        # --devices multi-GPU child re-executes run() from scratch as its
-        # own process (see run_many_from_cli/build_single_design_command),
-        # so this self-applies per child with no separate multi-GPU-specific
-        # handling needed.
         existing_xla_flags = os.environ.get("XLA_FLAGS", "")
         if "--xla_gpu_autotune_level" not in existing_xla_flags:
             os.environ["XLA_FLAGS"] = (
@@ -1717,7 +1589,6 @@ def run(cfg: VHHDesignConfig):
                    for k, v in asdict(cfg).items()}, f, indent=2)
     stage_log("wrote config.json")
 
-    # ---- 1. One-time setup: load BoltzGen, parse YAML, build features ----
     print("[setup] loading BoltzGen model...", flush=True)
     models = load_core_models(cfg)
 
@@ -1741,24 +1612,18 @@ def run(cfg: VHHDesignConfig):
     features, writer = load_features_and_structure_writer(
         yaml_string=yaml_string,
         files=input_files,
-        # mask_backbone=False keeps the parent backbone visible to the trunk —
-        # the sequence is still masked at designable positions.
         mask=True,
         mask_backbone=False,
         mask_disto=True,
     )
     stage_log("finished loading and featurizing complex")
 
-    # Extract everything we need from features. Keep arrays UNBATCHED throughout
-    # the driver — guided_partial_diffusion auto-batches as needed. For backbone
-    # extraction inside guidance_fn we use the token-to-backbone mapping that
-    # BoltzGenOutput.backbone_coordinates already exercises.
     stage_log("building parent sequence and design masks")
     parent_one_hot = parent_one_hot_from_features(features)
     designable_token_mask = cdr_token_mask_from_features(features)
-    initial_coords = squeeze_feature(features["coords"], "coords", 2)               # (M, 3)
-    atom_pad_mask = squeeze_feature(features["atom_pad_mask"], "atom_pad_mask", 1)  # (M,)
-    atom_partial_mask = build_atom_partial_mask(features, designable_token_mask)  # (M,)
+    initial_coords = squeeze_feature(features["coords"], "coords", 2)
+    atom_pad_mask = squeeze_feature(features["atom_pad_mask"], "atom_pad_mask", 1)
+    atom_partial_mask = build_atom_partial_mask(features, designable_token_mask)
     asym_id = squeeze_feature(features["asym_id"], "asym_id", 1)
     binder_token_indices = binder_indices_from_design_mask(
         asym_id, designable_token_mask
@@ -1772,7 +1637,6 @@ def run(cfg: VHHDesignConfig):
           f"edit budget = {cfg.edit_budget}", flush=True)
     stage_log("finished parent sequence and design masks")
 
-    # ---- 2. Run trunk ONCE; reuse Sampler across outer iterations ----
     print("[setup] running BoltzGen trunk + diffusion conditioning...", flush=True)
     stage_log("starting BoltzGen sampler/trunk conditioning")
     sampler = Sampler.from_features(
@@ -1784,7 +1648,6 @@ def run(cfg: VHHDesignConfig):
     )
     stage_log("finished BoltzGen sampler/trunk conditioning")
 
-    # ---- 3. Load guidance models and build composite losses ----
     print("[setup] loading guidance models...", flush=True)
     stage_log("starting guidance model loading")
     models = load_guidance_models(cfg, models)
@@ -1801,7 +1664,6 @@ def run(cfg: VHHDesignConfig):
     lambda_fn = lambda_schedule_fn(cfg.lambda_schedule, cfg.lambda_max)
     stage_log("finished building guidance and polish losses")
 
-    # ---- 4. Outer loop ----
     parent_seq_ids = jnp.argmax(parent_one_hot, axis=-1)
     current_parent_one_hot = parent_one_hot
     current_initial_coords = initial_coords
@@ -1816,7 +1678,6 @@ def run(cfg: VHHDesignConfig):
               f"(start_sigma_frac={cfg.start_sigma_frac}, "
               f"steps={cfg.num_sampling_steps})...", flush=True)
 
-        # ----- Stage 1: guided partial diffusion -----
         if_context = prepare_jax_boltzgen_if_context(
             models.boltzgen_if_torch,
             writer.torch_features,
@@ -1862,9 +1723,6 @@ def run(cfg: VHHDesignConfig):
         else:
             guidance_fn_bind = guidance_fn_nat = guidance_fn_edit = None
 
-        # Diagnostics are only meaningful when guidance is actually active --
-        # with guidance_fn_bind=None the controller is a no-op and
-        # cos(guided,unguided) would trivially be ~1 everywhere.
         want_diagnostics = cfg.log_guidance_diagnostics and guidance_fn_bind is not None
 
         stage_log(f"outer {outer}: starting guided partial diffusion")
@@ -1902,9 +1760,6 @@ def run(cfg: VHHDesignConfig):
             guidance_diagnostics_records.append(
                 {"label": label, "summary": summary, "outcome": None}
             )
-            # Write incrementally after every outer iteration, not just at the
-            # end of run() -- cluster jobs can be preempted or crash mid-run,
-            # and partial diagnostics are still useful.
             write_guidance_diagnostics_report(
                 guidance_diagnostics_records,
                 cfg.output_dir / "guidance_diagnostics.json",
@@ -1913,7 +1768,6 @@ def run(cfg: VHHDesignConfig):
             x_final = diffusion_result
         stage_log(f"outer {outer}: finished guided partial diffusion")
 
-        # ----- Stage 1.5: decode to discrete sequence -----
         stage_log(f"outer {outer}: decoding final structure with JAX BoltzGen-IF")
         if_result = decode_with_jax_boltzgen_if(
             models.boltzgen_if_jax,
@@ -1956,7 +1810,6 @@ def run(cfg: VHHDesignConfig):
             f"outer {outer}: finished {cfg.sequence_decoder} discrete decode"
         )
 
-        # ----- Stage 2: edit-budgeted sequence search -----
         if cfg.skip_polish:
             polished_seq = np.asarray(diffusion_seq)
             polished_val = float("nan")
@@ -2036,13 +1889,11 @@ def run(cfg: VHHDesignConfig):
                 flush=True,
             )
 
-        # ----- Update global Pareto front -----
         for k, (loss_v, seq) in iter_pareto.items():
             existing = global_pareto.get(k)
             if existing is None or loss_v < existing[0]:
                 global_pareto[k] = (loss_v, seq.copy())
 
-        # ----- Convergence check & parent update -----
         if cfg.skip_polish:
             converged = True
         else:
@@ -2072,7 +1923,6 @@ def run(cfg: VHHDesignConfig):
         if converged:
             break
 
-    # ---- 5. Write outputs ----
     print("\n[output] writing Pareto front and per-iteration log...", flush=True)
     stage_log("writing Pareto front and iterations CSV")
     binder_token_indices_np = np.asarray(binder_token_indices)
@@ -2088,7 +1938,6 @@ def run(cfg: VHHDesignConfig):
     pl.DataFrame(pareto_rows).write_csv(cfg.output_dir / "pareto_front.csv")
     pl.DataFrame(all_iterations).write_csv(cfg.output_dir / "iterations.csv")
 
-    # ---- 6. Refold (task #15) ----
     if not cfg.skip_refold:
         print(f"[refold] refolding Pareto candidates with {cfg.refold_backend}...", flush=True)
         stage_log(f"starting {cfg.refold_backend} refold")
@@ -2103,9 +1952,6 @@ def run(cfg: VHHDesignConfig):
     return global_pareto, all_iterations
 
 
-# =============================================================================
-# Refolding harness (task #15)
-# =============================================================================
 
 
 def refold_pareto_with_boltz2(
@@ -2154,9 +2000,6 @@ def refold_pareto_with_boltz2(
     for cid in cfg.target_chain_ids:
         chain = target_struct[0][cid]
         seq = gemmi.one_letter_code([r.name for r in chain])
-        # Boltz2 template YAML construction renames template chains in-place to
-        # A/B/...; pass a clone so the original reference keeps author chain IDs
-        # for target-aligned RMSD diagnostics.
         target_templates.append((seq, chain.clone()))
     stage_log(
         "refold: built target chain templates/features "
@@ -2245,9 +2088,6 @@ def refold_pareto_with_boltz2(
     for edit_count, (loss_v, seq_ids) in sorted(pareto.items()):
         stage_log(f"refold: preparing edit_count={edit_count}")
         seq_str = "".join(TOKENS[i] for i in seq_ids[binder_token_indices_np])
-        # Query sequence is the designed binder sequence, while the optional
-        # binder template supplies the parent pose/backbone to keep refolding
-        # close to the input complex instead of freely redocking the binder.
         binder_template = (
             binder_template_chain.clone()
             if binder_template_chain is not None
@@ -2492,10 +2332,6 @@ def refold_pareto_with_opendde(
                 "bt_pae_mean": jnp.mean(bt_pae),
                 "tb_pae_mean": jnp.mean(tb_pae),
             }
-            # Return the full StructureModelOutput (an eqx.Module / pytree) so
-            # to_structure() has every field it needs after vmap+indexing --
-            # simpler and less error-prone than hand-picking a subset of
-            # fields and reconstructing a partial StructureModelOutput later.
             return out, aux
 
         return jax.vmap(score_one)(sample_keys)
@@ -2629,9 +2465,6 @@ def refold_pareto_with_opendde(
     pl.DataFrame(all_sample_rows).write_csv(cfg.output_dir / "refold_all_samples.csv")
 
 
-# =============================================================================
-# CLI entry point
-# =============================================================================
 
 
 def validate_and_normalize_cli_args(parser, args):
@@ -2883,7 +2716,6 @@ if __name__ == "__main__":
         if value is not None:
             setattr(cfg, name, value)
 
-    # Mode-driven flag presets
     if args.mode == "v0":
         cfg.skip_guidance = True
         cfg.skip_polish = True
@@ -2896,7 +2728,6 @@ if __name__ == "__main__":
         cfg.weight_opendde_iptm = 0.0
         cfg.weight_opendde_contact = 0.0
     elif args.mode == "v1":
-        # EditBudget-only guidance; zero-out other guidance terms.
         cfg.skip_guidance = False
         cfg.skip_polish = True
         cfg.skip_refold = True

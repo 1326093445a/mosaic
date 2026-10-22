@@ -29,9 +29,6 @@ N_BINDER, N_TARGET = 8, 10
 N = N_BINDER + N_TARGET
 BINS = jnp.linspace(2.0, 22.0, 64)
 
-# A binder laid out along x, facing a target row 6 A away. Reference pairing is
-# therefore i <-> i, which a 180-degree flip of the binder exchanges for
-# i <-> (N_BINDER-1-i): the same residues, the same distances, new partners.
 BINDER = np.stack([np.arange(N_BINDER) * 4.0, np.zeros(N_BINDER), np.zeros(N_BINDER)], -1)
 TARGET = np.stack(
     [np.arange(N_TARGET) * 4.0, np.full(N_TARGET, 6.0), np.zeros(N_TARGET)], -1
@@ -202,14 +199,6 @@ def test_empty_pair_set_is_visible_to_the_caller():
     assert far.shape[0] == 0
 
 
-# --- Real reference geometry -------------------------------------------------
-#
-# The toy tests above establish the mechanism. These use the actual P17/JN.1
-# reference and the flip geometries measured in docs/P17_JN1.md section 25:
-# ~160-178 degrees of rotation with a 13-15 A centroid shift, and the CDRs
-# still engaging the epitope at 56-76% of the interface. A flip that turns the
-# paratope away is not the observed failure and both terms catch it; the
-# flips that matter are the ones that keep the CDRs in contact.
 
 REFERENCE = Path(__file__).resolve().parent.parent / "P17_JN1.pdb"
 real = pytest.mark.skipif(not REFERENCE.is_file(), reason="P17_JN1.pdb absent")
@@ -299,7 +288,6 @@ def test_registry_beats_the_aggregate_term_on_paratope_preserving_flips():
     for axis, label in ((approach, "spin about approach axis"),
                         (perp, "tumble through paratope")):
         flip = _rot_about(rb, axis, paratope)
-        # confirm the flip is the observed kind: CDRs still at the epitope
         cdr_epi = np.linalg.norm(flip[cdr][:, None] - rt[epi][None], axis=-1).min()
         assert cdr_epi < 6.0, f"{label}: CDRs must stay engaged, got {cdr_epi:.1f} A"
 

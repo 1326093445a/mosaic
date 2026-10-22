@@ -111,8 +111,6 @@ def audit(root, statuses):
                 },
                 sort_keys=True,
             )
-            # Include effective cache/environment settings without mixing CUDA ordinals
-            # into cross-device matching or strict/native precision policies together.
             signature += json.dumps(
                 {
                     "cache": config.get("jax_compilation_cache"),
@@ -137,7 +135,6 @@ def audit(root, statuses):
             )
             digest = fixture_digest(inputs)
             check(f"{name}/fixture_hash", digest == config["fixture_sha256"])
-            # Compare to the independent FP64 analytic reference at actual FP32 inputs.
             exact_inputs = [a.astype(np.float32).astype(np.float64) for a in inputs]
             ref_loss, ref_out, ref_grad = numpy_reference(
                 exact_inputs[0], exact_inputs[1:]
@@ -172,8 +169,6 @@ def audit(root, statuses):
                                 record_numerical(
                                     job, mode, "baseline", key, value, reference[key]
                                 )
-                        # Only the smooth FP32 control gets a consistency gate.
-                        # BF16 materialization/fusion can affect what is rounded.
                         if variant == "fp32":
                             check(
                                 f"{name}/{prefix}/loss_output_consistency",

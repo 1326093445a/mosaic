@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Functions for building the input features for the AlphaFold model."""
 
@@ -21,7 +8,6 @@ from ..common import residue_constants
 from ..data import msa_identifiers, parsers, templates
 import numpy as np
 
-# Internal import (7716).
 
 FeatureDict = MutableMapping[str, np.ndarray]
 TemplateSearcher = Any
@@ -85,7 +71,7 @@ def run_msa_tool(msa_runner, input_fasta_path: str, msa_out_path: str,
   """Runs an MSA tool, checking if output already exists first."""
   if not use_precomputed_msas or not os.path.exists(msa_out_path):
     if msa_format == 'sto' and max_sto_sequences is not None:
-      result = msa_runner.query(input_fasta_path, max_sto_sequences)[0]  # pytype: disable=wrong-arg-count
+      result = msa_runner.query(input_fasta_path, max_sto_sequences)[0]
     else:
       result = msa_runner.query(input_fasta_path)[0]
     with open(msa_out_path, 'w') as f:

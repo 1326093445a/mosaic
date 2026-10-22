@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Function to stack repeats of a layer function without shared parameters."""
 
@@ -28,9 +15,6 @@ LayerStackCarry = collections.namedtuple('LayerStackCarry', ['x', 'rng'])
 LayerStackScanned = collections.namedtuple('LayerStackScanned',
                                            ['i', 'args_ys'])
 
-# WrappedFn should take in arbitrarily nested `jnp.ndarray`, and return the
-# exact same type. We cannot express this with `typing`. So we just use it
-# to inform the user. In reality, the typing below will accept anything.
 NestedArray = Any
 WrappedFn = Callable[..., Union[NestedArray, Tuple[NestedArray]]]
 
@@ -78,9 +62,6 @@ class _LayerStack(hk.Module):
   def __call__(self, x, *args_ys):
     count = self._count
     if hk.running_init():
-      # At initialization time, we run just one layer but add an extra first
-      # dimension to every initialized tensor, making sure to use different
-      # random keys for different slices.
       def creator(next_creator, shape, dtype, init, context):
         del context
 
@@ -116,20 +97,16 @@ class _LayerStack(hk.Module):
         if z is None:
           return x, z
 
-        # Broadcast state to hold each layer state.
         def broadcast_state(layer_state):
           return jnp.broadcast_to(
               layer_state, [count,] + list(layer_state.shape))
         zs = jax.tree_util.tree_map(broadcast_state, z)
         return x, zs
     else:
-      # Use scan during apply, threading through random seed so that it's
-      # unique for each layer.
       def layer(carry: LayerStackCarry, scanned: LayerStackScanned):
         rng = carry.rng
 
         def getter(next_getter, value, context):
-          # Getter slices the full param at the current loop index.
           trailing_dims = len(context.original_shape) + 1
           assert value.shape[value.ndim - trailing_dims] == count, (
               f'Attempting to use a parameter stack of size '
@@ -181,8 +158,6 @@ class _LayerStackNoState(_LayerStack):
     del y
     ret = self._f(*args)
     if len(args) == 1:
-      # If the function takes a single argument, the wrapped function receives
-      # a tuple of length 1, and therefore it must return a tuple of length 1.
       ret = (ret,)
     return ret, None
 
@@ -265,8 +240,6 @@ def layer_stack(num_layers: int,
         ret = _LayerStackNoState(
             f, num_layers, unroll=unroll, name=name)(args, None)[0]
         if len(args) == 1:
-          # If the function takes a single argument, we must also return a
-          # single value, and not a tuple of length 1.
           ret = ret[0]
         return ret
 

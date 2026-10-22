@@ -52,7 +52,6 @@ def proposal(parent_id, candidate_id, position, to_residue, *, reverted=-1,
     )
 
 
-# Reading the log ------------------------------------------------------------
 
 
 def test_a_truncated_final_line_is_dropped_not_fatal(tmp_path):
@@ -69,7 +68,6 @@ def test_a_malformed_line_before_the_end_is_a_corrupt_log(tmp_path):
         traj.load_events(path)
 
 
-# Naming the move ------------------------------------------------------------
 
 
 def test_the_from_residue_comes_from_the_parent_not_the_start(tmp_path):
@@ -128,7 +126,6 @@ def test_restores_reference_marks_the_crystal_residue_only(tmp_path):
     assert rows[0]["reference_residue"] == "G"
 
 
-# Realized outcome -----------------------------------------------------------
 
 
 def test_realized_delta_is_child_minus_parent_and_none_when_unscored(tmp_path):
@@ -147,13 +144,10 @@ def test_realized_delta_is_child_minus_parent_and_none_when_unscored(tmp_path):
 def test_sign_agreement_counts_only_measurable_proposals(tmp_path):
     log = write_log(tmp_path / "events.jsonl", [
         evaluation(0, "AAA", 0.10),
-        # predicted improvement, realized improvement: agrees
         proposal(0, 1, 1, "W", predicted=-0.2),
         evaluation(1, "AWA", 0.85),
-        # predicted improvement, realized loss: disagrees
         proposal(0, 2, 1, "C", predicted=-0.2),
         evaluation(2, "ACA", 0.01),
-        # never scored: not counted either way
         proposal(0, 3, 1, "Y", predicted=-0.2, accepted=False),
     ])
     rows = traj.trajectory(traj.load_events(log))
@@ -165,7 +159,6 @@ def test_sign_agreement_on_a_log_with_nothing_measurable(tmp_path):
     assert traj.sign_agreement(traj.trajectory(traj.load_events(log)))["rate"] is None
 
 
-# Per-position summary -------------------------------------------------------
 
 
 def test_position_history_ranks_by_visits_and_pools_residues(tmp_path):
@@ -197,7 +190,6 @@ def test_find_runs_accepts_a_run_a_parent_and_a_search_directory(tmp_path):
     assert traj.find_runs(tmp_path / "run") == [nested]
 
 
-# The archived Alpha run -----------------------------------------------------
 
 
 @needs_archive

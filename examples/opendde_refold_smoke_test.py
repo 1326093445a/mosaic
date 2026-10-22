@@ -37,11 +37,6 @@ Usage:
 """
 import os
 
-# See examples/opendde_smoke_test.py for why -- this test additionally hits a
-# second, distinct autotune-related failure: refold_pareto_with_opendde's
-# eqx.filter_jit(jax.vmap(...)) scoring path compiles a >1GB kernel binary
-# whose CUDA module load competes with JAX's preallocated memory arena.
-# Disabling autotuning avoids both. Must be set before `import jax` below.
 os.environ.setdefault("XLA_FLAGS", "--xla_gpu_autotune_level=0")
 
 import tempfile
@@ -164,7 +159,7 @@ interface_metrics = interface_geometry_metrics(
 print(f"  interface_geometry_metrics: {interface_metrics}", flush=True)
 for k, v in interface_metrics.items():
     if isinstance(v, float):
-        assert v == v, f"interface metric {k} is NaN"  # NaN != NaN
+        assert v == v, f"interface metric {k} is NaN"
 
 rmsd_metrics = target_aligned_rmsd_metrics(
     structure_ref, structure_pred,
@@ -200,16 +195,6 @@ print(
     flush=True,
 )
 
-# ---------------------------------------------------------------------------
-# Whole-function check: call refold_pareto_with_opendde itself, not just its
-# pieces -- covers batched vmap sampling, best-sample selection,
-# rmsd-pass-based ranking, and the three-CSV output, none of which the
-# component-level checks above exercise.
-# ---------------------------------------------------------------------------
-# Free the component-level test's forward-pass buffers before the
-# whole-function check below -- they're not needed anymore (structure_ref is
-# still needed just below, to seed the synthetic "original complex" CIF), and
-# this whole run is tight on a single 24GB GPU.
 import gc
 
 del out_pred, structure_pred
@@ -228,8 +213,6 @@ from mosaic.legacy.boltzgen_vhh_guided import (
     refold_pareto_with_opendde,
 )
 
-# structure_ref (from forward pass #1) stands in for "the original complex";
-# refold_pareto_with_opendde will refold BINDER_SEQ against it and compare.
 complex_cif_path = work_dir / "complex.cif"
 write_structure_cif(structure_ref, complex_cif_path)
 
@@ -246,10 +229,10 @@ cfg = VHHDesignConfig(
     refold_num_samples=1,
     refold_batch_size=1,
     ipsae_pae_cutoff=12.0,
-    refold_rmsd_threshold=0.0,  # <=0 disables the pass/fail filter (see its docstring)
+    refold_rmsd_threshold=0.0,
 )
 seq_ids = np.array([TOKENS.index(c) for c in BINDER_SEQ], dtype=np.int32)
-pareto = {0: (0.42, seq_ids)}  # one Pareto candidate at edit_count=0
+pareto = {0: (0.42, seq_ids)}
 binder_token_indices = jnp.arange(BINDER_LEN)
 
 refold_pareto_with_opendde(pareto, cfg, binder_token_indices)

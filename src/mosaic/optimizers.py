@@ -43,7 +43,6 @@ def _ranking_leaf(aux, ranking_aux_name: str):
 
 
 def _print_iter(iter, aux, v):
-    # first filter out anything that isn't a float or has number of dimensions > 0
     aux = eqx.filter(
         aux,
         lambda v: isinstance(v, float | str) or v.shape == (),
@@ -59,7 +58,6 @@ def _print_iter(iter, aux, v):
     )
 
 
-# Split this up so changing optim parameters doesn't trigger re-compilation of loss function
 @eqx.filter_jit
 def _____eval_loss(loss, x, key):
     return loss(x, key=key)
@@ -121,7 +119,6 @@ def _eval_loss_and_grad(
     - ((value, aux), g): value of the loss function and auxiliary information, and gradient of the loss with respect to x
 
     """
-    # standardize input to avoid recompilation
     x = np.array(x, dtype=np.float32)
     (v, aux), g = _____eval_loss_and_grad(loss_function, x=x, key=key)
     return (jnp.nan_to_num(v, nan=1000000.0), aux), jnp.nan_to_num(
@@ -129,7 +126,6 @@ def _eval_loss_and_grad(
     )
 
 
-# more underscores == more private
 @eqx.filter_jit
 def _____eval_loss_and_grad(loss, x, key):
     return eqx.filter_value_and_grad(loss, has_aux=True)(x, key=key)
@@ -169,15 +165,8 @@ def batched_value_eval(
     return jax.vmap(single)(xs, keys)
 
 
-# def _proposal(sequence, g, temp, alphabet_size: int = 20):
-#     input = jax.nn.one_hot(sequence, alphabet_size)
-#     g_i_x_i = (g * input).sum(-1, keepdims=True)
-#     logits = -((input * g).sum() - g_i_x_i + g) / temp
-#     return jax.nn.softmax(logits), jax.nn.log_softmax(logits)
 
 
-# rewrite in numpy to use float64
-# note: this _does not match the taylor expansion estimate (above)_ (there's an extra normalization). seems better though.
 def _proposal(sequence, g, temp, alphabet_size: int = 20):
     input = np.eye(alphabet_size)[sequence]
     g_i_x_i = (g * input).sum(-1, keepdims=True)
@@ -249,34 +238,14 @@ def gradient_MCMC(
     (v_0, aux_0), g_0 = _eval_loss_and_grad(
         loss, jax.nn.one_hot(sequence, alphabet_size), key=key_model
     )
-    # Redrawing a proposal that came back equal to the current sequence
-    # CONDITIONS the proposal distribution on y != x, and the Hastings ratio
-    # below is computed from the UNconditioned q. The truncation factor
-    # (1 - q(x|x)) differs between states, so it does not cancel, and detailed
-    # balance fails: on a two-state chain the flows come out 0.582 against
-    # 0.418 of the total with the redraw and exactly 0.500 / 0.500 without it
-    # (`tests/test_base_library_corrections.py`). Dividing it out is not
-    # available either -- for a path of
-    # length > 1, q(x|x) is the total probability that the whole walk returns
-    # to its start, over every path, which this sampler does not enumerate.
-    # So when the correction is applied, the draw is taken as it comes; the
-    # self-proposal costs one wasted evaluation and is accepted or rejected
-    # like any other. With `detailed_balance=False` no Hastings term is applied
-    # at all, so the redraw is just a spend-saving heuristic there.
     max_draws = 1 if detailed_balance else 50
     for iter in range(steps):
         start_time = time.time()
-        ### generate a proposal
 
         for i in range(max_draws):
             proposal = sequence.copy()
             mutations = []
             log_q_forward = 0.0
-            # Drawn from the SUPPLIED key. This used to be
-            # `jax.random.key(np.random.randint(10000))`, i.e. NumPy's GLOBAL
-            # random state, so two runs with identical explicit keys took
-            # different-length paths and nothing was reproducible from `key`
-            # alone. Fixed 2026-10-13.
             key, length_key = jax.random.split(key)
             path_length = jax.random.randint(
                 key=length_key,
@@ -297,30 +266,21 @@ def gradient_MCMC(
                 key = jax.random.fold_in(key, 0)
                 position, AA = np.unravel_index(mut_idx, p.shape)
                 log_q_forward += log_p[position, AA]
-                # Record the token being REPLACED as well. Without it the
-                # reverse path below cannot be reconstructed: see
-                # `log_q_backward`.
                 mutations += [(position, AA, int(proposal[position]))]
                 proposal = proposal.at[position].set(AA)
-            # check if proposal is same as current sequence
             if np.all(proposal == sequence):
                 print(f"\t {i}: proposal is the same as current sequence, skipping.")
-                # _print_iter(iter, {"": aux_0, "time": time.time() - start_time}, v_0)
-                # continue
             else:
                 break
         muts = ", ".join([f"{pos}:{aa}" for (pos, aa, _prev) in mutations])
         print(f"Proposed mutations: {muts}")
 
-        ### evaluate the proposal
         (v_1, aux_1), g_1 = _eval_loss_and_grad(
             loss,
             jax.nn.one_hot(proposal, alphabet_size),
             key=key_model if fix_loss_key else key,
         )
 
-        # next bit is to calculate the backward probability, which is only used
-        # if detailed_balance is True
         log_q_backward, prop_backward = _reverse_path_logprob(
             proposal, mutations, g_1, proposal_temp, alphabet_size
         )
@@ -408,22 +368,6 @@ def simplex_APGM(
     if key is None:
         key = jax.random.key(np.random.randint(0, 10000))
 
-    # `best_x` selection scores FEASIBLE iterates, on its own fixed key.
-    #
-    # Fixed, not per-step: the loss may be stochastic, and comparing iterates
-    # scored under different keys makes `best_val` a minimum over noise, biased
-    # toward whichever iterate drew the luckiest key. Separate from the
-    # optimisation stream so scoring cannot perturb the trajectory.
-    #
-    # The initial and final iterates are both eligible. Before 2026-10-13
-    # neither was: `best_x` was set to the POST-update `x` while `best_val`
-    # held the loss at the PRE-update extrapolation `v`, so the pair did not
-    # describe the same point and `best_x` could be worse than the input -- a
-    # quadratic starting at loss 0.04 returned a "best" of 0.32.
-    #
-    # Cost: one extra forward pass per step plus one for the start. Pass
-    # `track_best=False` to skip it when only the final iterate is wanted; the
-    # gradient path, and so the trajectory, is identical either way.
     score_key = jax.random.fold_in(key, 7919)
 
     def score(candidate):
@@ -433,10 +377,6 @@ def simplex_APGM(
     x = projection_simplex(x) if not logspace else x
     best_x = x
     best_val = score(x) if track_best else np.inf
-    # A nonfinite opening score must not lock selection out: `candidate < nan`
-    # is False for every candidate, so a NaN start would pin `best_x` to the
-    # start forever. `inf` keeps the start as the fallback while letting the
-    # first finite iterate replace it.
     if not np.isfinite(best_val):
         best_val = np.inf
 
@@ -552,10 +492,6 @@ def batched_simplex_APGM(
         flat = np.array(x).reshape(-1, x.shape[-1])
         x = jnp.array(projection_simplex(flat).reshape(x.shape), dtype=jnp.float32)
 
-    # See `simplex_APGM` for why selection scores feasible iterates on a fixed
-    # key of its own, and why the initial iterate is eligible. Same defect
-    # here: `best_x` took the post-update `x` while `best_vals` held the loss
-    # at the pre-update extrapolation.
     score_keys = jax.random.split(jax.random.fold_in(key, 7919), B)
 
     def score(candidate):
@@ -566,8 +502,6 @@ def batched_simplex_APGM(
     best_vals = (
         jnp.asarray(score(x)) if track_best else jnp.full(B, jnp.inf)
     )
-    # See `simplex_APGM`: a nonfinite opening score would pin that batch
-    # element to its start for the whole run.
     best_vals = jnp.where(jnp.isfinite(best_vals), best_vals, jnp.inf)
     x_prev = x
 
@@ -632,7 +566,7 @@ def _topb_unseen_mutations(seq, g, seen, b):
     N, K = g.shape
     a0 = seq.astype(np.int64)
     delta = g - g[np.arange(N), a0][:, None]
-    delta[np.arange(N), a0] = np.inf  # mask no-ops
+    delta[np.arange(N), a0] = np.inf
 
     order = np.argsort(delta.ravel(), kind="stable")
 
@@ -674,11 +608,10 @@ def _topb_unseen_feasible_mutations(
     parent = np.asarray(parent, dtype=np.int64)
     designable_mask = np.asarray(designable_mask, dtype=bool)
     current_edits = int(((a0 != parent) & designable_mask).sum())
-    slack = int(budget) - current_edits  # how many more "new edits" we can afford
+    slack = int(budget) - current_edits
 
     delta = g - g[np.arange(N), a0][:, None]
-    delta[np.arange(N), a0] = np.inf  # mask no-ops
-    # Forbid mutations at non-designable positions
+    delta[np.arange(N), a0] = np.inf
     delta[~designable_mask, :] = np.inf
 
     order = np.argsort(delta.ravel(), kind="stable")
@@ -690,12 +623,11 @@ def _topb_unseen_feasible_mutations(
         if not np.isfinite(d):
             break
         pos, aa = divmod(int(idx), K)
-        # Net change in edit count if we apply this single-position change
         was_edit = int(a0[pos] != parent[pos])
         will_be_edit = int(aa != parent[pos])
-        d_edits = will_be_edit - was_edit  # in {-1, 0, +1}
+        d_edits = will_be_edit - was_edit
         if d_edits > 0 and slack <= 0:
-            continue  # would push us over budget
+            continue
         cand = seq.copy()
         cand[pos] = aa
         if cand.tobytes() in seen:
@@ -746,7 +678,6 @@ def batch_greedy_descent(
     if key is None:
         key = jax.random.key(np.random.randint(0, 10000))
 
-    # initial eval
     x0 = jax.nn.one_hot(jnp.asarray(sequence[None]), alphabet_size)
     vals, aux0, grads = batched_eval(loss, x0, jnp.broadcast_to(key, (x0.shape[0], *key.shape)))
     v = float(np.asarray(vals)[0])
@@ -875,9 +806,6 @@ def edit_budgeted_greedy_descent(
 
     init_edits = _hamming(sequence)
     if init_edits > budget:
-        # Starting sequence already violates the hard edit budget. Project it
-        # back by greedily choosing which diffusion edits to revert under the
-        # actual polish loss, instead of dropping arbitrary positions.
         original_edits = init_edits
         while _hamming(sequence) > budget:
             edited_positions = np.where((sequence != parent) & designable_mask)[0]
@@ -898,7 +826,6 @@ def edit_budgeted_greedy_descent(
             f"kept chain-order positions: {','.join(map(str, kept_positions))}"
         )
 
-    # initial eval
     x0 = jax.nn.one_hot(jnp.asarray(sequence[None]), alphabet_size)
     vals, aux0, grads = batched_eval(
         loss, x0, jnp.broadcast_to(key, (x0.shape[0], *key.shape))
@@ -913,7 +840,6 @@ def edit_budgeted_greedy_descent(
     best_val = v
     seen: set[bytes] = {sequence.tobytes()}
 
-    # Pareto front: best sequence at each edit count 0..budget
     pareto: dict[int, tuple[float, np.ndarray]] = {init_edits: (v, sequence.copy())}
 
     for it in range(steps):
@@ -937,7 +863,6 @@ def edit_budgeted_greedy_descent(
         for c in cands:
             seen.add(c.tobytes())
 
-        # Update Pareto front with every feasible candidate's loss
         for i in range(m):
             cand_edits = _hamming(cands[i])
             cand_v = float(vals_np[i])
@@ -970,7 +895,6 @@ def edit_budgeted_greedy_descent(
             v,
         )
 
-    # Final invariant check
     assert _hamming(best_seq) <= budget, (
         f"internal error: best_seq has {_hamming(best_seq)} edits, exceeds budget {budget}"
     )
@@ -1236,24 +1160,20 @@ def biohub_optimizer(
         values, aux, g_design = batched_eval(lf, design, jax.random.split(key, B))
         key = jax.random.fold_in(key, 0)
 
-        # best-of-tail
         if in_tail:
-            # best loss according to ranking_loss aux _or_ the loss
             ranking_values = get_ranking_values(values, aux)
             improved = best_loss > ranking_values                      
             design_np, vals_np = np.asarray(design), np.asarray(ranking_values)
             best_designs[improved] = design_np[improved]
             best_loss[improved] = vals_np[improved]
 
-        # chain-rule through softmax(logits / T): dL/dz = (design ⊙ g − design·(design·g)) / T
         xg = (design * g_design).sum(-1, keepdims=True)
         g_z = (design * (g_design - xg)) / temp
         if mask is not None:
             g_z = g_z * mask
 
-        # normalize per design to ‖·‖ = √(eff_L) (biohub normalized_gradient_tensor)
-        eff_L = (jnp.square(g_z).sum(-1) > 0).sum(-1)                        # [B]
-        gnorm = jnp.linalg.norm(g_z, axis=(-1, -2))                          # [B]
+        eff_L = (jnp.square(g_z).sum(-1) > 0).sum(-1)
+        gnorm = jnp.linalg.norm(g_z, axis=(-1, -2))
         g_z = g_z / (gnorm[:, None, None] + 1e-7) * jnp.sqrt(eff_L)[:, None, None]
 
         v = beta * v + (learning_rate * temp) * g_z
@@ -1306,8 +1226,6 @@ def _apportion_stages(counts, n_steps):
     order = sorted(range(k), key=lambda i: exact[i] - int(exact[i]), reverse=True)
     for j in range(n_steps - sum(scaled)):
         scaled[order[j]] += 1
-    # Every stage must run at least once; take from the largest that can spare a
-    # step. `n_steps >= k` guarantees some stage has two or more.
     for i in range(k):
         if scaled[i] == 0:
             donor = max(range(k), key=lambda j: scaled[j])
@@ -1336,14 +1254,11 @@ def _colabdesign_transform(z, soft, temp, hard, sample_key=None):
     else:
         picks = jax.random.categorical(sample_key, z / temp, axis=-1)
     hard_seq = jax.nn.one_hot(picks, z.shape[-1])
-    # straight thru estimator
     hard_seq = jax.lax.stop_gradient(hard_seq - soft_seq) + soft_seq
     pseudo = soft * soft_seq + (1.0 - soft) * z
-    # if hard true use only hard_seq
     return hard * hard_seq + (1.0 - hard) * pseudo
 
 
-# transform grad computed separately so switching optimizers doesn't recompile everything
 
 
 def _colabdesign_pullback(z, g, soft, temp, hard, sample_key=None):
@@ -1483,9 +1398,6 @@ def colabdesign_stage(
         key = jax.random.key(np.random.randint(0, 10000))
 
     x = jnp.asarray(x, dtype=jnp.float32)
-    # Center logits per row: log(pssm) carries a DC offset that softmax ignores but
-    # is off-distribution for the raw-logits stage (soft<1). The mosaic gradient is
-    # row-centered, so x stays zero-mean (re-centering a chained stage is a no-op).
     x = x - x.mean(-1, keepdims=True)
     if logit_norm and logit_norm_scale is None:
         logit_norm_scale = _calibrate_logit_norm_scale(x)
@@ -1494,19 +1406,15 @@ def colabdesign_stage(
     for _iter in range(n_steps):
         start_time = time.time()
         frac = (_iter + 1) / n_steps
-        soft = soft_start + (soft_end - soft_start) * frac  # linear ramp
-        temp = temp_end + (temp_start - temp_end) * (1 - frac) ** 2  # quadratic anneal
+        soft = soft_start + (soft_end - soft_start) * frac
+        temp = temp_end + (temp_start - temp_end) * (1 - frac) ** 2
 
         soft = jnp.asarray(soft, dtype=jnp.float32)
         temp = jnp.asarray(temp, dtype=jnp.float32)
         hard = jnp.asarray(hard, dtype=jnp.float32)
-        # One key for the sample, so the forward one-hot and the gradient
-        # pulled back through it are the same draw.
         sample_key = jax.random.fold_in(key, 1) if stochastic_hard else None
         pseudo = _colabdesign_transform(x, soft, temp, hard, sample_key)
-        # compute loss gradient
         (value, aux), g = _eval_loss_and_grad(loss_function, pseudo, key)
-        # apply vjp 
         g = _colabdesign_pullback(x, g, soft, temp, hard, sample_key)
         value = float(value)
         key = jax.random.fold_in(key, 0)
@@ -1651,10 +1559,6 @@ def bindcraft_design(
     stage_keys = jax.random.split(key, len(stages))
 
     if logit_norm and logit_norm_scale is None:
-        # Calibrate gamma ONCE, from the opening logits. Left to each stage,
-        # every stage boundary would re-read the spread it happened to inherit,
-        # so drift across boundaries would go uncorrected -- which is the thing
-        # the normalisation exists to stop.
         x0 = jnp.asarray(x, dtype=jnp.float32)
         logit_norm_scale = _calibrate_logit_norm_scale(x0 - x0.mean(-1, keepdims=True))
 
@@ -1674,7 +1578,6 @@ def bindcraft_design(
         x, t = out if trajectory_fn is not None else (out, [])
         trajectory += t
 
-    # ColabDesign uses the final (post-hard) iterate; softmax to read out a pssm.
     pssm = jax.nn.softmax(x)
     if trajectory_fn is None:
         return pssm

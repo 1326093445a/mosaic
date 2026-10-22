@@ -281,7 +281,6 @@ def collect(root, statuses):
     csv_file(root / "tables" / "stages.csv", stage_rows)
     csv_file(root / "tables" / "repeatability.csv", repeats)
     csv_file(root / "tables" / "controls.csv", control_rows)
-    # Compare identical numeric fixtures evaluated in separate worker processes.
     import numpy as np
 
     groups, fresh = {}, []
@@ -697,7 +696,6 @@ def run(args, devices, jobs):
     log(f"Summary: {root / 'summary.json'}")
     if not args.no_archive:
         log(f"Creating archive: {archive}")
-    # Nothing in root is mutated after creating the checksum manifest.
     with (root / "checksums.sha256").open("w") as handle:
         for path in sorted(root.rglob("*")):
             if path.is_file() and path.name != "checksums.sha256":
@@ -806,7 +804,6 @@ def main():
     except argparse.ArgumentTypeError as exc:
         parser.error(str(exc))
 
-    # Gracefully preserve evidence on job-scheduler termination, too.
     def terminate(signum, frame):
         raise KeyboardInterrupt
 

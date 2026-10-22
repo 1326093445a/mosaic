@@ -107,9 +107,6 @@ def main():
     pose_drift_tolerance = wt_drift + search.POSE_DRIFT_MARGIN
     print(f"WT baseline distogram drift: {wt_drift:.2f}A -> tolerance = {pose_drift_tolerance:.2f}A", flush=True)
 
-    # edit_budget/stop_grad don't matter for this diagnostic (EditBudget and
-    # AbLang2 terms are held fixed at their production defaults, same loss
-    # composition as the real sweep) -- only x0/scale are the variables under test.
     full_loss, variable_only_loss = search.build_composite_losses(
         opendde=opendde, features=features,
         ablang2_model=ablang2_model, ablang2_tokenizer=ablang2_tokenizer,

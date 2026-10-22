@@ -42,7 +42,7 @@ def test_bf16_projection_accepts_float32_geometry_and_backpropagates():
     gradient = jax.jit(jax.grad(lambda z: bf16(z).astype(jnp.float32).sum()))(x)
     assert gradient.dtype == jnp.float32
     np.testing.assert_allclose(gradient, np.ones(3))
-    assert linear.weight.dtype == jnp.float32  # No mutation of the original.
+    assert linear.weight.dtype == jnp.float32
 
 
 def test_bf16_normalization_uses_float32_statistics():

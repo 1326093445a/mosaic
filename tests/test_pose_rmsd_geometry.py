@@ -19,12 +19,6 @@ from mosaic.util import calculate_rmsd, kabsch_conditioning
 N_BINDER, N_TARGET = 4, 4
 N = N_BINDER + N_TARGET
 
-# A regular tetrahedron has isotropic centered covariance, so the Kabsch
-# covariance has three equal singular values. The composite rotation map stays
-# differentiable there -- the finite differences below return a nonzero
-# derivative -- but the individual U and Vt factors it is built from do not
-# have well-defined derivatives when singular values coincide, so an
-# implementation that differentiates through them separately cannot compute it.
 ISOTROPIC_TARGET = (
     jnp.array([[1.0, 1.0, 1.0], [1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [-1.0, -1.0, 1.0]])
     * 3.0
@@ -35,7 +29,7 @@ GENERIC_TARGET = jnp.array(
 BINDER = jnp.array(
     [[0.0, 0.0, 8.0], [1.5, 0.0, 8.0], [0.0, 1.5, 8.0], [1.0, 1.0, 9.0]]
 )
-SEQUENCE = jnp.zeros((N_BINDER, 20))  # only binder_len is read
+SEQUENCE = jnp.zeros((N_BINDER, 20))
 
 
 def _make_output(ca):
@@ -78,9 +72,6 @@ def test_binder_rotation_changes_pose_without_changing_internal_shape():
     pose_rmsd = float(aux["binder_pose_rmsd"])
     internal_rmsd = float(calculate_rmsd(rotated, BINDER))
 
-    # Compare against the displacement the rotation actually produces rather
-    # than an arbitrary threshold: the target is unmoved, so target alignment
-    # is the identity and the pose number must equal the raw displacement.
     expected = float(jnp.sqrt(jnp.mean(jnp.sum((rotated - BINDER) ** 2, axis=-1))))
     assert expected > 0.1, "the probe rotation must actually move the binder"
     assert pose_rmsd == pytest.approx(expected, rel=1e-4), (
@@ -123,10 +114,6 @@ def _target_rotation_derivative(reference_target, angle):
         value, _ = loss_fn(SEQUENCE, _make_output(coords), key=None)
         return value
 
-    # JAX defaults to float32 here, where a 1e-6 step is below the resolution
-    # of f: the difference quantizes to a few ULPs and the quotient becomes a
-    # power of two times 1e6 rather than a derivative. 1e-3 keeps truncation
-    # error near 1e-6 while staying well above float32 round-off.
     h = 1e-3
     autodiff = float(jax.grad(f)(angle))
     central = float((f(angle + h) - f(angle - h)) / (2 * h))
@@ -222,7 +209,6 @@ def test_conditioning_flags_the_degenerate_case_the_gradient_hides():
     assert float(degenerate["min_relative_gap"]) == pytest.approx(0.0, abs=1e-6)
     assert bool(healthy["well_conditioned"])
     assert float(healthy["min_relative_gap"]) > 1e-2
-    # The forward value is unremarkable in both cases: only the derivative is.
     assert np.all(np.isfinite(np.asarray(degenerate["singular_values"])))
 
 

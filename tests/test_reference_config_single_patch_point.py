@@ -26,11 +26,6 @@ sys.path.insert(0, str(REPO / "examples"))
 
 NAMES = ("COMPLEX_PDB", "BINDER_CHAIN", "TARGET_CHAIN")
 
-# Modules that take the shared JN.1 reference from the config module. Scripts
-# with their own deliberate copies (p17_predict_hallucination_structures,
-# p17_opendde_diffusion_steps_convergence_check,
-# p17_hallucination_mcmc_with_full_opendde_rescoring) are NOT listed: they
-# define their own constants, which is a separate question from this one.
 CONSUMERS = ("p17_hallucination_search", "p17_rescore_winners")
 
 

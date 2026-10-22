@@ -95,15 +95,6 @@ def set_binder_sequence(new_sequence: Float[Array, "N 20"], features: PyTree):
     protenix_sequence = new_sequence @ BOLTZ_TO_PROTENIX
     n_msa = features["msa"].shape[0]
 
-    # `profile` is the per-position mean over the n_msa MSA rows of the one-hot
-    # tokens. Designing the binder = replacing a single row (the query, row 0)
-    # with `protenix_sequence` and re-taking that mean, which is a rank-one swap
-    # of that row's contribution:
-    #     profile += (onehot(new) - onehot(old_query)) / n_msa
-    # The old query's one-hot at the binder positions is exactly restype[:binder_len]
-    # (msa[0] == restype.argmax). This preserves the rest of the binder's MSA
-    # statistics rather than discarding them. Row sums stay 1 (delta sums to 0)
-    # and stay non-negative (the query row contributed >= 1/n_msa to its own token).
     old_query = features["restype"][:binder_len]
     binder_profile = (
         features["profile"][:binder_len] + (protenix_sequence - old_query) / n_msa
@@ -123,7 +114,6 @@ def get_trunk_state(
     key: jax.Array,
 ) -> tuple[InitialEmbedding, TrunkEmbedding]:
     """ Compute trunk embedding."""
-    # manual recycling
     state = initial_recycling_state
     initial_embedding = model.embed_inputs(
         input_feature_dict=features
@@ -156,7 +146,6 @@ def get_trunk_state(
         )
         return (iter + 1, TrunkEmbedding(s=s, z=z), jax.random.fold_in(key, 1))
 
-    # while loop first because jax doesn't respect the stop_gradient in body_fn
     _, state, key = jax.lax.while_loop(
         lambda carry: carry[0] < recycling_steps - 1,
         body_fn,
@@ -197,19 +186,16 @@ def protenix_forward_from_trunk(
         key=key,
     )
 
-    # pLDDT normalized to [0, 1]
     plddt = (
         jax.nn.softmax(confidence.plddt_logits[0][features["atom_rep_atom_idx"]])
         * jnp.linspace(0, 1, 50)[None, :]
     ).sum(-1)
 
-    # PAE
     pae_logits = confidence.pae_logits[0]
     pae = (
         jax.nn.softmax(pae_logits) * PAE_BINS[None, None, :]
     ).sum(-1)
 
-    # Backbone coordinates (N, CA, C, O)
     n_tokens = features["restype"].shape[0]
     first_atom_idx = jax.vmap(lambda atoms: jnp.nonzero(atoms, size=1)[0][0])(
         (features["atom_to_token_idx"][:, None] == jnp.arange(n_tokens)[None, :]).T
@@ -219,8 +205,6 @@ def protenix_forward_from_trunk(
         [all_atom_coords[first_atom_idx + i] for i in range(4)], -2
     )
 
-    # Atom37 view: scatter all-atom coords into the canonical heavy-atom layout.
-    # `ref_mask` is 0 on padding atoms; sentinel them to -1 so they're dropped.
     restype_protenix = features["restype"].argmax(-1)
     atom_protenix = restype_protenix[features["atom_to_token_idx"]]
     atom37_idx = jnp.asarray(_TOKATOM_TO_ATOM37)[
@@ -267,10 +251,8 @@ class MultiSampleProtenixLoss(LossTerm):
 
     def __call__(self, sequence: Float[Array, "N 20"], key):
         """Compute the loss for a given sequence."""
-        # Set the binder sequence in the features
         features = set_binder_sequence(sequence, self.features)
 
-        # run trunk once
         initial_embedding, trunk_state = get_trunk_state(
             model=self.model,
             features=features,
@@ -279,7 +261,6 @@ class MultiSampleProtenixLoss(LossTerm):
             key=key,
         )
 
-        # initialize from trunk outputs using vmap
         def apply_loss_to_single_sample(key):
             output = protenix_forward_from_trunk(
                 model=self.model,

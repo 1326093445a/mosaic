@@ -90,13 +90,10 @@ def _():
 
 @app.cell
 def _():
-    # ── Load PDL1 target ──
     print("Loading PDL1 target...")
     structure = gemmi.read_structure("PDL1.pdb")
     structure.setup_entities()
     chain = structure[0][0]
-    # PD-1 binding interface hotspots (0-indexed into chain):
-    # Tyr56, Glu58, Asp61, Asn63, Gln66, Val68, Tyr81, Arg113, Ala121, Asp122, Tyr123
     hotspots = [(36, "ILE"), (38, "TYR"), (48, "GLN"), (97, "MET")]
     for _idx, _name in hotspots:
         assert chain[_idx].name.upper() == _name
@@ -104,7 +101,6 @@ def _():
     target_cond = load_target_cond(chain, hotspots=[idx for (idx, _) in hotspots])
     target_sequence = gemmi.one_letter_code([r.name for r in chain.get_polymer()])
 
-    # ── Load models ──
     print("Loading denoiser + decoder...")
     _t1 = time.perf_counter()
     denoiser = load_denoiser()

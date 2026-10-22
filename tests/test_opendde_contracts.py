@@ -256,8 +256,6 @@ def test_refreshed_atom_metadata_matches_native_featurization():
         np.asarray(refreshed.frame_atom_index),
         np.asarray(native.frame_atom_index),
     )
-    # Match expanded tokens by identity; the design buffer can include absent
-    # subtokens, which must have their frame-validity flag cleared.
     native_ids = {
         (int(parent), int(role)): i
         for i, (parent, role) in enumerate(

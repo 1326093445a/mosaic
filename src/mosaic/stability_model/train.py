@@ -1,8 +1,3 @@
-### Simple model (mostly a demonstration for how to incorporate a custom model as a loss)
-# Basic *absolute* (delta G, ~not~ delta-delta G) stability model trained on top of frozen ESMC on the Megascale dataset
-# Specifically this is trained to minimize MSE on the split described here: https://github.com/SimonKitSangChu/EsmTherm?tab=readme-ov-file
-# Could *definitely* be improved.
-# If you want to run this yourself you'll need to download the dataset and install a few additional dependencies.
 
 import equinox as eqx
 import jax
@@ -16,7 +11,6 @@ from esmjfold2.esmc import ESMCForMaskedLM
 
 from mosaic.losses.esmc import esmc_vocab, load_esmc
 
-# load torch model, convert to JAX
 esm = load_esmc("esmc_300m")
 _VOCAB = esmc_vocab()
 
@@ -52,7 +46,6 @@ grouped_val = group_by_len_and_transform(dataset["val"])
 
 
 def sample_batch(grouped_dataset: dict[int], batch_size, replace=True):
-    # sample length
     p = onp.array([len(v) for v in grouped_dataset.values()])
     p = p / p.sum()
     length = onp.random.choice(list(grouped_dataset.keys()), p=p)
@@ -64,12 +57,10 @@ def sample_batch(grouped_dataset: dict[int], batch_size, replace=True):
     return tree.map(lambda *v: onp.stack(v), *batch)
 
 
-# subsample the validation set
 val_batches = [sample_batch(grouped_val, 256) for _ in range(50)]
 
 
 def apply_head(esm, tokens, head):
-    # ESMC uses a batch dimension; pool the post-norm last hidden over residues.
     last_hidden, _ = esm.esmc(tokens[None], None, collect_hidden_states=False)
     return head(last_hidden[0].mean(axis=0))
 
@@ -134,7 +125,6 @@ for _ in tqdm.tqdm(range(750)):
 val_stats = []
 for batch in val_batches:
     loss = loss_batch(state.head, state.esm, batch)
-    # print(f"val {loss: 0.2f}, {onp.var(batch.deltaG): 0.2f} {loss / onp.var(batch.deltaG): 0.2f}")
     val_stats.append((loss, onp.var(batch.deltaG), loss / onp.var(batch.deltaG)))
 
 

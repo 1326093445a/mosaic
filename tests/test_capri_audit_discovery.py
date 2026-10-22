@@ -46,9 +46,6 @@ def table(run_root, name, rows):
     (run_root / "tables" / name).write_text(f"{header}\n{body}\n")
 
 
-# --------------------------------------------------------------------------
-# layouts
-# --------------------------------------------------------------------------
 
 def test_a_screen_of_cells_is_discovered_per_cell(tmp_path):
     for cell in ("base", "arity2"):
@@ -56,7 +53,7 @@ def test_a_screen_of_cells_is_discovered_per_cell(tmp_path):
     assert [c for c, _ in audit.cell_runs(tmp_path)] == ["arity2", "base"]
     jobs, _ = audit.discover(tmp_path, None)
     assert {j["cell"] for j in jobs} == {"base", "arity2"}
-    assert len(jobs) == 4  # two cells x two candidates x one seed
+    assert len(jobs) == 4
 
 
 def test_a_single_run_is_discovered_as_one_cell(tmp_path):
@@ -68,8 +65,6 @@ def test_a_single_run_is_discovered_as_one_cell(tmp_path):
     assert audit.cell_runs(run) == [("alpha", run)]
     jobs, _ = audit.discover(run, None)
     assert jobs and {j["cell"] for j in jobs} == {"alpha"}
-    # and the model paths stay relative to what was passed in, which is what
-    # main() writes into the CSV
     for job in jobs:
         job["model"].relative_to(run)
 
@@ -119,8 +114,6 @@ def test_a_shard_without_a_reference_is_reported_not_raised(tmp_path):
     assert len(incomplete) == 1
     assert incomplete[0]["shard"] == "shard_1"
     assert incomplete[0]["reason"] == "no reference.pdb"
-    # The stranded count is the whole point: it is what stops "N inside the
-    # bar" being read as a fraction of everything that was launched.
     assert incomplete[0]["stranded"] == 4
     assert incomplete[0]["kind"] == "data-loss"
 
@@ -142,9 +135,6 @@ def test_a_shard_with_nothing_assigned_is_idle_not_data_loss(tmp_path):
     assert incomplete[0]["kind"] == "idle"
 
 
-# --------------------------------------------------------------------------
-# the unmodified start
-# --------------------------------------------------------------------------
 
 def test_is_wt_column_is_authoritative_when_present(tmp_path):
     run = tmp_path / "base" / "run"
@@ -197,16 +187,13 @@ def test_per_candidate_irmsd_averages_the_correlated_seeds(tmp_path):
         dict(cell="arity2", candidate_id=1, iRMSD=3.0),
     ]
     byc = audit.per_candidate_irmsd(rows)
-    assert byc[("base", 1)] == 10.0   # not two hits and not two misses: one, at 10
+    assert byc[("base", 1)] == 10.0
     assert byc[("base", 2)] == 9.0
     assert byc[("arity2", 1)] == 3.0
     inside = [k for k, v in byc.items() if v <= audit.IRMSD_THRESHOLD]
     assert sorted(inside) == [("arity2", 1), ("base", 1), ("base", 2)]
 
 
-# --------------------------------------------------------------------------
-# the chain mapping
-# --------------------------------------------------------------------------
 
 def pdb(path, chains):
     """A PDB holding only CA atoms, `chains` mapping letter -> residue count."""
@@ -264,9 +251,9 @@ def test_an_ambiguous_pairing_is_refused_with_both_costs(tmp_path):
 def test_an_overlapping_pairing_is_always_accepted(tmp_path):
     """The complement of the guard, so its reach is pinned from both sides."""
     model = pdb(tmp_path / "m.pdb", {"A": 123, "B": 195})
-    for native_chains in ({"B": 130, "A": 210},     # more of both, interleaved
-                          {"B": 120, "A": 190},     # less of both
-                          {"B": 123, "A": 400}):    # a much longer target
+    for native_chains in ({"B": 130, "A": 210},
+                          {"B": 120, "A": 190},
+                          {"B": 123, "A": 400}):
         native = pdb(tmp_path / "n.pdb", native_chains)
         mapping, designed, _, _ = audit.derive_mapping(model, native)
         assert mapping == "AB:BA" and designed == 123

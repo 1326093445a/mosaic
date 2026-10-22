@@ -114,7 +114,6 @@ def load_af2(data_dir: str | Path | None = None, multimer=True):
     cfg.model.num_extra_msa = 1
     cfg.model.resample_msa_in_recycling = False
 
-    #haiku transform forward function
     init_model = modules_multimer.AlphaFold if multimer else modules.AlphaFold
     def _forward_fn(
         features: dict,
@@ -159,8 +158,6 @@ def load_af2(data_dir: str | Path | None = None, multimer=True):
 def _postprocess_prediction(features, prediction: AFOutput):
     final_atom_mask = prediction.structure_module.final_atom_mask
     b_factors = prediction.plddt[:, None] * final_atom_mask
-    # todo: this next step is blocking!
-    # need to recursively turn prediction into a dictionary
 
     unrelaxed_protein = protein.from_prediction(
         features,
@@ -177,7 +174,6 @@ def _initial_guess(st: gemmi.Structure):
     cb_idx = residue_constants.atom_order["CB"]
     initial_guess_all_atoms, mask = af2_get_atom_positions_gemmi(st)
     c_beta_missing = mask[:, cb_idx] == 0
-    # if c_beta missing (e.g. for backbone-only structures) set position to ca
     initial_guess_all_atoms[c_beta_missing, cb_idx] = initial_guess_all_atoms[
         c_beta_missing, ca_idx
     ]
@@ -187,7 +183,6 @@ def multimer_to_monomer_features(features: dict):
 
     monomer_features = {}
     has_break = jnp.concatenate([jnp.array([0]), jnp.diff(features['asym_id'])])
-#    between_segment_residues = jnp.where(has_break, 1, 0) #this doesnt seem to matter much
     between_segment_residues = np.zeros(features['asym_id'].shape, dtype=int)
     target_feat = jnp.concatenate([
         between_segment_residues[:, None],
@@ -210,7 +205,6 @@ def set_binder_sequence(PSSM, features: dict, multimer: bool=True):
         PSSM = jnp.zeros((0, 20))
     assert PSSM.shape[-1] == 20
     binder_length = PSSM.shape[0]
-    # full soft sequence
     soft_sequence = jnp.concatenate(
         (
             jnp.pad(PSSM, [[0, 0], [0, 1]]),
@@ -220,7 +214,6 @@ def set_binder_sequence(PSSM, features: dict, multimer: bool=True):
 
     L = features["aatype"].shape[0]
 
-    # Do not touch this. One-hot seems necessary for multimer models to work properly.
     hard_pssm = (
         jax.lax.stop_gradient(
             jax.nn.one_hot(soft_sequence.argmax(-1), 21) - soft_sequence
@@ -250,7 +243,6 @@ AF2_DISTOGRAM_BINS = np.linspace(start=2.3125, stop=21.6875, num=64)
 
 
 def af2_output_to_structure_model_output(features: dict, output: AFOutput) -> StructureModelOutput:
-    # AF2 outputs atom37 directly.
     final_atom_positions = output.structure_module.final_atom_positions
     final_atom_mask = output.structure_module.final_atom_mask.astype(jnp.float32)
     return StructureModelOutput(
@@ -299,7 +291,6 @@ def af2_atom_positions(chain: gemmi.Chain) -> tuple[np.ndarray, np.ndarray]:
                     1.0
                 )
             elif atom_name.upper() == "SE" and res.name() == "MSE":
-                # Put the coordinates of the selenium atom in the sulphur column.
                 all_positions[res_idx, residue_constants.atom_order["SD"]] = [x, y, z]
                 all_positions_mask[res_idx, residue_constants.atom_order["SD"]] = 1.0
 
@@ -309,14 +300,12 @@ def af2_atom_positions(chain: gemmi.Chain) -> tuple[np.ndarray, np.ndarray]:
 def make_af_features(chains: list[TargetChain]) -> dict[str, jax.Array]:
     assert all(not c.use_msa for c in chains), "AF2 interface does not support MSAs"
 
-    # check for missing residues in template chains
     for c in chains:
         if c.template_chain is not None:
             gemmi_seq = gemmi.one_letter_code([r.name for r in c.template_chain])
             if gemmi_seq != c.sequence:
                 raise Exception(f"Template sequence does not match sequence for {c}")
 
-    # TODO: handle homo-multimers better?
     L = sum(len(c.sequence) for c in chains)
     index_within_chain = np.concatenate(
         [np.arange(len(c.sequence), dtype=int) for c in chains]
@@ -524,7 +513,6 @@ class AlphaFoldLoss(LossTerm):
     use_dropout: bool = False
 
     def __call__(self, PSSM: Float[Array, "N 20"], *, key):
-        # pick a random model
         
         model_idx = jax.random.randint(key=key, shape=(), minval=0, maxval=5 if self.model.multimer else 2)
         key = jax.random.fold_in(key, 0)

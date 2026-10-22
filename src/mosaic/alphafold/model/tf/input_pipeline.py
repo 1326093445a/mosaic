@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Feature pre-processing input pipeline for AlphaFold."""
 
@@ -19,8 +6,6 @@ from alphafold.model.tf import shape_placeholders
 import tensorflow.compat.v1 as tf
 import tree
 
-# Pylint gets confused by the curry1 decorator because it changes the number
-#   of arguments to the function.
 # pylint:disable=no-value-for-parameter
 
 
@@ -39,12 +24,9 @@ def nonensembled_map_fns(data_config):
       data_transforms.add_distillation_flag(False),
       data_transforms.cast_64bit_ints,
       data_transforms.squeeze_features,
-      # Keep to not disrupt RNG.
       data_transforms.randomly_replace_msa_with_unknown(0.0),
       data_transforms.make_seq_mask,
       data_transforms.make_msa_mask,
-      # Compute the HHblits profile if it's not set. This has to be run before
-      # sampling the MSA.
       data_transforms.make_hhblits_profile,
       data_transforms.make_random_crop_to_size_seed,
   ]
@@ -82,9 +64,6 @@ def ensembled_map_fns(data_config):
           keep_extra=True))
 
   if 'masked_msa' in common_cfg:
-    # Masked MSA should come *before* MSA clustering so that
-    # the clustering and full MSA profile do not leak information about
-    # the masked locations and secret corrupted locations.
     map_fns.append(
         data_transforms.make_masked_msa(common_cfg.masked_msa,
                                         eval_cfg.masked_msa_replace_fraction))
@@ -93,7 +72,6 @@ def ensembled_map_fns(data_config):
     map_fns.append(data_transforms.nearest_neighbor_clusters())
     map_fns.append(data_transforms.summarize_clusters())
 
-  # Crop after creating the cluster profiles.
   if max_extra_msa:
     map_fns.append(data_transforms.crop_extra_msa(max_extra_msa))
   else:
@@ -142,7 +120,6 @@ def process_tensors_from_config(tensors, data_config):
   tensors_0 = wrap_ensemble_fn(tensors, tf.constant(0))
   num_ensemble = eval_cfg.num_ensemble
   if data_config.common.resample_msa_in_recycling:
-    # Separate batch per ensembling & recycling step.
     num_ensemble *= data_config.common.num_recycle + 1
 
   if isinstance(num_ensemble, tf.Tensor) or num_ensemble > 1:

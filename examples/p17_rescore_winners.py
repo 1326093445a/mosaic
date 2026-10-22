@@ -18,16 +18,6 @@ import tarfile
 import numpy as np
 
 from p17_search_outputs import SearchOutputs, compact_prediction
-# Read THROUGH the module, never `from p17_reference_config import COMPLEX_PDB`.
-# A `from X import NAME` at module scope binds the value once, at import time,
-# into this module's own namespace -- so it is immune to patching either
-# `X.NAME` or this module's copy, and the two silently disagree. That is what
-# broke `test_winner_rescoring_exports_scored_pose_without_optimization` on
-# 2026-10-14: the constant moved from a function-local import (which read the
-# attribute at CALL time, after the test had patched it) to a module-level one,
-# and the rescorer copied the real P17_JN1.pdb over the test's fixture. Reading
-# the attribute at use time makes `p17_reference_config` the single place to
-# patch, for every consumer.
 import p17_reference_config as reference_config
 
 
@@ -142,13 +132,6 @@ def load_candidates(source):
                 return json.loads((source / path).read_text())
         else:
             archive = stack.enter_context(tarfile.open(source))
-            # Member names are normalised before use. Two layouts failed
-            # against the equivalent unpacked directory, which loaded fine:
-            # a ROOT-level `config.json` has no "/" and was skipped by the
-            # suffix test, and a `./run/config.json` was found but its sibling
-            # lookup went through `Path(...).with_name(...)`, which drops the
-            # "./" and then missed the member key. Normalising both the key
-            # and the lookup makes the tar and directory paths agree.
             def normalise(name):
                 return name[2:] if name.startswith("./") else name
 
@@ -204,16 +187,6 @@ def load_candidates(source):
                 a not in "ARNDCQEGHILKMFPSTWYV" for a in winner
             ):
                 raise ValueError("invalid winner sequence")
-            # The budget has to be counted from the anchor the SEARCH used, not
-            # from the sequence it started at. Under `--budget-anchor reference`
-            # those are different: the search starts at a seed produced by the
-            # continuous stage but counts its edits from the reference, so a
-            # winner 5 edits from the reference can be 6 from the seed once the
-            # seed's own edit is reverted. Checking against the start then
-            # rejects a run that never broke its budget, which is what failed
-            # all eight held-out shards of the bindcraft cell on 2026-10-08.
-            # Archives written before `budget_anchor_sequence` existed fall back
-            # to the start sequence, where the two anchors coincide.
             anchor = config.get("budget_anchor_sequence") or wt
             if len(anchor) != len(winner):
                 raise ValueError(
@@ -281,10 +254,6 @@ def evaluation_signature(
         opendde_dtype=str(opendde_dtype),
     )
     if original is not None:
-        # Matching seeds, steps and precision are not enough: shards scored
-        # under different checkpoints, recycling depths or interface cutoffs
-        # merged as one evaluation. These come from the archive, so they are
-        # available before any model loads.
         arguments = original.get("arguments", {})
         signature.update(
             checkpoint=original.get("checkpoint"),
@@ -312,9 +281,6 @@ def merge_shard_tables(root, num_shards):
     """
     root = Path(root)
 
-    # First pass: are these shards parts of one evaluation? Checked before any
-    # table is read, so a mismatch is reported on its own terms rather than as
-    # whatever row-level error the incompatible tables happen to raise first.
     signatures, unsigned = {}, []
     for index in range(num_shards):
         summary_path = root / f"shard_{index}" / "summary.json"
@@ -438,11 +404,6 @@ def main(argv=None):
     parser.add_argument("--opendde-dtype", choices=["fp32", "bf16"], default=None)
     parser.add_argument("--num-shards", type=int, default=1)
     parser.add_argument("--shard-index", type=int, default=0)
-    # Which reference the archived sequences were searched against. Omitting
-    # this keeps the JN.1 default. The Alpha recovery control searches a
-    # different target (195 residues, chain A, against JN.1's 184 on chain T),
-    # so rescoring its winners needs the reference told to it: the sequence
-    # consistency check below would otherwise correctly refuse the run.
     parser.add_argument("--complex", type=Path, default=None)
     parser.add_argument("--binder-chain", default=None)
     parser.add_argument("--target-chain", default=None)
@@ -479,8 +440,6 @@ def main(argv=None):
     )
     if args.dry_run:
         return
-    # Hash the selected local input, never an archived path or digest. Empty
-    # shards need the same identity as populated shards, before model imports.
     reference_identity = dict(
         reference_sha256=hashlib.sha256(complex_pdb.read_bytes()).hexdigest(),
         reference_binder_chain=binder_chain,
@@ -499,8 +458,6 @@ def main(argv=None):
                     prediction_calls=0,
                     shard_index=args.shard_index,
                     num_shards=args.num_shards,
-                    # So the merge can check the shards belong together; see
-                    # `merge_shard_tables`.
                     evaluation=signature,
                 )
             )
@@ -531,12 +488,6 @@ def main(argv=None):
         wt, reference_target = loaded["binder_seq"], loaded["target_seq"]
         binder_ca, target_ca = loaded["binder_ca"], loaded["target_ca"]
 
-    # The sequence to fold, which is the decoy for a negative-control archive.
-    # From here on `scored_target` is the only target sequence in scope: the
-    # reference's own is deliberately not reusable, because on 2026-10-05 this
-    # function folded the decoy and then exported the prediction labelled with
-    # the reference target, which `SearchOutputs.save_prediction` refused --
-    # correctly, but only after the whole arm had run.
     scored_target = check_reference_consistency(
         wt, reference_target, original, complex_pdb, binder_chain, target_chain
     )
@@ -597,8 +548,6 @@ def main(argv=None):
         reference_sha256=reference_identity["reference_sha256"],
         pae_cutoff=original["arguments"]["pae_cutoff"],
         distance_cutoff=original["arguments"]["distance_cutoff"],
-        # Says plainly which target was folded, so a decoy archive's numbers
-        # cannot be read as the real target's.
         scored_target_is_decoy=original.get("decoy_target") is not None,
         decoy_identity_to_real_target=(
             original["decoy_target"].get("identity_to_real_target")

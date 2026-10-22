@@ -1,18 +1,4 @@
-# TODO: Clean this up -- remove `replace_target_feat`
 
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Core modules, which have been refactored in AlphaFold-Multimer.
 
@@ -61,7 +47,6 @@ def create_extra_msa_feature(batch, num_extra_msa):
     Returns:
       Concatenated tensor of extra MSA features.
     """
-    # 23 = 20 amino acids + 'X' for unknown + gap + bert mask
     extra_msa = batch["extra_msa"][:num_extra_msa]
     deletion_matrix = batch["extra_deletion_value"][:num_extra_msa]
     msa_1hot = jax.nn.one_hot(extra_msa, 23)
@@ -94,7 +79,6 @@ class AlphaFoldIteration(hk.Module):
         return_representations=False,
         safe_key=None,
     ):
-        # Compute representations for each MSA sample and average.
         embedding_module = EmbeddingsAndEvoformer(
             self.config.embeddings_and_evoformer, self.global_config
         )
@@ -107,7 +91,7 @@ class AlphaFoldIteration(hk.Module):
         self.heads = {}
         for head_name, head_config in sorted(self.config.heads.items()):
             if not head_config.weight:
-                continue  # Do not instantiate zero-weight heads.
+                continue
 
             head_factory = {
                 "masked_msa": modules.MaskedMsaHead,
@@ -134,7 +118,6 @@ class AlphaFoldIteration(hk.Module):
             if name == "structure_module" and structure_module_output is not None:
                 ret[name] = structure_module_output
                 representations["structure_module"] = structure_module_output.pop("act")
-            # Skip confidence heads until StructureModule is executed.
             elif name in {
                 "predicted_lddt",
                 "predicted_aligned_error",
@@ -144,7 +127,6 @@ class AlphaFoldIteration(hk.Module):
             else:
                 ret[name] = module(representations, batch, is_training)
 
-        # Add confidence heads after StructureModule is executed.
         if self.config.heads.get("predicted_lddt.weight", 0.0):
             name = "predicted_lddt"
             head_config, module = self.heads[name]
@@ -159,7 +141,6 @@ class AlphaFoldIteration(hk.Module):
             name = "predicted_aligned_error"
             head_config, module = self.heads[name]
             ret[name] = module(representations, batch, is_training)
-            # Will be used for ipTM computation.
             ret[name]["asym_id"] = batch["asym_id"]
 
         return ret
@@ -301,7 +282,6 @@ class EmbeddingsAndEvoformer(hk.Module):
         )
 
     def __call__(self, batch, is_training, safe_key=None):
-        # assert PSSM.shape[-1] == 21, "Expected PSSM with 21 channels (20 amino acids + gap)"
         c = self.config
         gc = self.global_config
 
@@ -377,11 +357,8 @@ class EmbeddingsAndEvoformer(hk.Module):
                     "template_all_atom_positions": batch["template_all_atom_positions"],
                     "template_all_atom_mask": batch["template_all_atom_mask"],
                 }
-                # Construct a mask such that only intra-chain template features are
-                # computed, since all templates are for each chain individually.
                 multichain_mask = batch["asym_id"][:, None] == batch["asym_id"][None, :]
 
-                # multichain_mask = jnp.ones_like(multichain_mask)
                 safe_key, safe_subkey = safe_key.split()
                 template_act = template_module(
                     query_embedding=pair_activations,
@@ -393,7 +370,6 @@ class EmbeddingsAndEvoformer(hk.Module):
                 )
                 pair_activations += template_act
 
-            # Extra MSA stack.
             (extra_msa_feat, extra_msa_mask) = create_extra_msa_feature(
                 batch, c.num_extra_msa
             )
@@ -436,8 +412,6 @@ class EmbeddingsAndEvoformer(hk.Module):
 
             pair_activations = extra_evoformer_output["pair"]
 
-            # Get the size of the MSA before potentially adding templates, so we
-            # can crop out the templates later.
             num_msa_sequences = msa_activations.shape[0]
             evoformer_input = {
                 "msa": msa_activations,
@@ -495,13 +469,11 @@ class EmbeddingsAndEvoformer(hk.Module):
             {
                 "single": single_activations,
                 "pair": pair_activations,
-                # Crop away template rows such that they are not used in MaskedMsaHead.
                 "msa": msa_activations[:num_msa_sequences, :, :],
                 "msa_first_row": msa_activations[0],
             }
         )
 
-        # Convert back to float32 if we're not saving memory.
         if not gc.bfloat16_output:
             for k, v in output.items():
                 if v.dtype == jnp.bfloat16:
@@ -556,7 +528,6 @@ class TemplateEmbedding(hk.Module):
         num_templates = template_batch["template_aatype"].shape[0]
         num_res, _, query_num_channels = query_embedding.shape
 
-        # Embed each template separately.
         template_embedder = SingleTemplateEmbedding(self.config, self.global_config)
 
         def partial_template_embedder(
@@ -658,7 +629,6 @@ class SingleTemplateEmbedding(hk.Module):
             template_all_atom_mask,
             multichain_mask_2d,
         ):
-            # Compute distogram feature for the template.
             template_positions, pseudo_beta_mask = modules.pseudo_beta_fn(
                 template_aatype, template_all_atom_positions, template_all_atom_mask
             )
@@ -676,12 +646,8 @@ class SingleTemplateEmbedding(hk.Module):
             to_concat.append((aatype[None, :, :], 1))
             to_concat.append((aatype[:, None, :], 1))
 
-            # Compute a feature representing the normalized vector between each
-            # backbone affine - i.e. in each residues local frame, what direction are
-            # each of the other residues.
             raw_atom_pos = template_all_atom_positions
             if gc.bfloat16:
-                # Vec3Arrays are required to be float32
                 raw_atom_pos = raw_atom_pos.astype(jnp.float32)
 
             atom_pos = geometry.Vec3Array.from_array(raw_atom_pos)
@@ -701,8 +667,6 @@ class SingleTemplateEmbedding(hk.Module):
             backbone_mask_2d *= multichain_mask_2d
             unit_vector = [x * backbone_mask_2d for x in unit_vector]
 
-            # Note that the backbone_mask takes into account C, CA and N (unlike
-            # pseudo beta mask which just needs CB) so we add both masks as features.
             to_concat.extend([(x, 0) for x in unit_vector])
             to_concat.append((backbone_mask_2d, 0))
 
@@ -712,9 +676,6 @@ class SingleTemplateEmbedding(hk.Module):
                 create_offset=True,
                 name="query_embedding_norm",
             )(query_embedding)
-            # Allow the template embedder to see the query embedding.  Note this
-            # contains the position relative feature, so this is how the network knows
-            # which residues are next to each other.
             to_concat.append((query_embedding, 1))
 
             act = 0
@@ -870,7 +831,6 @@ def template_embedding_1d(batch, num_channel, global_config):
       shape (num_templates, num_res).
     """
 
-    # Embed the templates aatypes.
     aatype_one_hot = jax.nn.one_hot(batch["template_aatype"], 22, axis=-1)
 
     num_templates = batch["template_aatype"].shape[0]

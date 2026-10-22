@@ -310,7 +310,6 @@ def test_malformed_repeats_fail_before_comparison(audit_module, bundle, damage):
     report = audit_module.audit(*bundle)
     assert report["axes"]["synthetic_pipeline_integrity"]["status"] == "failed"
     assert report["axes"]["strict_fp32_numerical_controls"]["status"] == "not_assessed"
-    # Error reports must remain serializable, even for NaN/Inf corruption.
     json.dumps(report, allow_nan=False)
 
 
@@ -356,8 +355,6 @@ def test_runner_failure_propagation_preserves_records(
     monkeypatch.setattr(
         runner, "preflight_source", lambda *args: "print('fixture-worker preflight')"
     )
-    # Aggregation is independently exercised by real numerical CPU runs. Here we
-    # isolate the real audit, subprocess timeout handling, and final exit policy.
     monkeypatch.setattr(runner, "collect", lambda *args: {})
 
     def fixture_command(job, output, device, args):
@@ -418,6 +415,6 @@ def test_runner_failure_propagation_preserves_records(
     else:
         assert summary[
             "synthetic_suite_passed"
-        ]  # Numerical success cannot hide packaging failure.
+        ]
         assert completion["archive_verification_status"] == "failed"
         assert "Archive creation/verification failed" in completion["failure"]

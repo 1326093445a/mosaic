@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 """Model config."""
 
 import copy
@@ -64,7 +51,6 @@ MODEL_PRESETS['monomer_casp14'] = MODEL_PRESETS['monomer']
 
 CONFIG_DIFFS = {
     'model_1': {
-        # Jumper et al. (2021) Suppl. Table 5, Model 1.1.1
         'data.common.max_extra_msa': 5120,
         'data.common.reduce_msa_clusters_by_max_templates': True,
         'data.common.use_templates': True,
@@ -72,27 +58,20 @@ CONFIG_DIFFS = {
         'model.embeddings_and_evoformer.template.enabled': True
     },
     'model_2': {
-        # Jumper et al. (2021) Suppl. Table 5, Model 1.1.2
         'data.common.reduce_msa_clusters_by_max_templates': True,
         'data.common.use_templates': True,
         'model.embeddings_and_evoformer.template.embed_torsion_angles': True,
         'model.embeddings_and_evoformer.template.enabled': True
     },
     'model_3': {
-        # Jumper et al. (2021) Suppl. Table 5, Model 1.2.1
         'data.common.max_extra_msa': 5120,
     },
     'model_4': {
-        # Jumper et al. (2021) Suppl. Table 5, Model 1.2.2
         'data.common.max_extra_msa': 5120,
     },
     'model_5': {
-        # Jumper et al. (2021) Suppl. Table 5, Model 1.2.3
     },
 
-    # The following models are fine-tuned from the corresponding models above
-    # with an additional predicted_aligned_error head that can produce
-    # predicted TM-score (pTM) and predicted aligned errors.
     'model_1_ptm': {
         'data.common.max_extra_msa': 5120,
         'data.common.reduce_msa_clusters_by_max_templates': True,
@@ -129,8 +108,6 @@ CONFIG_DIFFS = {
         'model.embeddings_and_evoformer.num_extra_msa': 1152
     },
 }
-# Key differences between multimer v1/v2 and v3, mostly due to numerical
-# optimisations in the TriangleMultiplication module.
 common_updates = {
     'model.embeddings_and_evoformer.num_msa': 252,
     'model.embeddings_and_evoformer.num_extra_msa': 1152,
@@ -226,7 +203,7 @@ CONFIG = ml_collections.ConfigDict({
                 'true_msa': [NUM_MSA_SEQ, NUM_RES]
             },
             'fixed_size': True,
-            'subsample_templates': False,  # We want top templates.
+            'subsample_templates': False,
             'masked_msa_replace_fraction': 0.15,
             'max_msa_clusters': 512,
             'max_templates': 4,
@@ -393,10 +370,6 @@ CONFIG = ml_collections.ConfigDict({
                 'weight': 0.3
             },
             'predicted_aligned_error': {
-                # `num_bins - 1` bins uniformly space the
-                # [0, max_error_bin A] range.
-                # The final bin covers [max_error_bin A, +infty]
-                # 31A gives bins with 0.5A width.
                 'max_error_bin': 31.,
                 'num_bins': 64,
                 'num_channels': 128,
@@ -688,11 +661,6 @@ CONFIG_MULTIMER = ml_collections.ConfigDict({
         },
         'num_ensemble_eval': 1,
         'num_recycle': 20,
-        # A negative value indicates that no early stopping will occur, i.e.
-        # the model will always run `num_recycle` number of recycling
-        # iterations.  A positive value will enable early stopping if the
-        # difference in pairwise distances is less than the tolerance between
-        # recycling steps.
         'recycle_early_stop_tolerance': 0.5,
         'resample_msa_in_recycling': True
     }

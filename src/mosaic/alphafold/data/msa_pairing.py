@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Pairing logic for multimer data pipeline."""
 
@@ -167,7 +154,7 @@ def _match_rows_by_sequence_similarity(this_species_msa_dfs: List[pd.DataFrame]
       species_df_sorted = sort_by_similarity(species_df)
       msa_rows = species_df_sorted.msa_row.iloc[:take_num_seqs].values
     else:
-      msa_rows = [-1] * take_num_seqs  # take the last 'padding' row
+      msa_rows = [-1] * take_num_seqs
     all_paired_msa_rows.append(msa_rows)
   all_paired_msa_rows = list(np.array(all_paired_msa_rows).transpose())
   return all_paired_msa_rows
@@ -188,7 +175,7 @@ def pair_sequences(examples: List[pipeline.FeatureDict]
     common_species.update(set(species_dict))
 
   common_species = sorted(common_species)
-  common_species.remove(b'')  # Remove target sequence species.
+  common_species.remove(b'')
 
   all_paired_msa_rows = [np.zeros(len(examples), int)]
   all_paired_msa_rows_dict = {k: [] for k in range(num_examples)}
@@ -206,7 +193,6 @@ def pair_sequences(examples: List[pipeline.FeatureDict]
       else:
         this_species_msa_dfs.append(None)
 
-    # Skip species that are present in only one chain.
     if species_dfs_present <= 1:
       continue
 
@@ -273,10 +259,6 @@ def _correct_post_merged_feats(
                                             dtype=np.int32)
 
   if not pair_msa_sequences:
-    # Generate a bias that is 1 for the first row of every block in the
-    # block diagonal MSA - i.e. make sure the cluster stack always includes
-    # the query sequences for each chain (since the first row is the query
-    # sequence).
     cluster_bias_masks = []
     for chain in np_chains_list:
       mask = np.zeros(chain['msa'].shape[0])
@@ -284,7 +266,6 @@ def _correct_post_merged_feats(
       cluster_bias_masks.append(mask)
     np_example['cluster_bias_mask'] = np.concatenate(cluster_bias_masks)
 
-    # Initialize Bert mask with masked out off diagonals.
     msa_masks = [np.ones(x['msa'].shape, dtype=np.float32)
                  for x in np_chains_list]
 
@@ -294,7 +275,6 @@ def _correct_post_merged_feats(
     np_example['cluster_bias_mask'] = np.zeros(np_example['msa'].shape[0])
     np_example['cluster_bias_mask'][0] = 1
 
-    # Initialize Bert mask with masked out off diagonals.
     msa_masks = [np.ones(x['msa'].shape, dtype=np.float32) for
                  x in np_chains_list]
     msa_masks_all_seq = [np.ones(x['msa_all_seq'].shape, dtype=np.float32) for
@@ -422,8 +402,6 @@ def merge_chain_features(np_chains_list: List[pipeline.FeatureDict],
   np_chains_list = _pad_templates(
       np_chains_list, max_templates=max_templates)
   np_chains_list = _merge_homomers_dense_msa(np_chains_list)
-  # Unpaired MSA features will be always block-diagonalised; paired MSA
-  # features will be concatenated.
   np_example = _merge_features_from_multiple_chains(
       np_chains_list, pair_msa_sequences=False)
   if pair_msa_sequences:
@@ -444,11 +422,8 @@ def deduplicate_unpaired_sequences(
   msa_features = MSA_FEATURES
 
   for chain in np_chains:
-    # Convert the msa_all_seq numpy array to a tuple for hashing.
     sequence_set = set(tuple(s) for s in chain['msa_all_seq'])
     keep_rows = []
-    # Go through unpaired MSA seqs and remove any rows that correspond to the
-    # sequences that are already present in the paired MSA.
     for row_num, seq in enumerate(chain['msa']):
       if tuple(seq) not in sequence_set:
         keep_rows.append(row_num)

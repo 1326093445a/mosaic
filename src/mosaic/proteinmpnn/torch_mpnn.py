@@ -1,5 +1,3 @@
-# Adapted from ProteinMPNN (https://github.com/dauparas/ProteinMPNN),
-# Copyright (c) 2022 Justas Dauparas, MIT License. See ./NOTICE.
 
 import numpy as np
 import torch
@@ -15,14 +13,14 @@ import random
 def featurize(batch, device):
     alphabet = 'ACDEFGHIKLMNPQRSTVWYX'
     B = len(batch)
-    lengths = np.array([len(b['seq']) for b in batch], dtype=np.int32) #sum of chain seq lengths
+    lengths = np.array([len(b['seq']) for b in batch], dtype=np.int32)
     L_max = max([len(b['seq']) for b in batch])
     X = np.zeros([B, L_max, 4, 3])
-    residue_idx = -100*np.ones([B, L_max], dtype=np.int32) #residue idx with jumps across chains
-    chain_M = np.zeros([B, L_max], dtype=np.int32) #1.0 for the bits that need to be predicted, 0.0 for the bits that are given
-    mask_self = np.ones([B, L_max, L_max], dtype=np.int32) #for interface loss calculation - 0.0 for self interaction, 1.0 for other
-    chain_encoding_all = np.zeros([B, L_max], dtype=np.int32) #integer encoding for chains 0, 0, 0,...0, 1, 1,..., 1, 2, 2, 2...
-    S = np.zeros([B, L_max], dtype=np.int32) #sequence AAs integers
+    residue_idx = -100*np.ones([B, L_max], dtype=np.int32)
+    chain_M = np.zeros([B, L_max], dtype=np.int32)
+    mask_self = np.ones([B, L_max, L_max], dtype=np.int32)
+    chain_encoding_all = np.zeros([B, L_max], dtype=np.int32)
+    S = np.zeros([B, L_max], dtype=np.int32)
     init_alphabet = ['A', 'B', 'C', 'D', 'E', 'F', 'G','H', 'I', 'J','K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T','U', 'V','W','X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f', 'g','h', 'i', 'j','k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't','u', 'v','w','x', 'y', 'z']
     extra_alphabet = [str(item) for item in list(np.arange(300))]
     chain_letters = init_alphabet + extra_alphabet
@@ -46,7 +44,7 @@ def featurize(batch, device):
                     if kv in visible_chains:
                         visible_chains.remove(kv)
         all_chains = masked_chains + visible_chains
-        random.shuffle(all_chains) #randomly shuffle chain order
+        random.shuffle(all_chains)
         num_chains = b['num_of_chains']
         mask_dict = {}
         x_chain_list = []
@@ -60,9 +58,9 @@ def featurize(batch, device):
             if letter in visible_chains:
                 chain_seq = b[f'seq_chain_{letter}']
                 chain_length = len(chain_seq)
-                chain_coords = b[f'coords_chain_{letter}'] #this is a dictionary
-                chain_mask = np.zeros(chain_length) #0.0 for visible chains
-                x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{letter}', f'CA_chain_{letter}', f'C_chain_{letter}', f'O_chain_{letter}']], 1) #[chain_length,4,3]
+                chain_coords = b[f'coords_chain_{letter}']
+                chain_mask = np.zeros(chain_length)
+                x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{letter}', f'CA_chain_{letter}', f'C_chain_{letter}', f'O_chain_{letter}']], 1)
                 x_chain_list.append(x_chain)
                 chain_mask_list.append(chain_mask)
                 chain_seq_list.append(chain_seq)
@@ -75,9 +73,9 @@ def featurize(batch, device):
             elif letter in masked_chains: 
                 chain_seq = b[f'seq_chain_{letter}']
                 chain_length = len(chain_seq)
-                chain_coords = b[f'coords_chain_{letter}'] #this is a dictionary
-                chain_mask = np.ones(chain_length) #0.0 for visible chains
-                x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{letter}', f'CA_chain_{letter}', f'C_chain_{letter}', f'O_chain_{letter}']], 1) #[chain_lenght,4,3]
+                chain_coords = b[f'coords_chain_{letter}']
+                chain_mask = np.ones(chain_length)
+                x_chain = np.stack([chain_coords[c] for c in [f'N_chain_{letter}', f'CA_chain_{letter}', f'C_chain_{letter}', f'O_chain_{letter}']], 1)
                 x_chain_list.append(x_chain)
                 chain_mask_list.append(chain_mask)
                 chain_seq_list.append(chain_seq)
@@ -87,9 +85,9 @@ def featurize(batch, device):
                 residue_idx[i, l0:l1] = 100*(c-1)+np.arange(l0, l1)
                 l0 += chain_length
                 c+=1
-        x = np.concatenate(x_chain_list,0) #[L, 4, 3]
+        x = np.concatenate(x_chain_list,0)
         all_sequence = "".join(chain_seq_list)
-        m = np.concatenate(chain_mask_list,0) #[L,], 1.0 for places that need to be predicted
+        m = np.concatenate(chain_mask_list,0)
         chain_encoding = np.concatenate(chain_encoding_list,0)
 
         l = len(all_sequence)
@@ -102,7 +100,6 @@ def featurize(batch, device):
         chain_encoding_pad = np.pad(chain_encoding, [[0,L_max-l]], 'constant', constant_values=(0.0, ))
         chain_encoding_all[i,:] = chain_encoding_pad
 
-        # Convert to labels
         indices = np.asarray([alphabet.index(a) for a in all_sequence], dtype=np.int32)
         S[i, :l] = indices
 
@@ -110,7 +107,6 @@ def featurize(batch, device):
     mask = np.isfinite(np.sum(X,(2,3))).astype(np.float32)
     X[isnan] = 0.
 
-    # Conversion
     residue_idx = torch.from_numpy(residue_idx).to(dtype=torch.long,device=device)
     S = torch.from_numpy(S).to(dtype=torch.long,device=device)
     X = torch.from_numpy(X).to(dtype=torch.float32, device=device)
@@ -127,7 +123,7 @@ def loss_nll(S, log_probs, mask):
     loss = criterion(
         log_probs.contiguous().view(-1, log_probs.size(-1)), S.contiguous().view(-1)
     ).view(S.size())
-    S_argmaxed = torch.argmax(log_probs,-1) #[B, L]
+    S_argmaxed = torch.argmax(log_probs,-1)
     true_false = (S == S_argmaxed).float()
     loss_av = torch.sum(loss * mask) / torch.sum(mask)
     return loss, loss_av, true_false
@@ -137,34 +133,27 @@ def loss_smoothed(S, log_probs, mask, weight=0.1):
     """ Negative log probabilities """
     S_onehot = torch.nn.functional.one_hot(S, 21).float()
 
-    # Label smoothing
     S_onehot = S_onehot + weight / float(S_onehot.size(-1))
     S_onehot = S_onehot / S_onehot.sum(-1, keepdim=True)
 
     loss = -(S_onehot * log_probs).sum(-1)
-    loss_av = torch.sum(loss * mask) / 2000.0 #fixed 
+    loss_av = torch.sum(loss * mask) / 2000.0
     return loss, loss_av
 
 
-# The following gather functions
 def gather_edges(edges, neighbor_idx):
-    # Features [B,N,N,C] at Neighbor indices [B,N,K] => Neighbor features [B,N,K,C]
     neighbors = neighbor_idx.unsqueeze(-1).expand(-1, -1, -1, edges.size(-1))
     edge_features = torch.gather(edges, 2, neighbors)
     return edge_features
 
 def gather_nodes(nodes, neighbor_idx):
-    # Features [B,N,C] at Neighbor indices [B,N,K] => [B,N,K,C]
-    # Flatten and expand indices per batch [B,N,K] => [B,NK] => [B,NK,C]
     neighbors_flat = neighbor_idx.view((neighbor_idx.shape[0], -1))
     neighbors_flat = neighbors_flat.unsqueeze(-1).expand(-1, -1, nodes.size(2))
-    # Gather and re-pack
     neighbor_features = torch.gather(nodes, 1, neighbors_flat)
     neighbor_features = neighbor_features.view(list(neighbor_idx.shape)[:3] + [-1])
     return neighbor_features
 
 def gather_nodes_t(nodes, neighbor_idx):
-    # Features [B,N,C] at Neighbor index [B,K] => Neighbor features[B,K,C]
     idx_flat = neighbor_idx.unsqueeze(-1).expand(-1, -1, nodes.size(2))
     neighbor_features = torch.gather(nodes, 1, idx_flat)
     return neighbor_features
@@ -244,7 +233,6 @@ class DecLayer(nn.Module):
     def forward(self, h_V, h_E, mask_V=None, mask_attend=None):
         """ Parallel computation of full transformer layer """
 
-        # Concatenate h_V_i to h_E_ij
         h_V_expand = h_V.unsqueeze(-2).expand(-1,-1,h_E.size(-2),-1)
         h_EV = torch.cat([h_V_expand, h_E], -1)
 
@@ -255,7 +243,6 @@ class DecLayer(nn.Module):
 
         h_V = self.norm1(h_V + self.dropout1(dh))
 
-        # Position-wise feedforward
         dh = self.dense(h_V)
         h_V = self.norm2(h_V + self.dropout2(dh))
 
@@ -328,8 +315,8 @@ class ProteinFeatures(nn.Module):
         return RBF
 
     def _get_rbf(self, A, B, E_idx):
-        D_A_B = torch.sqrt(torch.sum((A[:,:,None,:] - B[:,None,:,:])**2,-1) + 1e-6) #[B, L, L]
-        D_A_B_neighbors = gather_edges(D_A_B[:,:,:,None], E_idx)[:,:,:,0] #[B,L,K]
+        D_A_B = torch.sqrt(torch.sum((A[:,:,None,:] - B[:,None,:,:])**2,-1) + 1e-6)
+        D_A_B_neighbors = gather_edges(D_A_B[:,:,:,None], E_idx)[:,:,:,0]
         RBF_A_B = self._rbf(D_A_B_neighbors)
         return RBF_A_B
 
@@ -349,37 +336,37 @@ class ProteinFeatures(nn.Module):
         D_neighbors, E_idx = self._dist(Ca, mask)
 
         RBF_all = []
-        RBF_all.append(self._rbf(D_neighbors)) #Ca-Ca
-        RBF_all.append(self._get_rbf(N, N, E_idx)) #N-N
-        RBF_all.append(self._get_rbf(C, C, E_idx)) #C-C
-        RBF_all.append(self._get_rbf(O, O, E_idx)) #O-O
-        RBF_all.append(self._get_rbf(Cb, Cb, E_idx)) #Cb-Cb
-        RBF_all.append(self._get_rbf(Ca, N, E_idx)) #Ca-N
-        RBF_all.append(self._get_rbf(Ca, C, E_idx)) #Ca-C
-        RBF_all.append(self._get_rbf(Ca, O, E_idx)) #Ca-O
-        RBF_all.append(self._get_rbf(Ca, Cb, E_idx)) #Ca-Cb
-        RBF_all.append(self._get_rbf(N, C, E_idx)) #N-C
-        RBF_all.append(self._get_rbf(N, O, E_idx)) #N-O
-        RBF_all.append(self._get_rbf(N, Cb, E_idx)) #N-Cb
-        RBF_all.append(self._get_rbf(Cb, C, E_idx)) #Cb-C
-        RBF_all.append(self._get_rbf(Cb, O, E_idx)) #Cb-O
-        RBF_all.append(self._get_rbf(O, C, E_idx)) #O-C
-        RBF_all.append(self._get_rbf(N, Ca, E_idx)) #N-Ca
-        RBF_all.append(self._get_rbf(C, Ca, E_idx)) #C-Ca
-        RBF_all.append(self._get_rbf(O, Ca, E_idx)) #O-Ca
-        RBF_all.append(self._get_rbf(Cb, Ca, E_idx)) #Cb-Ca
-        RBF_all.append(self._get_rbf(C, N, E_idx)) #C-N
-        RBF_all.append(self._get_rbf(O, N, E_idx)) #O-N
-        RBF_all.append(self._get_rbf(Cb, N, E_idx)) #Cb-N
-        RBF_all.append(self._get_rbf(C, Cb, E_idx)) #C-Cb
-        RBF_all.append(self._get_rbf(O, Cb, E_idx)) #O-Cb
-        RBF_all.append(self._get_rbf(C, O, E_idx)) #C-O
+        RBF_all.append(self._rbf(D_neighbors))
+        RBF_all.append(self._get_rbf(N, N, E_idx))
+        RBF_all.append(self._get_rbf(C, C, E_idx))
+        RBF_all.append(self._get_rbf(O, O, E_idx))
+        RBF_all.append(self._get_rbf(Cb, Cb, E_idx))
+        RBF_all.append(self._get_rbf(Ca, N, E_idx))
+        RBF_all.append(self._get_rbf(Ca, C, E_idx))
+        RBF_all.append(self._get_rbf(Ca, O, E_idx))
+        RBF_all.append(self._get_rbf(Ca, Cb, E_idx))
+        RBF_all.append(self._get_rbf(N, C, E_idx))
+        RBF_all.append(self._get_rbf(N, O, E_idx))
+        RBF_all.append(self._get_rbf(N, Cb, E_idx))
+        RBF_all.append(self._get_rbf(Cb, C, E_idx))
+        RBF_all.append(self._get_rbf(Cb, O, E_idx))
+        RBF_all.append(self._get_rbf(O, C, E_idx))
+        RBF_all.append(self._get_rbf(N, Ca, E_idx))
+        RBF_all.append(self._get_rbf(C, Ca, E_idx))
+        RBF_all.append(self._get_rbf(O, Ca, E_idx))
+        RBF_all.append(self._get_rbf(Cb, Ca, E_idx))
+        RBF_all.append(self._get_rbf(C, N, E_idx))
+        RBF_all.append(self._get_rbf(O, N, E_idx))
+        RBF_all.append(self._get_rbf(Cb, N, E_idx))
+        RBF_all.append(self._get_rbf(C, Cb, E_idx))
+        RBF_all.append(self._get_rbf(O, Cb, E_idx))
+        RBF_all.append(self._get_rbf(C, O, E_idx))
         RBF_all = torch.cat(tuple(RBF_all), dim=-1)
 
         offset = residue_idx[:,:,None]-residue_idx[:,None,:]
-        offset = gather_edges(offset[:,:,:,None], E_idx)[:,:,:,0] #[B, L, K]
+        offset = gather_edges(offset[:,:,:,None], E_idx)[:,:,:,0]
 
-        d_chains = ((chain_labels[:, :, None] - chain_labels[:,None,:])==0).long() #find self vs non-self interaction
+        d_chains = ((chain_labels[:, :, None] - chain_labels[:,None,:])==0).long()
         E_chains = gather_edges(d_chains[:,:,:,None], E_idx)[:,:,:,0]
         E_positional = self.embeddings(offset.long(), E_chains)
         E = torch.cat((E_positional, RBF_all), -1)
@@ -395,7 +382,6 @@ class ProteinMPNN(nn.Module):
         vocab=21, k_neighbors=32, augment_eps=0.1, dropout=0.1):
         super(ProteinMPNN, self).__init__()
 
-        # Hyperparameters
         self.node_features = node_features
         self.edge_features = edge_features
         self.hidden_dim = hidden_dim
@@ -405,13 +391,11 @@ class ProteinMPNN(nn.Module):
         self.W_e = nn.Linear(edge_features, hidden_dim, bias=True)
         self.W_s = nn.Embedding(vocab, hidden_dim)
 
-        # Encoder layers
         self.encoder_layers = nn.ModuleList([
             EncLayer(hidden_dim, hidden_dim*2, dropout=dropout)
             for _ in range(num_encoder_layers)
         ])
 
-        # Decoder layers
         self.decoder_layers = nn.ModuleList([
             DecLayer(hidden_dim, hidden_dim*3, dropout=dropout)
             for _ in range(num_decoder_layers)
@@ -425,31 +409,25 @@ class ProteinMPNN(nn.Module):
     def forward(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, order):
         """ Graph-conditioned sequence model """
         device=X.device
-        # Prepare node and edge embeddings
         E, E_idx = self.features(X, mask, residue_idx, chain_encoding_all)
         
         h_V = torch.zeros((E.shape[0], E.shape[1], E.shape[-1]), device=E.device)
         h_E = self.W_e(E)
         
 
-        # Encoder is unmasked self-attention
         mask_attend = gather_nodes(mask.unsqueeze(-1),  E_idx).squeeze(-1)
         mask_attend = mask.unsqueeze(-1) * mask_attend
         for layer in self.encoder_layers:
             h_V, h_E = torch.utils.checkpoint.checkpoint(layer, h_V, h_E, E_idx, mask, mask_attend)
 
-        #return h_E, h_V
-        # Concatenate sequence embeddings for autoregressive decoder
         h_S = self.W_s(S)
         h_ES = cat_neighbors_nodes(h_S, h_E, E_idx)
 
-        # Build encoder embeddings
         h_EX_encoder = cat_neighbors_nodes(torch.zeros_like(h_S), h_E, E_idx)
         h_EXV_encoder = cat_neighbors_nodes(h_V, h_EX_encoder, E_idx)
-        # return h_EX_encoder, h_EXV_encoder
 
-        chain_M = chain_M*mask #update chain_M to include missing regions
-        decoding_order = torch.argsort(order)#(chain_M+0.0001)*(torch.abs(torch.randn(chain_M.shape, device=device)))) #[numbers will be smaller for places where chain_M = 0.0 and higher for places where chain_M = 1.0]
+        chain_M = chain_M*mask
+        decoding_order = torch.argsort(order)
         mask_size = E_idx.shape[1]
         permutation_matrix_reverse = torch.nn.functional.one_hot(decoding_order, num_classes=mask_size).float()
         order_mask_backward = torch.einsum('ij, biq, bjp->bqp',(1-torch.triu(torch.ones(mask_size,mask_size, device=device))), permutation_matrix_reverse, permutation_matrix_reverse)

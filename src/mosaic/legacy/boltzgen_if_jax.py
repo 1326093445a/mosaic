@@ -238,12 +238,9 @@ class JaxBoltzGenIF(eqx.Module):
         centers = backbone[:, 1]
         num_nodes = centers.shape[0]
         neighbor_count = min(self.topk, num_nodes)
-        # Graph topology is intentionally discrete. Stopping its coordinate
-        # derivative also avoids undefined gradients at self-distance zero.
         distances = jax.lax.stop_gradient(
             jnp.linalg.norm(centers[:, None, :] - centers[None, :, :], axis=-1)
         )
-        # Rows are destination nodes and columns are candidate source nodes.
         src_by_dst = jax.lax.top_k(-distances, neighbor_count)[1]
         dst_by_dst = jnp.broadcast_to(
             jnp.arange(num_nodes)[:, None], src_by_dst.shape
@@ -252,8 +249,6 @@ class JaxBoltzGenIF(eqx.Module):
         dst = dst_by_dst.reshape(-1)
 
         pair_deltas = backbone[src, None, :, :] - backbone[dst, :, None, :]
-        # sqrt(max(...)) has a zero derivative for coincident atom pairs rather
-        # than the NaN derivative of a raw Euclidean norm at exactly zero.
         pair_distances = jnp.sqrt(
             jnp.maximum(jnp.sum(pair_deltas**2, axis=-1), 1e-12)
         ).reshape(src.shape[0], -1)

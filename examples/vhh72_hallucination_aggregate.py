@@ -49,10 +49,6 @@ def _parse_csv_ints(value: str) -> list[int]:
 
 def load_all(results_dir: Path, seeds: list[int],
              policies: list[str], stop_grad_settings: list[int]):
-    # Matches vhh72_hallucination_dispatch.py's exact naming convention, not
-    # a bare *.csv glob -- a results directory could plausibly have other
-    # CSVs in it (this bit a first test run directly, reusing a scratch dir
-    # that still had an unrelated CSV from earlier work).
     csv_paths = []
     for policy in policies:
         for stop_grad in stop_grad_settings:

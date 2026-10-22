@@ -40,7 +40,7 @@ def _():
 
 @app.cell
 def _(Boltz2):
-    folding_model = Boltz2() # load a model for refolding -- because this is mosaic we're not limited to boltz2
+    folding_model = Boltz2()
     return (folding_model,)
 
 
@@ -118,13 +118,11 @@ def _(
 
 @app.cell
 def _():
-    # precompute trunk embedding and diffusion conditioning to save time when sampling
     return
 
 
 @app.cell
 def _(Sampler, boltzgen, eqx, features_binder, jax, np):
-    # run trunk to precompute conditioning
     sampler = eqx.filter_jit(
         Sampler.from_features(
             model=boltzgen,
@@ -139,7 +137,6 @@ def _(Sampler, boltzgen, eqx, features_binder, jax, np):
 
 @app.cell
 def _(boltzgen, jax, jnp, np, sampler):
-    # sampler is a callable object that ... samples...
     coords = sampler(
             structure_module=boltzgen.structure_module,
             num_sampling_steps=300,
@@ -152,7 +149,6 @@ def _(boltzgen, jax, jnp, np, sampler):
 
 @app.cell
 def _(coords, writer_binder):
-    # we can then transform these coordinates into a gemmi structure using the writer
     complex_structure = writer_binder(coords)
     return (complex_structure,)
 
@@ -168,7 +164,6 @@ def _(
     p_features,
     p_writer,
 ):
-    # and repredict with boltz2 if we'd like
     binder_seq = gemmi.one_letter_code(
         [r.name for r in complex_structure[0][0]]
     )
@@ -190,13 +185,11 @@ def _(pdb_viewer, prediction):
 
 @app.cell
 def _():
-    # we can wrap this all up in an efficient function... - should take about 3 seconds on an H100 after JIT
     return
 
 
 @app.cell
 def _():
-    # sampler is compatible with vmap and other nice JAX things. This is *very* fast.
     return
 
 

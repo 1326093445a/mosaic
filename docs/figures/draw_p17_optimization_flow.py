@@ -41,7 +41,6 @@ text(6, 106, "P17 optimization", 27, weight="bold")
 text(6, 100, "Model guidance proposes edits. Full-confidence scores decide which candidates stay.",
      15, MUTED)
 
-# Shared differentiable proposal path.
 box(44, 46, 67, 47, face="#eef5fc", edge="#b6cce4")
 text(48, 90, "1  SHARED GRADIENT GUIDANCE", 12, BLUE, "bold")
 box(48, 73, 28, 13, edge="#b6cce4")
@@ -57,7 +56,6 @@ arrow([(62, 73), (62, 66)], BLUE)
 arrow([(93.5, 73), (93.5, 66)], BLUE)
 text(77.5, 48.4, "Model weights stay frozen", 10, MUTED, ha="center")
 
-# Inputs and active state.
 box(6, 71, 31, 20)
 text(21.5, 86.5, "Active parents", 15, weight="bold", ha="center")
 text(21.5, 78.5, "Initialize from WT\nFixed target and framework\nCDR edits only", 11, ha="center")
@@ -70,7 +68,6 @@ text(146, 80, "Gradient-biased CDR edits\nEntropy-controlled sampling\nRevert / 
 arrow([(106, 58), (115, 58), (115, 81), (121, 81)], BLUE)
 text(119, 66, "Sequence\ngradient", 9.5, BLUE)
 
-# Forward-only confidence path.
 box(121, 37, 50, 25, face="#eaf7f3", edge="#a8d5c9")
 text(125, 58, "3  FULL-CONFIDENCE EVALUATION", 11.5, GREEN, "bold")
 text(146, 52, "Full OpenDDE · frozen weights", 13, GREEN, "bold", "center")
@@ -78,7 +75,6 @@ text(146, 44, "Diffusion + confidence head · forward only\nDirectional-min ipSA
 arrow([(146, 71), (146, 62)], GREEN)
 text(149, 66.5, "Discrete sequence", 10, GREEN)
 
-# Alternative retention arms, both fed by the same scorer.
 box(6, 18, 105, 23, face="#fff5e8", edge="#e1c69f")
 text(10, 37.5, "4  COMPARE TWO RETENTION POLICIES", 12, AMBER, "bold")
 ax.plot([57, 57], [21, 34], color="#e1c69f", linewidth=1, zorder=3)

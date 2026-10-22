@@ -82,8 +82,6 @@ def assess(summary, want_steps, want_dtype, want_reference=None):
     if not rows:
         reasons.append("no per-prediction rows")
 
-    # Coverage: reject an archive whose own table is short of its plan. Absent
-    # on older archives, where row-level checks are all that is available.
     expected_rows = summary.get("expected_rows")
     observed_rows = summary.get("observed_rows")
     if isinstance(expected_rows, int) and isinstance(observed_rows, int):

@@ -11,7 +11,6 @@ import gemmi
 
 from ..common import LossTerm
 
-# 64 bins, 0.0–32.0 Å, shared across all model backends
 PAE_BINS = np.arange(start=0.25, stop=32.0, step=0.5)
 
 
@@ -45,19 +44,11 @@ class StructureModelOutput(eqx.Module):
     pae: Float[Array, "N N"]
     pae_logits: Float[Array, "N N Bins"]
     pae_bins: Float[Array, " Bins"]
-    structure_coordinates: Array  # all-atom coords, shape varies by model
+    structure_coordinates: Array
     backbone_coordinates: Float[Array, "N 4 3"]
-    # Per-token identity, a 20-d distribution in mosaic-20 / `common.TOKENS`
-    # order ("ARNDCQEGHILKMFPSTWYV"). INVARIANT: every model wrapper emits this
-    # order (af2 / boltz / boltz2 / protenix / of3 / esmfold2 all do — their
-    # native alphabets coincide here or are remapped to it), so `argmax` indexes
-    # the canonical alphabet. Relied on by `to_pdb`, proteina, protein_mpnn.
     full_sequence: Float[Array, "N 20"]
     asym_id: Float[Array, " N"]
     residue_idx: Int[Array, " N"]
-    # Canonical atom37 view of the predicted heavy atoms (see
-    # `mosaic.losses.atom37.ATOM37_NAMES`, == AlphaFold `atom_types` order).
-    # Populated by every model wrapper.
     atom37_coords: Float[Array, "N 37 3"]
     atom37_mask: Float[Array, "N 37"]
 
@@ -154,23 +145,11 @@ def interaction_prediction_score(
     pair_mask = jnp.ones_like(pae, dtype=bool)
     pair_mask *= asym_id[:, None] != asym_id[None, :]
 
-    # only include residue pairs below the pae_cutoff
     pair_mask *= pae < pae_cutoff
     n_residues = jnp.sum(pair_mask, axis=-1, keepdims=True)
 
-    # Compute adjusted d_0(num_res) per residue  as defined by eqn. (15) in
-    # Dunbrack, R., "What's wrong with AlphaFold’s ipTM score and how to fix it."
-    # 2025: https://pmc.ncbi.nlm.nih.gov/articles/PMC11844409/
     d0 = 1.24 * (jnp.clip(n_residues, min=27) - 15) ** (1.0 / 3) - 1.8
 
-    # `d0` is per ROW -- eqn. (15) adjusts it by the number of residues in that
-    # row's alignment, and `n_residues` has shape (N, 1). So `tm_per_bin` is
-    # (N, n_bins), and multiplying it straight into `probs` of shape
-    # (N, N, n_bins) broadcasts it as (1, N, n_bins): row j's d0 lands on
-    # COLUMN j instead of row i's d0 on row i. `[:, None, :]` aligns it with
-    # the row axis. Fixed 2026-10-13; invisible on systems small enough for
-    # `clip(n_residues, min=27)` to flatten d0 to a constant, which is why it
-    # survived.
     tm_per_bin = 1.0 / (1 + jnp.square(bin_centers) / jnp.square(d0))
     predicted_tm_term = jnp.sum(probs * tm_per_bin[:, None, :], axis=-1)
 
@@ -185,20 +164,13 @@ def predicted_tm_score(
     pair_mask: jnp.ndarray | None = None,
 ) -> jnp.ndarray:
     num_res = logits.shape[0]
-    # Clip num_res to avoid negative/undefined d0.
     clipped_num_res = max(num_res, 19)
 
-    # Compute d_0(num_res) as defined by TM-score, eqn. (5) in Yang & Skolnick
-    # "Scoring function for automated assessment of protein structure template
-    # quality", 2004: http://zhanglab.ccmb.med.umich.edu/papers/2004_3.pdf
     d0 = 1.24 * (clipped_num_res - 15) ** (1.0 / 3) - 1.8
 
-    # Convert logits to probs.
     probs = jax.nn.softmax(logits, axis=-1)
 
-    # TM-Score term for every bin.
     tm_per_bin = 1.0 / (1 + jnp.square(bin_centers) / jnp.square(d0))
-    # E_distances tm(distance).
     predicted_tm_term = jnp.sum(probs * tm_per_bin, axis=-1)
 
     if pair_mask is None:
@@ -262,19 +234,11 @@ class WithinBinderContact(LossTerm):
             self.max_contact_distance,
             bins=output.distogram_bins,
         )
-        # only count binder-binder contacts with sequence sep > min_sequence_separation
         within_binder_mask = (
             jnp.abs(jnp.arange(binder_len)[:, None] - jnp.arange(binder_len)[None, :])
             > self.min_sequence_separation
         )
-        # for each position in binder find positions most likely to make contact
 
-        # JAX/XLO has a bizarre issue with top_k when used inside vmap _only_ when used on multiple GPUs.
-        # so for now we sort instead of using top_k
-        # binder_binder_max_p, _ = jax.vmap(
-        #     lambda lcp: jax.lax.top_k(lcp, self.num_contacts_per_residue)
-        # )(log_contact_intra + (1 - within_binder_mask) * -30)
-        # average_log_prob = binder_binder_max_p.mean()
 
         sorted_log_probs = jnp.sort(
             log_contact_intra + (1 - within_binder_mask) * -30, descending=True, axis=-1
@@ -296,10 +260,8 @@ class ESMFoldInterContact(LossTerm):
     def __call__(
         self, sequence: Float[Array, "N 20"], output: StructureModelOutput, key
     ):
-        # if output.distogram_bins[-1] < self.contact_distance + 5.0:
-        #     print(f"WARNING: ESMFoldInterContact using contact distance of {self.contact_distance: 0.2f} but output.distogram_bins[-1] = {output.distogram_bins[-1]: 0.2f}")
         binder_len = sequence.shape[0]
-        block = output.distogram_logits[binder_len:, :binder_len]  # [Lt, Lb, B]
+        block = output.distogram_logits[binder_len:, :binder_len]
         con_loss = -contact_cross_entropy(
             block, self.contact_distance, output.distogram_bins
         )
@@ -329,14 +291,9 @@ class BinderTargetContact(LossTerm):
         if self.epitope_idx is not None:
             log_contact_inter = log_contact_inter[:, self.epitope_idx]
 
-        # see above note about JAX/XLO issue with top_k inside vmap
-        # binder_target_max_p = jax.vmap(lambda v: jax.lax.top_k(v, 3)[0])(
-        #     log_contact_inter
-        # ).mean(-1)
         sorted_log_probs = jnp.sort(log_contact_inter, descending=True, axis=-1)
         binder_target_max_p = sorted_log_probs[:, :3].mean(axis=-1)
 
-        # log probability of contacting target for each position in binder
         if self.paratope_idx is not None:
             binder_target_max_p = binder_target_max_p[self.paratope_idx]
         if self.paratope_size is not None:
@@ -399,11 +356,6 @@ class BinderTargetRegistry(LossTerm):
 
         if self.repel_pairs is not None and self.repel_weight != 0.0:
             ri, rj = self.repel_pairs[:, 0], self.repel_pairs[:, 1]
-            # Penalize contact *probability*, not log-probability: a
-            # non-contacting pair has a log-probability of large negative
-            # magnitude, so adding that term would reward exactly the pairs it
-            # is meant to discourage, and it is unbounded below. The
-            # probability is bounded in [0, 1] and is 0 when the pair is apart.
             repel = jnp.exp(inter[ri, rj]).mean()
             loss = loss + self.repel_weight * repel
             aux["registry_repel_p"] = repel
@@ -466,14 +418,9 @@ class BinderPoseRMSD(LossTerm):
         from ..util import kabsch, unaligned_rmsd
 
         binder_len = sequence.shape[0]
-        # backbone_coordinates is [N, 4, 3] in [N, CA, C, O] order -- index 1 is Calpha.
         pred_target_ca = output.backbone_coordinates[binder_len:, 1]
         pred_binder_ca = output.backbone_coordinates[:binder_len, 1]
 
-        # Reduced-precision GPU matmuls can introduce ~0.01 A of apparent
-        # pose drift even for identical coordinates. Keep the entire alignment
-        # (including Kabsch covariance/rotation and coordinate application) at
-        # float32 matmul precision without changing model inference precision.
         with jax.default_matmul_precision("float32"):
             R, t = kabsch(pred_target_ca, self.reference_target_ca)
             aligned_binder_ca = pred_binder_ca @ R + t
@@ -579,7 +526,7 @@ class ESMFoldGlobularity(LossTerm):
         self, sequence: Float[Array, "N 20"], output: StructureModelOutput, key
     ):
         n = sequence.shape[0]
-        probs = jax.nn.softmax(output.distogram_logits[:n, :n], axis=-1)  # [Lb, Lb, B]
+        probs = jax.nn.softmax(output.distogram_logits[:n, :n], axis=-1)
         bins = jnp.minimum(output.distogram_bins, self.clamp_max)
         e_sq_dist = (probs * jnp.square(bins)).sum(-1)
         rg = jnp.sqrt(jnp.tril(e_sq_dist, k=-1).sum() / (n * n))
@@ -597,14 +544,13 @@ class DistogramRadiusOfGyration(LossTerm):
         output: StructureModelOutput,
         key,
     ):
-        # TODO: Why RMSE instead of MAE?
         binder_len = sequence.shape[0]
         dgram_radius_of_gyration = jnp.sqrt(
             jnp.fill_diagonal(
                 (
                     jax.nn.softmax(output.distogram_logits)[:binder_len, :binder_len]
                     * (output.distogram_bins[None, None, :] ** 2)
-                ).sum(-1),  # expected squared distance
+                ).sum(-1),
                 0,
                 inplace=False,
             ).mean()
@@ -636,7 +582,7 @@ class MAERadiusOfGyration(LossTerm):
             (
                 jax.nn.softmax(output.distogram_logits)[:binder_len, :binder_len]
                 * (output.distogram_bins[None, None, :])
-            ).sum(-1),  # expected squared distance
+            ).sum(-1),
             0,
             inplace=False,
         ).mean()
@@ -664,7 +610,6 @@ class DistogramCE(LossTerm):
         key,
     ):
         binder_len = sequence.shape[0]
-        # expand dims so self.f is broadcastable to network_output["pdistogram"] of size (N, N, Bins)
         f = jnp.expand_dims(self.f, [i for i in range(3 - self.f.ndim)])
 
         ce = -jnp.fill_diagonal(
@@ -736,7 +681,6 @@ class IPTMLoss(LossTerm):
         output: StructureModelOutput,
         key,
     ):
-        # binder - target iptm -- we override asym-id in the case of multi-chain targets
         N = output.full_sequence.shape[0]
         asym_id = jnp.concatenate(
             (jnp.zeros(sequence.shape[0]), jnp.ones(N - sequence.shape[0]))
@@ -785,17 +729,16 @@ class DistogramIPTMProxy(LossTerm):
         key,
     ):
         binder_len = sequence.shape[0]
-        D_bt = output.distogram_logits[:binder_len, binder_len:]  # [N, L-N, B]
-        bins = output.distogram_bins  # [B]
+        D_bt = output.distogram_logits[:binder_len, binder_len:]
+        bins = output.distogram_bins
 
-        m_b = bins < self.contact_distance  # [B] bool
+        m_b = bins < self.contact_distance
         n_contact_bins = m_b.sum()
 
         log_p_full = jax.nn.log_softmax(D_bt, axis=-1)
         p_cut = jax.nn.softmax(D_bt, axis=-1, where=m_b)
-        S = -(p_cut * log_p_full).sum(axis=-1)  # [N, L-N]
+        S = -(p_cut * log_p_full).sum(axis=-1)
 
-        # Mean of the k = binder_len smallest pair scores.
         S_flat = S.reshape(-1)
         bottom_k = -jax.lax.top_k(-S_flat, k=binder_len)[0]
         S_bar = bottom_k.mean()
@@ -813,7 +756,6 @@ class BinderTargetIPTM(LossTerm):
         output: StructureModelOutput,
         key,
     ):
-        # binder - target iptm -- we override asym-id in the case of multi-chain targets
         N = output.full_sequence.shape[0]
         asym_id = jnp.concatenate(
             (jnp.zeros(sequence.shape[0]), jnp.ones(N - sequence.shape[0]))
@@ -823,7 +765,7 @@ class BinderTargetIPTM(LossTerm):
             logits=output.pae_logits,
             bin_centers=output.pae_bins,
             pair_mask=pair_mask,
-        )[: sequence.shape[0]].max()  # limit to binder index
+        )[: sequence.shape[0]].max()
         return -bt_iptm, {"bt_iptm": bt_iptm}
 
 
@@ -858,7 +800,6 @@ class BinderTargetIPSAE(LossTerm):
     ):
         N = output.full_sequence.shape[0]
         binder_len = sequence.shape[0]
-        # override asym-id in the case of multi-chain targets
         asym_id = jnp.concatenate(
             (jnp.zeros(binder_len), jnp.ones(N - binder_len))
         ).astype(jnp.int32)
@@ -885,7 +826,6 @@ class TargetBinderIPSAE(LossTerm):
     ):
         N = output.full_sequence.shape[0]
         binder_len = sequence.shape[0]
-        # override asym-id in the case of multi-chain targets
         asym_id = jnp.concatenate(
             (jnp.zeros(binder_len), jnp.ones(N - binder_len))
         ).astype(jnp.int32)
@@ -962,7 +902,6 @@ class pTMEnergy(LossTerm):
         len_binder = sequence.shape[0]
         logits = output.pae_logits
         num_res = logits.shape[0]
-        # Clip num_res to avoid negative/undefined d0.
         clipped_num_res = max(num_res, 19)
 
         d0 = 1.24 * (clipped_num_res - 15) ** (1.0 / 3) - 1.8
@@ -971,7 +910,6 @@ class pTMEnergy(LossTerm):
 
         g_d_b = 1.0 / (1 + jnp.square(pae_bin_centers) / jnp.square(d0))
         energy = jax.scipy.special.logsumexp(a=logits, b=g_d_b, axis=-1)
-        # return negative mean over cross-chain pairs
         binder_target = energy[:len_binder, len_binder:].mean()
         target_binder = energy[len_binder:, :len_binder].mean()
         E = -(binder_target + target_binder) / 2

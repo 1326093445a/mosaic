@@ -51,18 +51,12 @@ def test_uses_opendde_guidance_true_with_contact_weight():
 
 
 def test_run_rejects_both_boltz2_and_opendde_guidance_weights():
-    # Regression guard: L_bind has exactly one anchor slot (see GuidanceLosses
-    # docstring); setting both backends' weights is ambiguous about which one
-    # should own it, so this must fail fast rather than silently pick one.
     cfg = _minimal_cfg(weight_boltz2_iptm=0.5, weight_opendde_iptm=0.5)
     with pytest.raises(ValueError, match="Boltz2.*OpenDDE|OpenDDE.*Boltz2"):
         run(cfg)
 
 
 def test_mutual_exclusivity_guard_does_not_fire_for_opendde_alone():
-    # Not run(cfg) here -- run() would proceed past this check into a real
-    # BoltzGen load (network/checkpoint), which this test must not trigger.
-    # The guard condition itself is the thing under test.
     cfg = _minimal_cfg(weight_opendde_iptm=0.5)
     assert not (uses_boltz2_guidance(cfg) and uses_opendde_guidance(cfg))
 
@@ -78,9 +72,6 @@ def test_default_refold_backend_is_opendde():
 
 
 def test_opendde_refold_ignores_template_config_true_by_default():
-    # refold_backend defaults to "opendde" and refold_binder_template
-    # defaults to True/"full" -- OpenDDE can't template, so the default
-    # config implies templated refolding that silently never happens.
     cfg = _minimal_cfg()
     assert opendde_refold_ignores_template_config(cfg) is True
 
@@ -96,11 +87,6 @@ def test_opendde_refold_ignores_template_config_false_when_template_off():
 
 
 def test_run_rejects_invalid_refold_backend_before_model_loading():
-    # Same fail-fast pattern as the ipSAE/mutual-exclusivity checks above:
-    # validated in run() before cfg.output_dir.mkdir()/load_core_models(),
-    # not only where refold_pareto_with_* would be dispatched -- the
-    # nonexistent complex_cif_path here would otherwise fail with an
-    # unrelated error only after paying for a real BoltzGen load.
     cfg = _minimal_cfg(refold_backend="not-a-real-backend")
     with pytest.raises(ValueError, match="refold-backend"):
         run(cfg)

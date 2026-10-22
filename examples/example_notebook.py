@@ -148,7 +148,6 @@ def _():
 
 @app.cell
 def _(PSSM, loss):
-    # we can sharpen these logits using weight decay (which is equivalent to adding entropic regularization)
     pssm_sharper, _ = simplex_APGM(
         loss_function=loss,
         n_steps=25,
@@ -285,7 +284,6 @@ def _(af2, scaffold_sequence):
 
 @app.cell
 def _(FixedStructureInverseFoldingLL, o_af_scaffold):
-    # Create inverse folding LL term
     scaffold_inverse_folding_LL = FixedStructureInverseFoldingLL.from_structure(
         o_af_scaffold.st,
         ProteinMPNN.from_pretrained(),
@@ -295,8 +293,6 @@ def _(FixedStructureInverseFoldingLL, o_af_scaffold):
 
 @app.cell
 def _(af2, binder_length, target_sequence, target_st):
-    # ### Generate input features for alphafold
-    # # We use a template for the target chain!
     af_features, _ = af2.binder_features(
         binder_length=binder_length,
         chains=[
@@ -467,7 +463,6 @@ def _(pssm_af):
 
 @app.cell
 def _(boltz1, target_sequence):
-    # predict target - we'll use this as a template for alphafold
 
 
 

@@ -41,7 +41,7 @@ from alphaseq_vhh72_cdr_contrast_pairs import (  # noqa: E402
     load_designed_vhh72_rows,
 )
 
-TOKENS = "ARNDCQEGHILKMFPSTWYV"  # mosaic.common.TOKENS -- p_seq's 20-column order
+TOKENS = "ARNDCQEGHILKMFPSTWYV"
 AA_TO_IDX = {c: i for i, c in enumerate(TOKENS)}
 
 CACHE_PATH = REPO_ROOT / "vhh72_gradient_path_comparison_cache.pkl"
@@ -72,10 +72,10 @@ def score_config(shift, pairs, seqs, pos_to_token_idx, *, weighted=False):
         if aa_a not in AA_TO_IDX or aa_b not in AA_TO_IDX:
             continue
         shift_diff = shift[token_idx, AA_TO_IDX[aa_b]] - shift[token_idx, AA_TO_IDX[aa_a]]
-        real_favors_b = -delta  # positive if B (kd_b > kd_a) is the better residue
+        real_favors_b = -delta
         agree = np.sign(shift_diff) == np.sign(real_favors_b)
         w = abs(delta) if weighted else 1.0
-        if shift_diff != 0:  # exact-zero shifts are ties, excluded from both num/denom
+        if shift_diff != 0:
             agree_weight += w if agree else 0.0
             total_weight += w
             n_pairs += 1
@@ -96,7 +96,7 @@ if __name__ == "__main__":
         cache = pickle.load(f)
 
     binder_token_indices = cache["binder_token_indices"]
-    cdr_residue_indices_1idx = cache["cdr_residue_indices"]  # 1-indexed
+    cdr_residue_indices_1idx = cache["cdr_residue_indices"]
     pos_to_token_idx = {
         (i - 1): int(binder_token_indices[i - 1]) for i in cdr_residue_indices_1idx
     }

@@ -72,7 +72,7 @@ def test_windowed_atom_attention_excludes_padding_and_its_gradient(compiled):
 
 
 def test_structural_padding_is_absent_from_pair_and_attention_inputs():
-    ids = jnp.array([0, 0, 2, 3, -1])  # token 1 empty, 3/-1 out of range
+    ids = jnp.array([0, 0, 2, 3, -1])
     np.testing.assert_array_equal(occupied_tokens(ids, 3), [True, False, True])
     inputs = jnp.array([[1.0], [900.0], [3.0]])
     si, s, z, bias, pair_mask = mask_structural_inputs(
@@ -149,10 +149,7 @@ def test_padding_patch_validates_all_files_before_writing_and_is_idempotent(tmp_
     spec = importlib.util.spec_from_file_location("padding_patch", path)
     patch = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(patch)
-    # Use the installed source as a realistic, version-matched fixture.
     for filename in {site["file"] for site in patch.SITES}:
-        # Source syntax varies by indentation level, so keep the real installed
-        # module as the integration fixture and undo this patch if present.
         import jopendde
 
         source = (Path(jopendde.__file__).parent / filename).read_text()

@@ -70,7 +70,6 @@ def test_setpositions_takes_the_designable_rows_and_returns_their_gradient():
     fn = eqx.filter_jit(eqx.filter_value_and_grad(restricted, has_aux=True))
     (value, _), grad = fn(x, key=jax.random.key(0))
     assert np.isfinite(float(value))
-    # one row per designable position, and no row for a fixed one
     assert np.asarray(grad).shape == (len(DESIGNABLE), len(TOKENS))
 
 
@@ -86,7 +85,6 @@ def test_the_restricted_gradient_matches_the_designable_rows_of_the_full_one():
     _, grad = eqx.filter_value_and_grad(restricted, has_aux=True)(
         x, key=jax.random.key(0)
     )
-    # the same term differentiated at full length, then sliced
     full_term = WeightedSum(weights)
     _, full_grad = eqx.filter_value_and_grad(full_term, has_aux=True)(
         jax.nn.one_hot(wildtype, len(TOKENS)), key=jax.random.key(0)
@@ -96,9 +94,6 @@ def test_the_restricted_gradient_matches_the_designable_rows_of_the_full_one():
     )
 
 
-# --------------------------------------------------------------------------
-# the reporting helpers, which now receive an already-restricted gradient
-# --------------------------------------------------------------------------
 
 def test_designable_norm_is_the_norm_of_what_it_is_given():
     grad = np.arange(12, dtype=float).reshape(4, 3)

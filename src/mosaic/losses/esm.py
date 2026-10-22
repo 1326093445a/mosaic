@@ -1,15 +1,3 @@
-# This file incorporates portions of code from the esm2quinox library,
-# created by Patrick Kidger and licensed under the Apache License, 
-# Version 2.0 (the "License"); you may not use this file except in compliance 
-# with the License. You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import jax
 import numpy as np
@@ -88,9 +76,7 @@ class ESM2PseudoLikelihood(LossTerm):
 
     def __call__(self, seq_standard_tokens: Float[Array, "N 20"], *, key):
         n = seq_standard_tokens.shape[0]
-        # convert from standard tokenization to ESM tokenization
         esm_toks_unpadded = seq_standard_tokens @ boltz_to_esm_matrix()
-        # add cls and eos tokens
         esm_toks = jnp.concatenate(
             [
                 jax.nn.one_hot([ESM_TOKENS[ESM_BOS_TOKEN]], ESM_VOCAB_SIZE),
@@ -100,18 +86,13 @@ class ESM2PseudoLikelihood(LossTerm):
         )
 
         def single_ll(index: int):
-            # replace token at index with mask
             masked_tokens = esm_toks.at[index].set(
                 jax.nn.one_hot(ESM_TOKENS[ESM_MASK_TOKEN], ESM_VOCAB_SIZE)
             )
-            # embed and run ESM
             embedding = masked_tokens @ self.esm.embedding.weight
-            # set masked token embedding to zero
             embedding = embedding.at[index].set(0.0)
-            # rescale to account for masking during ESM training
             mask_ratio_train = 0.15 * 0.8
             embedding = embedding * ((1 - mask_ratio_train) / (1 - 1/(n+2)))
-            # apply ESM trunk and LM head
             embedding = apply_trunk(self.esm, embedding, np.zeros(n + 2))
             return jax.nn.log_softmax(self.esm.logit_head(embedding[index]))
 

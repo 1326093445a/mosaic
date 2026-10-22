@@ -38,11 +38,8 @@ WT_VHH72_SEQ = (
     "SRDNAKNTVYLQMNSLKPDDTAVYYCAAAGLGTVVSEWDYDYDYWGQGTQVTVSS"
 )
 
-# Standard IMGT CDR boundaries (numeric IMGT position range, inclusive).
 CDR_RANGES = {"CDR1": (27, 38), "CDR2": (56, 65), "CDR3": (105, 117)}
 
-# What's currently hardcoded elsewhere in this project (0-indexed into
-# WT_VHH72_SEQ), to diff against.
 EXISTING_HARDCODED_0IDX = {
     "CDR1": set(range(25, 33)),
     "CDR2": set(range(50, 58)),

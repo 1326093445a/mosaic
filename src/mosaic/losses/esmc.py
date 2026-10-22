@@ -80,7 +80,6 @@ class ESMCPseudoLikelihood(LossTerm):
     def __call__(self, seq_standard_tokens: Float[Array, "N 20"], *, key):
         n = seq_standard_tokens.shape[0]
         vocab = esmc_vocab()
-        # standard tokenization → ESM tokenization, then add cls/eos
         esm_toks_unpadded = seq_standard_tokens @ boltz_to_esmc_matrix(vocab)
         esm_toks = jnp.concatenate(
             [
@@ -94,8 +93,6 @@ class ESMCPseudoLikelihood(LossTerm):
             masked_tokens = esm_toks.at[index].set(
                 jax.nn.one_hot(vocab["<mask>"], ESMC_VOCAB_SIZE)
             )
-            # Embed by matmul rather than the integer lookup in
-            # `ESMCForMaskedLM.__call__`, so gradients reach the soft sequence.
             x = masked_tokens @ self.esm.esmc.embed.weight
             x, _ = self.esm.esmc.transformer(
                 x[None], None, collect_hidden_states=False
@@ -120,9 +117,6 @@ class ESMCPseudoPerplexity(LossTerm):
     position in `seq_standard_tokens` is maskable.
     """
 
-    # The ESMC (backbone + MLM head). May be None when a shared one is spliced
-    # in at call time (see `StackedEsmFold2PLL` in losses/esmfold2.py) — built
-    # that way the term holds no ESMC copy of its own.
     esm: ESMCForMaskedLM | None = None
     masking_fraction: float = 0.15
     num_samples: int = 4
@@ -134,7 +128,6 @@ class ESMCPseudoPerplexity(LossTerm):
     def __call__(self, seq_standard_tokens: Float[Array, "N 20"], *, key):
         n = seq_standard_tokens.shape[0]
         vocab = esmc_vocab()
-        # standard tokenization → ESM tokenization, then add cls/eos
         esm_toks_unpadded = seq_standard_tokens @ boltz_to_esmc_matrix(vocab)
 
         esm_toks_unpadded_one_hot_ste = jax.nn.one_hot(esm_toks_unpadded.argmax(-1), esm_toks_unpadded.shape[-1])
@@ -148,9 +141,6 @@ class ESMCPseudoPerplexity(LossTerm):
             ]
         )
 
-        # Positions eligible for masking (default: all of them). `idx_pool` is
-        # passed straight to `jax.random.choice`: an int n samples arange(n),
-        # a 1-D array samples its element values (the actual position indices).
         idx_pool = n if self.design_idx is None else self.design_idx
         pool_size = n if self.design_idx is None else self.design_idx.shape[0]
 
@@ -159,11 +149,9 @@ class ESMCPseudoPerplexity(LossTerm):
             masked_idx = jax.random.choice(key, idx_pool, shape = (n_masked,), replace=False)
 
 
-            masked_tokens = esm_toks.at[masked_idx+1].set( #offset for <cls>
+            masked_tokens = esm_toks.at[masked_idx+1].set(
                 jax.nn.one_hot(vocab["<mask>"], ESMC_VOCAB_SIZE)
             )
-            # Embed by matmul rather than the integer lookup in
-            # `ESMCForMaskedLM.__call__`, so gradients reach the soft sequence.
             x = masked_tokens @ self.esm.esmc.embed.weight
             x, _ = self.esm.esmc.transformer(
                 x[None], None, collect_hidden_states=False
@@ -174,10 +162,6 @@ class ESMCPseudoPerplexity(LossTerm):
         masked_perplexities = jax.vmap(single_sample)(jax.random.split(key, self.num_samples))
         
         per = masked_perplexities.mean()
-        # `per` is the mean masked NLL (pseudo-log-perplexity, lower = more
-        # likely); minimizing it favors plausible sequences. Also report the
-        # actual pseudo-perplexity exp(per) (interpretable: ~1 perfect,
-        # ~|vocab| for random).
         return per, {
             "esmc_perplexity": jnp.exp(per),
             "esmc_log_perplexity": per,

@@ -58,7 +58,7 @@ def device_memory_stats():
     for device in jax.devices():
         try:
             device_stats = device.memory_stats()
-        except Exception as exc:  # backend may not implement this
+        except Exception as exc:
             device_stats = None
             note = repr(exc)
         else:
@@ -227,10 +227,6 @@ def build_parser():
         help="full includes confidence and coordinate-RMSD gradients; distogram is the earlier proxy objective.",
     )
     parser.add_argument("--weight-pose", type=float, default=1.0)
-    # Registry term (section 26), off by default so existing runs are
-    # unchanged. It scores the specific reference contact pairs rather than
-    # aggregate proximity, which is what separates a binder flipped at the
-    # correct epitope from one in the reference registry (section 25).
     parser.add_argument(
         "--weight-registry",
         type=float,
@@ -285,8 +281,6 @@ def build_parser():
         default=12.0,
         help="Interface-count diagnostic only.",
     )
-    # Recovery-control inputs. Omitting all of these reproduces the previous
-    # P17/JN.1 behavior exactly, including the literature hotspot epitope.
     parser.add_argument(
         "--complex",
         type=Path,
@@ -422,10 +416,8 @@ def main(argv=None):
             )
     except ValueError as exc:
         parser.error(str(exc))
-    # Prevent accidentally replacing an earlier experiment's evidence.
     args.output_dir.mkdir(parents=True, exist_ok=False)
 
-    # Keep --help and argument validation independent of the heavy model stack.
     import equinox as eqx
     import jax
     import jax.numpy as jnp
@@ -467,10 +459,6 @@ def main(argv=None):
         )
         epitope_mode = "hotspots"
     else:
-        # A different reference means a different target numbering, so the
-        # JN.1 hotspot constants do not describe it. Require the epitope to be
-        # derived from the structure rather than silently reusing indices that
-        # would land on unrelated residues.
         from p17_alpha_reference import (
             ca_distance_matrix,
             ca_spacing_report,
@@ -549,17 +537,8 @@ def main(argv=None):
         [i + 1 in CDR_RESIDUE_INDICES_1IDX for i in range(len(binder_seq))]
     )
     designable_idx = np.flatnonzero(mask)
-    # Kept before `binder_seq` is replaced by a damaged start. Downstream
-    # rescoring must distinguish the *reference's* sequence (which the pose
-    # coordinates belong to) from the search's starting sequence; conflating
-    # them makes a reference-consistency check fail on every run that starts
-    # anywhere other than the reference.
     reference_binder_seq = binder_seq
 
-    # The search's origin. Edit budget and the Hamming cap are relative to
-    # this sequence, so for the recovery control the damaged sequence is the
-    # origin and the reference's own sequence is a point the search may or may
-    # not reach -- it is never given as a target.
     if args.start_sequence is not None:
         start_seq = args.start_sequence.strip().upper()
         if len(start_seq) != len(binder_seq):
@@ -585,17 +564,6 @@ def main(argv=None):
         binder_seq = start_seq
     wt = np.array([TOKENS.index(aa) for aa in binder_seq], dtype=np.int32)
 
-    # Where the edit budget is measured from, which is not always where the
-    # search begins. Under `--budget-anchor reference` the search still starts
-    # at `--start-sequence`, but `wt` becomes the reference, so the hard cap in
-    # `_moves` and the soft `EditBudget` hinge both count drift from the
-    # reference and a reverted position returns to the reference. That is what
-    # keeps a continuous seeding stage and this search from spending
-    # `--edit-budget` each: the seed's own edits are already on the meter.
-    # Swapping the loss anchor is safe because the validation above rejects a
-    # start sequence that differs outside the designable mask, so the fixed
-    # scaffold `SetPositions` pins is identical either way -- only the
-    # `EditBudget` parent changes.
     budget_anchor_seq = binder_seq
     search_initial_tokens = None
     if args.budget_anchor == "reference":
@@ -729,15 +697,8 @@ def main(argv=None):
     reference_audit = None
     if args.pose_diagnostic:
         from p17_pose_diagnostics import audit_reference, geometry_checks, write_report
-        # Through the module, not `from … import`: see the note in
-        # p17_hallucination_search. This used to read the names as attributes
-        # of p17_hallucination_search, which worked only because the import was
-        # function-local.
         import p17_reference_config as reference_config
 
-        # Audit whatever reference this run actually loaded, not the module
-        # default: auditing P17_JN1.pdb while scoring against Alpha would
-        # report a passing correspondence for the wrong file.
         complex_pdb = (
             args.complex if args.complex is not None
             else reference_config.COMPLEX_PDB
@@ -749,9 +710,6 @@ def main(argv=None):
         )
         try:
             if model is None:
-                # `audit_reference` walks a gemmi model; the recovery control's
-                # loader already validated numbering, CA uniqueness, altlocs
-                # and spacing, and `reference_info` records all of it.
                 reference_audit = dict(
                     source="p17_alpha_reference.load_complex",
                     reference=reference_info,
@@ -834,9 +792,6 @@ def main(argv=None):
         opendde_sampling_steps=args.sampling_steps,
         opendde_num_samples=1,
         confidence_loss=confidence_loss,
-        # Constant across the pose-weight toggle: the registry restraint is a
-        # separate term, so the paired pose-on/pose-off diagnostic varies only
-        # what it is meant to vary.
         registry_weight=args.weight_registry,
         registry_contact_distance=args.registry_contact_distance,
     )
@@ -847,12 +802,6 @@ def main(argv=None):
 
     gradient_eval = make_gradient(args.weight_pose)
 
-    # Bound to a real file handle just before run_gradient_search executes (see
-    # below). gradient_fn/predict_sequence close over this name; reassigning it
-    # in main()'s own body -- not a nested function -- needs no `nonlocal`, and
-    # Python resolves the free variable at call time, so the closures see the
-    # real handle once it exists. A memory snapshot is worth having even if a
-    # call raises, so failures are logged too, not silently dropped.
     memory_log = None
     memory_call_index = 0
 
@@ -895,10 +844,6 @@ def main(argv=None):
                 "tb_pae",
                 "pTMEnergy",
                 "ablang2_ppl",
-                # Registry restraint (section 26). This list is an allow-list,
-                # so a term absent from it has its aux silently discarded --
-                # which is what hid the registry value from the first smoke
-                # run even though the term was active.
                 "registry_log_p",
                 "registry_repel_p",
             ):
@@ -934,7 +879,6 @@ def main(argv=None):
             output.pae_bins,
             pair_mask=output.asym_id[:, None] != output.asym_id[None, :],
         ).max()
-        # Keep exact scored atoms for export, without transferring large logits.
         return compact_prediction(output), iptm
 
     def predict_sequence(sequence, seed, *, store=None, include_geometry=False):
@@ -1086,10 +1030,6 @@ def main(argv=None):
 
         saliency_writer = None
         if args.save_saliency:
-            # One row per (step, position, residue) first-order delta. The
-            # search discards all but the chosen move, so this is the only
-            # chance to record it; it cannot be reconstructed from the event
-            # log afterwards.
             saliency_path = args.output_dir / "tables/saliency.csv"
             saliency_path.parent.mkdir(parents=True, exist_ok=True)
             saliency_handle = saliency_path.open("w", newline="")
@@ -1203,10 +1143,6 @@ def main(argv=None):
         distogram_gradient_calls=result.stats["gradient_calls"]
         if args.proposal_path == "distogram"
         else 0,
-        # Same running-peak-since-process-start caveat as memory.jsonl and
-        # device_memory_stats(): this is the highest usage seen anywhere in
-        # the run, not necessarily attributable to the single most expensive
-        # call in isolation.
         memory_at_completion=device_memory_stats(),
     )
     (args.output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")

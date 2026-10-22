@@ -256,7 +256,6 @@ def test_search_refuses_a_rung_absent_from_the_ladder(tmp_path, monkeypatch):
         driver.search(args)
 
 
-# JN.1 stage -------------------------------------------------------------------
 
 
 def _stub_merge(monkeypatch):
@@ -408,7 +407,6 @@ def test_jn1_table_requires_the_wt_candidate(tmp_path, monkeypatch):
         driver.write_jn1_table(tmp_path)
 
 
-# Held-out stage, and the reference that broke it on 2026-10-04 ---------------
 
 
 def test_alpha_heldout_passes_the_alpha_reference_to_rescore(tmp_path):
@@ -511,10 +509,6 @@ def test_alpha_heldout_requires_a_calibration_file(tmp_path):
         )
 
 
-# --------------------------------------------------------------------------
-# "Held out" is a claim about two seed sets being disjoint, and about the
-# metadata recording the sets actually used. Neither was enforced.
-# --------------------------------------------------------------------------
 
 
 class _Args:
@@ -578,10 +572,6 @@ def test_the_context_file_records_the_selection_seeds_actually_used(
     assert context["heldout_seeds"] == [201, 202]
 
 
-# --------------------------------------------------------------------------
-# A failed launch used to leave the workers it had already started running,
-# each holding most of a GPU, after this process exited with a traceback.
-# --------------------------------------------------------------------------
 
 
 def test_a_failed_launch_terminates_the_workers_already_started(
@@ -595,7 +585,6 @@ def test_a_failed_launch_terminates_the_workers_already_started(
     def flaky(command, **kw):
         if len(started) >= 1:
             raise OSError("cannot launch the second worker")
-        # A harmless child that would outlive this process if never cleaned up.
         process = real_popen([sys.executable, "-c", "import time; time.sleep(60)"],
                              **kw)
         started.append(process)
@@ -612,11 +601,6 @@ def test_a_failed_launch_terminates_the_workers_already_started(
     )
 
 
-# --------------------------------------------------------------------------
-# Round 8: the seeds that were EVALUATED must be the seeds reported, the
-# archive is the authority on what was already selected on, and the check has
-# to happen before the GPUs are spent.
-# --------------------------------------------------------------------------
 
 
 def test_the_archive_supplies_the_selection_seeds(tmp_path):

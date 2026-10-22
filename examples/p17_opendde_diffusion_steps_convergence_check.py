@@ -148,11 +148,6 @@ def main():
     tb_pae_loss = TargetBinderPAE()
     ptm_energy_loss = pTMEnergy()
 
-    # Same pattern as examples/p17_predict_hallucination_structures.py's
-    # already-validated forward-only real prediction: MUST be jitted at
-    # real complex sizes (see that script's docstring for the eager-call
-    # OOM this avoids), no eqx.filter_value_and_grad since there's nothing
-    # to differentiate here.
     _forward_jit = eqx.filter_jit(
         functools.partial(
             opendde_forward_from_trunk,

@@ -129,9 +129,6 @@ def build_component_loss(component: str, *, binder_seq, opendde, features,
             + 0.025 * pTMEnergy()
         )
     elif component == "ablang2":
-        # AbLang2 doesn't touch OpenDDE at all -- included as a negative
-        # control (should trivially pass; if THIS OOMs, the problem isn't
-        # OpenDDE-related at all).
         return ClippedGradient(
             Ablang2PseudoLikelihood(
                 model=ablang2_model, tokenizer=ablang2_tokenizer,

@@ -68,15 +68,11 @@ def _():
 
 @app.cell
 def _():
-    # def to_cpu(pytree):
-    #     static, params = eqx.partition(pytree, lambda v: eqx.is_inexact_array(v) and len(v.shape)>=1)
-    #     return eqx.combine(static, jax.tree.map(lambda v: np.array(v), params))
     return
 
 
 @app.cell
 def _(ESMFold2ExperimentalFast2025, eqx):
-    # remove esmc models to save vram
     model = eqx.tree_at(lambda m: m.esmc, ESMFold2ExperimentalFast2025(), None)
     return (model,)
 
@@ -165,12 +161,7 @@ def _():
 def _(PDL1_SEQUENCE, TargetChain, VHH_TEMPLATE, add_esmc, model, np):
     target_chains = [TargetChain(PDL1_SEQUENCE, use_msa=False)]
 
-    # Design pack: every binder position is an all-X designed slot (refresh tied on,
-    # binder allocated at the 14-atom max internally). The framework isn't pinned in
-    # the pack — `SetPositions` does that during optimization.
     pack, _ = add_esmc(model).binder_features(len(VHH_TEMPLATE), target_chains)
-    # design_positions are the token indices of the `X`s. The binder is chain 0
-    # at token offset 0, so they're exactly the `X` positions in the template.
     design_positions = np.array([i for i, c in enumerate(VHH_TEMPLATE) if c == "X"])
     M = len(design_positions)
     return M, design_positions, pack
@@ -222,7 +213,7 @@ def _(
         features=pack,
         recycling_steps=LOSS_RECYCLING_ITERS,
         msa_max_depth=1024,
-        lm_dropout=0.5,  # geom + LM refresh tied to the (design) pack
+        lm_dropout=0.5,
     )
 
     loss = SetPositions.from_sequence(
@@ -239,15 +230,15 @@ def _(
 
 @app.cell
 def _():
-    B = 4  # batch: parallel designs from different gumbel inits
+    B = 4
     SEED = 0
-    N_SOFT = 128  # stage-1 soft steps
-    N_SHARP = 20  # stage-2 sharpening steps
-    GUMBEL = 0.75  # init concentration
-    S1_MULT = 0.10  # stage-1 stepsize multiplier (× sqrt(M))
-    S2_MULT = 0.05  # stage-2 stepsize multiplier
-    S2_SCALE = 1.3  # stage-2 anneal rate
-    S1_MOM = 0.5  # stage-1 momentum
+    N_SOFT = 128
+    N_SHARP = 20
+    GUMBEL = 0.75
+    S1_MULT = 0.10
+    S2_MULT = 0.05
+    S2_SCALE = 1.3
+    S1_MOM = 0.5
     return B, GUMBEL, N_SHARP, N_SOFT, S1_MOM, S1_MULT, S2_MULT, S2_SCALE, SEED
 
 
@@ -280,7 +271,7 @@ def _(
         max_gradient_norm=1.0,
         key=jax.random.key(SEED + 1),
     )
-    t_stage1 = time.time() - t0_soft  # exposed for the speed-comparison plot
+    t_stage1 = time.time() - t0_soft
     print(f"stage 1 done in {t_stage1:.1f}s  ")
     return pssm, t_stage1
 
@@ -325,7 +316,7 @@ def _(
         max_gradient_norm=1.0,
         key=jax.random.key(SEED + 2),
     )
-    t_stage2 = time.time() - t0_sharp  # exposed for the speed-comparison plot
+    t_stage2 = time.time() - t0_sharp
     print(f"stage 2 done in {t_stage2:.1f}s  ")
     return pssm_sharp, t_stage2
 
@@ -594,8 +585,6 @@ def _(
     for _did, _s in ESMFOLD2_OFFICIAL_DESIGNS:
         assert len(_s) == len(VHH_TEMPLATE), f"{_did}: len {len(_s)} != pack len"
         _ids = jnp.array([TOKENS.index(c) for c in _s])
-        # Design-time forward: the binder_features pack has refresh=True, so geom+LM
-        # refresh and the atom37 structure writer follow from the pack (no writer).
         _p = add_esmc(model).predict(
             PSSM=jax.nn.one_hot(_ids, 20),
             features=pack,
@@ -613,7 +602,6 @@ def _(
         )
         print(f"{_did:18} esmfold2={_ip:.3f}", flush=True)
 
-    # Public so the histogram cell can read it.
     official_eval = sorted(_rows, key=lambda r: r["esmfold2 iptm"], reverse=True)
     mo.ui.table(official_eval, selection=None)
     return (official_eval,)
@@ -621,11 +609,8 @@ def _(
 
 @app.cell
 def _(np, official_eval, plt, predictions):
-    # Compare two design *methods*, both scored with our design-time forward:
-    #   - the official ESMFold2 design method (ESMFOLD2_OFFICIAL_DESIGNS, n=20)
-    #   - the sequences designed in this notebook (the B=4 in `predictions`)
-    _other = [r["esmfold2 iptm"] for r in official_eval]  # official method, n=20
-    _ours = [float(p.iptm) for p in predictions]  # this notebook's designs
+    _other = [r["esmfold2 iptm"] for r in official_eval]
+    _ours = [float(p.iptm) for p in predictions]
     _all = _other + _ours
     _bins = np.linspace(min(_all) - 0.01, max(_all) + 0.01, 16)
 
@@ -665,9 +650,9 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(B, LOSS_RECYCLING_ITERS, jax, plt, t_stage1, t_stage2):
     _our_total_s = t_stage1 + t_stage2
-    _our_per_design = _our_total_s / B  # B designs produced per batched run
+    _our_per_design = _our_total_s / B
 
-    _torch_per_design = 117.0  # s/design, recycling_steps=0
+    _torch_per_design = 117.0
     _speedup = _torch_per_design / _our_per_design
 
     _labels = [

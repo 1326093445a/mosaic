@@ -119,10 +119,6 @@ def relaxed_loss(loss_function, x0, relaxed, key):
     except Exception as exc:                       # noqa: BLE001 - diagnostic
         return dict(loss_at_init=None, loss_at_relaxed=None,
                     loss_descent=None, loss_eval_error=repr(exc)[:200])
-    # The descent is the difference of the RECORDED numbers, not of the
-    # unrounded ones. Subtracting the two fields in the JSON has to give the
-    # third: a record whose own columns disagree by 1e-6 is a record that
-    # cannot be checked, and nothing here needs the last decimal.
     at_init = None if start is None else round(start, 6)
     at_relaxed = None if end is None else round(end, 6)
     return dict(
@@ -179,10 +175,6 @@ def rounded_loss(loss_function, parent_tokens, seed_tokens, designable_idx, key)
     return dict(
         loss_at_parent=at_parent,
         loss_at_rounded=at_rounded,
-        # Positive means the rounded seed beats the parent, since this is a
-        # loss. At or below zero the seed cannot help: it reaches the search
-        # with its whole edit budget already spent and no advantage to show
-        # for it, so the search's best move is to revert it.
         rounded_gain_over_parent=None if (at_parent is None or at_rounded is None)
         else round(at_parent - at_rounded, 6),
         rounded_loss_eval_error=None,
@@ -214,10 +206,6 @@ def projection_tie_at_cut(margins, budget):
     return dict(
         projection_tied_group=int(group),
         projection_tied_discarded=int(group - kept_in_group),
-        # 12 decimals, not 6: the whole point of reporting the gap instead
-        # of a verdict is that a reader can see a 1e-9 cut, and rounding to 6
-        # turns one into exactly 0.0 -- indistinguishable from the exact tie
-        # it is supposed to be contrasted with.
         projection_margin_gap_at_cut=round(
             float(ranked[budget - 1][0] - ranked[budget][0]), 12),
     )
@@ -377,14 +365,6 @@ def run_relaxation(method, loss_function, x0, run_key, *, steps, lr,
         APGM_MOMENTUM, APGM_SCALE, APGM_STEPSIZE,
     )
 
-    # Omitted apgm settings mean the PRODUCTION ones. They used to be required,
-    # and the tests passed 0.1/0.9/1.0 -- inherited from an older test -- while
-    # main() passed 0.05/0.5/1.2. On the same fixture at init scale 5.0 that
-    # difference decided the result outright: switching the hinge off moved
-    # simplex_APGM to 29 wanted substitutions at the test settings and left it
-    # at 0 at the production ones. So the tests reported coverage of a
-    # configuration nothing ships. Defaulting to production makes the two
-    # impossible to diverge by omission.
     if apgm_stepsize is None:
         apgm_stepsize = APGM_STEPSIZE
     if apgm_momentum is None:
@@ -400,11 +380,6 @@ def run_relaxation(method, loss_function, x0, run_key, *, steps, lr,
             n_steps=steps, hard_temp=hard_temp, **shaping,
         )
     elif method == "colabdesign":
-        # The same apportionment the four-stage schedule uses, for the same
-        # reason: `max(1, round(...))` overshoots. steps=4 with
-        # hard_fraction=0.99 gave hard=4 and then clamped soft to 1, running 5
-        # steps for a 4-step request. This was fixed in `_apportion_stages` and
-        # left here, which is exactly the duplication that invited it.
         soft_steps, hard_steps = _apportion_stages(
             (1.0 - hard_fraction, hard_fraction), steps
         )
@@ -421,10 +396,6 @@ def run_relaxation(method, loss_function, x0, run_key, *, steps, lr,
         )
         raw = jax.nn.softmax(logits, -1)
     elif method == "apgm":
-        # `relaxed_array` takes result[0], the final iterate, so the
-        # best-iterate tracking added on 2026-10-13 would be one extra forward
-        # pass per step plus one at the start -- 126 evaluations on a 125-step
-        # run -- for a value this function discards.
         raw = simplex_APGM(
             loss_function=loss_function, x=jax.nn.softmax(x0, -1),
             n_steps=steps, stepsize=apgm_stepsize, momentum=apgm_momentum,
@@ -580,9 +551,6 @@ def main(argv=None):
     n_designable = len(designable_idx)
     noise = 0.01 * np.asarray(jax.random.normal(init_key, (n_designable, 20)))
     if args.init == "parent":
-        # Start inside the edit budget, at the sequence the predictor already
-        # scores, rather than at BindCraft's de-novo noise start. See
-        # `anchored_logits` for why the hinge makes that start expensive here.
         x0 = jnp.asarray(anchored_logits(
             parent, designable_idx, args.init_logit_scale, noise
         ))
@@ -609,9 +577,6 @@ def main(argv=None):
             f"({n_designable}, 20); the return convention may have changed"
         )
 
-    # Scatter the designable-only result back into full-length logits.
-    # Non-designable rows are pinned to the parent residue, so argmax there
-    # can only return the parent whatever scale the optimizer used.
     full = np.zeros((len(parent), 20), dtype=np.float32)
     full[np.arange(len(parent)), parent] = 1.0
     full[designable_idx] = np.asarray(relaxed)
@@ -620,12 +585,8 @@ def main(argv=None):
                                               args.edit_budget)
     concentration = relaxed_concentration(relaxed, parent[designable_idx])
     tie = projection_tie_at_cut(margins, args.edit_budget)
-    # A separate key from the optimisation's, and the same one for both
-    # points: this measures descent, not a re-draw of the sampling.
     objective = relaxed_loss(variable_only_loss, x0, relaxed,
                              jax.random.fold_in(key, 1_000_003))
-    # The SAME key as the relaxed pair, so all four losses are one comparison
-    # and not four draws of a stochastic objective.
     rounded = rounded_loss(variable_only_loss, parent, tokens, designable_idx,
                            jax.random.fold_in(key, 1_000_003))
     sequence = "".join(TOKENS[i] for i in tokens)
@@ -676,7 +637,6 @@ def main(argv=None):
               f"(descent {objective['loss_descent']})")
     elif objective.get("loss_eval_error"):
         print(f"  loss not evaluated: {objective['loss_eval_error']}")
-    # The soft descent above is not what the discrete search inherits. This is.
     gain = rounded.get("rounded_gain_over_parent")
     if gain is not None:
         verdict = ("the search can use this"

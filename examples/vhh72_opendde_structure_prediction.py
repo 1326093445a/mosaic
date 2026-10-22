@@ -72,14 +72,6 @@ from mosaic.legacy.boltzgen_vhh_guided import (
 print(f"  done ({time.time() - t0:.1f}s)", flush=True)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-# JIT-compiling opendde_forward_from_trunk (see module docstring) fixed the
-# catastrophic 223GB blowup, but the full 334-residue complex still
-# genuinely needs ~45-50GB for full diffusion sampling (n_step=8) + full
-# confidence heads -- more than allocator/mem-fraction tuning can close on
-# one 24GB GPU. That earlier single-sample raw-torch CLI run (35s, no issue)
-# used real kernel fusion (cuequivariance triangle kernels) this JAX port
-# doesn't have equivalents for, so it isn't directly comparable on memory.
-# Falling back to the CDR-interface crop, same as the gradient test.
 COMPLEX_CIF = REPO_ROOT / "vhh72_wt_wt_rbd_cropped.cif"
 IPSAE_PAE_CUTOFF = 12.0
 N_SAMPLES = 3
@@ -116,9 +108,6 @@ iptm_loss, bt_ipsae_loss, tb_ipsae_loss, ipsae_min_loss = (
 )
 binder_placeholder = jnp.zeros((len(binder_seq), 20))
 
-# MUST be jitted at this size -- see module docstring. eqx.filter_jit
-# because opendde_forward_from_trunk closes over the eqx.Module `model.model`
-# and Features pytree, not just plain arrays.
 _forward_jit = eqx.filter_jit(
     functools.partial(
         opendde_forward_from_trunk,

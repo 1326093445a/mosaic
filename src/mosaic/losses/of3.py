@@ -31,14 +31,9 @@ from jopenfold3._vendor.openfold3.core.data.resources.token_atom_constants impor
 from mosaic.losses.atom37 import ATOM37_INDEX, scatter_atom37
 
 
-# OF3's first 20 indices are standard AAs in identical order to mosaic's TOKENS:
-#   A=0, R=1, N=2, D=3, C=4, Q=5, E=6, G=7, H=8, I=9, L=10, K=11,
-#   M=12, F=13, P=14, S=15, T=16, W=17, Y=18, V=19
-# Indices 20-31 are UNK, RNA(5), DNA(5), GAP.
 _MOSAIC_TO_OF3 = np.zeros((20, 32), dtype=np.float32)
 _MOSAIC_TO_OF3[:20, :20] = np.eye(20)
 
-# OF3 vocab: 0-19 protein, 20 UNK, 21-25 RNA, 26-30 DNA, 31 GAP
 GAP_IDX = 31
 
 
@@ -76,14 +71,12 @@ def set_binder_sequence(new_sequence: Float[Array, "N 20"], batch: Batch,
     """
 
     binder_len = new_sequence.shape[0]
-    of3_sequence = new_sequence @ jnp.array(_MOSAIC_TO_OF3)  # [N, 32]
+    of3_sequence = new_sequence @ jnp.array(_MOSAIC_TO_OF3)
 
     new_restype = batch.restype.at[0, :binder_len, :].set(of3_sequence)
 
     new_profile = batch.profile.at[0, :binder_len].set(of3_sequence)
-    # Set query row in MSA
     new_msa = batch.msa.at[0, 0, :binder_len].set(of3_sequence)
-    # Set the rest of MSA for binder to GAP (no hits)
     new_msa = new_msa.at[0, 1:, :binder_len,].set(jax.nn.one_hot(GAP_IDX, 32))
 
     return eqx.tree_at(
@@ -100,15 +93,10 @@ def _bin_centers(bin_min: float, bin_max: float, num_bins: int) -> np.ndarray:
     return np.linspace(bin_min + 0.5 * width, bin_max - 0.5 * width, num_bins)
 
 
-# Distogram: 64 bins, 2.0–22.0 Å
 DISTOGRAM_BINS = _bin_centers(2.0, 22.0, 64)
-# pLDDT: 50 bins, 0.0–1.0
 PLDDT_BINS = _bin_centers(0.0, 1.0, 50)
 
 
-# ---------------------------------------------------------------------------
-# of3_forward_from_trunk — eager forward returning StructureModelOutput
-# ---------------------------------------------------------------------------
 
 
 def of3_forward_from_trunk(
@@ -134,29 +122,23 @@ def of3_forward_from_trunk(
         structure_coordinates, key=key,
     )
 
-    # pLDDT normalized to [0, 1]
-    logits = confidence.plddt_logits[0, 0]  # [N_atom, 50]
-    rep_idx = batch.representative_atom_index[0]  # [N_token]
-    token_logits = logits[rep_idx]  # [N_token, 50]
+    logits = confidence.plddt_logits[0, 0]
+    rep_idx = batch.representative_atom_index[0]
+    token_logits = logits[rep_idx]
     probs = jax.nn.softmax(token_logits, axis=-1)
     plddt = (probs * jnp.array(PLDDT_BINS)[None, :]).sum(-1)
 
-    # PAE
     pae_logits = confidence.pae_logits[0, 0]
     pae_probs = jax.nn.softmax(pae_logits, axis=-1)
     pae = (pae_probs * jnp.array(PAE_BINS)[None, None, :]).sum(-1)
 
-    # Backbone coordinates (N, CA, C, O)
     start = batch.start_atom_index[0].astype(jnp.int32)
-    coords = structure_coordinates[0, 0]  # [N_atom, 3]
+    coords = structure_coordinates[0, 0]
     backbone_coordinates = jnp.stack([coords[start + i] for i in range(4)], axis=-2)
 
-    # Atom37 view: scatter all-atom coords into the canonical heavy-atom layout.
-    # `batch.atom_mask` is 0 on padding atoms; sentinel them to -1 so they're dropped.
     n_tokens = batch.restype.shape[1]
     n_atoms = coords.shape[0]
-    restype_idx = batch.restype[0].argmax(-1)                          # [N_token] in OF3 32-letter
-    # Atoms within a token are contiguous starting at `start_atom_index`.
+    restype_idx = batch.restype[0].argmax(-1)
     atom_to_token = jnp.clip(
         jnp.searchsorted(start, jnp.arange(n_atoms), side="right") - 1,
         0, n_tokens - 1,

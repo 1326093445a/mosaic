@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Quaternion geometry modules.
 
@@ -42,18 +29,18 @@ import numpy as np
 # pylint: disable=bad-whitespace
 QUAT_TO_ROT = np.zeros((4, 4, 3, 3), dtype=np.float32)
 
-QUAT_TO_ROT[0, 0] = [[ 1, 0, 0], [ 0, 1, 0], [ 0, 0, 1]]  # rr
-QUAT_TO_ROT[1, 1] = [[ 1, 0, 0], [ 0,-1, 0], [ 0, 0,-1]]  # ii
-QUAT_TO_ROT[2, 2] = [[-1, 0, 0], [ 0, 1, 0], [ 0, 0,-1]]  # jj
-QUAT_TO_ROT[3, 3] = [[-1, 0, 0], [ 0,-1, 0], [ 0, 0, 1]]  # kk
+QUAT_TO_ROT[0, 0] = [[ 1, 0, 0], [ 0, 1, 0], [ 0, 0, 1]]
+QUAT_TO_ROT[1, 1] = [[ 1, 0, 0], [ 0,-1, 0], [ 0, 0,-1]]
+QUAT_TO_ROT[2, 2] = [[-1, 0, 0], [ 0, 1, 0], [ 0, 0,-1]]
+QUAT_TO_ROT[3, 3] = [[-1, 0, 0], [ 0,-1, 0], [ 0, 0, 1]]
 
-QUAT_TO_ROT[1, 2] = [[ 0, 2, 0], [ 2, 0, 0], [ 0, 0, 0]]  # ij
-QUAT_TO_ROT[1, 3] = [[ 0, 0, 2], [ 0, 0, 0], [ 2, 0, 0]]  # ik
-QUAT_TO_ROT[2, 3] = [[ 0, 0, 0], [ 0, 0, 2], [ 0, 2, 0]]  # jk
+QUAT_TO_ROT[1, 2] = [[ 0, 2, 0], [ 2, 0, 0], [ 0, 0, 0]]
+QUAT_TO_ROT[1, 3] = [[ 0, 0, 2], [ 0, 0, 0], [ 2, 0, 0]]
+QUAT_TO_ROT[2, 3] = [[ 0, 0, 0], [ 0, 0, 2], [ 0, 2, 0]]
 
-QUAT_TO_ROT[0, 1] = [[ 0, 0, 0], [ 0, 0,-2], [ 0, 2, 0]]  # ir
-QUAT_TO_ROT[0, 2] = [[ 0, 0, 2], [ 0, 0, 0], [-2, 0, 0]]  # jr
-QUAT_TO_ROT[0, 3] = [[ 0,-2, 0], [ 2, 0, 0], [ 0, 0, 0]]  # kr
+QUAT_TO_ROT[0, 1] = [[ 0, 0, 0], [ 0, 0,-2], [ 0, 2, 0]]
+QUAT_TO_ROT[0, 2] = [[ 0, 0, 2], [ 0, 0, 0], [-2, 0, 0]]
+QUAT_TO_ROT[0, 3] = [[ 0,-2, 0], [ 2, 0, 0], [ 0, 0, 0]]
 
 QUAT_MULTIPLY = np.zeros((4, 4, 4), dtype=np.float32)
 QUAT_MULTIPLY[:, :, 0] = [[ 1, 0, 0, 0],
@@ -109,7 +96,6 @@ def rot_to_quat(rot, unstack_inputs=False):
   k = (1./3.) * jnp.stack([jnp.stack(x, axis=-1) for x in k],
                           axis=-2)
 
-  # Get eigenvalues in non-decreasing order and associated.
   _, qs = jnp.linalg.eigh(k)
   return qs[..., -1]
 
@@ -135,7 +121,7 @@ def quat_to_rot(normalized_quat):
       normalized_quat[..., :, None, None] *
       normalized_quat[..., None, :, None],
       axis=(-3, -2))
-  rot = jnp.moveaxis(rot_tensor, -1, 0)  # Unstack.
+  rot = jnp.moveaxis(rot_tensor, -1, 0)
   return [[rot[0], rot[1], rot[2]],
           [rot[3], rot[4], rot[5]],
           [rot[6], rot[7], rot[8]]]
@@ -172,7 +158,6 @@ def apply_rot_to_vec(rot, vec, unstack=False):
 
 def apply_inverse_rot_to_vec(rot, vec):
   """Multiply the inverse of a rotation matrix by a vector."""
-  # Inverse rotation is just transpose
   return [rot[0][0] * vec[0] + rot[1][0] * vec[1] + rot[2][0] * vec[2],
           rot[0][1] * vec[0] + rot[1][1] * vec[1] + rot[2][1] * vec[2],
           rot[0][2] * vec[0] + rot[1][2] * vec[1] + rot[2][2] * vec[2]]
@@ -200,9 +185,9 @@ class QuatAffine(object):
 
     if unstack_inputs:
       if rotation is not None:
-        rotation = [jnp.moveaxis(x, -1, 0)   # Unstack.
-                    for x in jnp.moveaxis(rotation, -2, 0)]  # Unstack.
-      translation = jnp.moveaxis(translation, -1, 0)  # Unstack.
+        rotation = [jnp.moveaxis(x, -1, 0)
+                    for x in jnp.moveaxis(rotation, -2, 0)]
+      translation = jnp.moveaxis(translation, -1, 0)
 
     if normalize and quaternion is not None:
       quaternion = quaternion / jnp.linalg.norm(quaternion, axis=-1,
@@ -386,14 +371,11 @@ def make_canonical_transform(
   assert n_xyz.shape == ca_xyz.shape == c_xyz.shape, (
       n_xyz.shape, ca_xyz.shape, c_xyz.shape)
 
-  # Place CA at the origin.
   translation = -ca_xyz
   n_xyz = n_xyz + translation
   c_xyz = c_xyz + translation
 
-  # Place C on the x-axis.
   c_x, c_y, c_z = [c_xyz[:, i] for i in range(3)]
-  # Rotate by angle c1 in the x-y plane (around the z-axis).
   sin_c1 = -c_y / jnp.sqrt(1e-20 + c_x**2 + c_y**2)
   cos_c1 = c_x / jnp.sqrt(1e-20 + c_x**2 + c_y**2)
   zeros = jnp.zeros_like(sin_c1)
@@ -403,7 +385,6 @@ def make_canonical_transform(
                              jnp.array([sin_c1,  cos_c1, zeros]),
                              jnp.array([zeros,    zeros,  ones])])
 
-  # Rotate by angle c2 in the x-z plane (around the y-axis).
   sin_c2 = c_z / jnp.sqrt(1e-20 + c_x**2 + c_y**2 + c_z**2)
   cos_c2 = jnp.sqrt(c_x**2 + c_y**2) / jnp.sqrt(
       1e-20 + c_x**2 + c_y**2 + c_z**2)
@@ -414,9 +395,7 @@ def make_canonical_transform(
   c_rot_matrix = _multiply(c2_rot_matrix, c1_rot_matrix)
   n_xyz = jnp.stack(apply_rot_to_vec(c_rot_matrix, n_xyz, unstack=True)).T
 
-  # Place N in the x-y plane.
   _, n_y, n_z = [n_xyz[:, i] for i in range(3)]
-  # Rotate by angle alpha in the y-z plane (around the x-axis).
   sin_n = -n_z / jnp.sqrt(1e-20 + n_y**2 + n_z**2)
   cos_n = n_y / jnp.sqrt(1e-20 + n_y**2 + n_z**2)
   n_rot_matrix = jnp.stack([jnp.array([ones,  zeros,  zeros]),

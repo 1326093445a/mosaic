@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Tests for layer_stack."""
 
@@ -25,7 +12,6 @@ import numpy as np
 import scipy.stats
 
 
-# Suffixes applied by Haiku for repeated module names.
 suffixes = [''] + [f'_{i}' for i in range(1, 100)]
 
 
@@ -211,13 +197,11 @@ class LayerStackTest(parameterized.TestCase):
       x = x + jax.random.normal(hk.next_rng_key())
       return x
 
-    # Evaluate a bunch of times
     key, *keys = jax.random.split(jax.random.PRNGKey(7), 1024 + 1)
     params = add_random.init(key, 0.)
     apply_fn = jax.jit(add_random.apply)
     values = [apply_fn(params, key, 0.) for key in keys]
 
-    # Should be roughly N(0, sqrt(n))
     cdf = scipy.stats.norm(scale=np.sqrt(n)).cdf
     _, p = scipy.stats.kstest(values, cdf)
     self.assertLess(0.3, p)
@@ -235,7 +219,6 @@ class LayerStackTest(parameterized.TestCase):
     @hk.transform
     def g(x, ys):
       x, zs = f(x, ys)
-      # Check here to catch issues at init time
       self.assertEqual(zs.shape, (n,))
       return x, zs
 

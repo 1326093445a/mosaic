@@ -1,15 +1,3 @@
-# N-gram natural-frequency losses against UniRef50 marginals.
-#
-# - `TrigramLL`     : expected log-likelihood of a soft sequence under a trigram model.
-#                     Inspired by https://www.biorxiv.org/content/10.1101/2022.12.21.521521v1
-#                     and tends to suppress homopolymer stretches that ESM2 pseudo-likelihood
-#                     can favor.
-# - `UnigramExcess` : penalizes ONLY over-representation of single amino acids
-#                     (relu(emp1 - nat1)^2). Sequence-level — composes with structure
-#                     losses via LinearCombination.
-# - `BigramExcess`  : same as Unigram for adjacent-pair frequencies.
-#
-# All three load from the same `mosaic/data/trigram_seg.pkl` UniRef50 trigram pickle.
 
 from __future__ import annotations
 
@@ -76,9 +64,6 @@ class TrigramLL(LossTerm):
     stop_grad: bool = False
 
     def __call__(self, soft_sequence: Float[Array, "N 20"], *, key):
-        # Expected log likelihood of the soft sequence under the trigram model
-        # if each position is independent: if s_i ~ Categorical(soft_sequence[i]),
-        # this equals E_s[\sum_i log p(s_i | s_{i-1}, s_{i-2})].
         def eval_single_position(i: int):
             x_i = soft_sequence[i]
             x_j = soft_sequence[i + 1]

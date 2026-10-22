@@ -38,9 +38,6 @@ from mosaic.common import TOKENS, LinearCombination, LossTerm
 from mosaic.losses.atom37 import scatter_atom37
 from mosaic.losses.structure_prediction import StructureModelOutput, reduce_samples
 
-# OpenDDE `restype` indices 0-19 are the standard AAs in mosaic's TOKENS order
-# ("ARNDCQEGHILKMFPSTWYV"); 20=UNK, 21-30=nucleic, 31=GAP. The mosaic-20 ->
-# OpenDDE-32 map is thus an identity embedding into the first 20 columns.
 _MOSAIC_TO_OPENDDE = np.zeros((20, 32), dtype=np.float32)
 _MOSAIC_TO_OPENDDE[:20, :20] = np.eye(20)
 GAP_IDX = 31
@@ -71,7 +68,7 @@ def _inject_soft_pssm(
     chains the two so a caller never sees the inconsistent intermediate.
     """
     N = new_sequence.shape[0]
-    soft = new_sequence @ _MOSAIC_TO_OPENDDE  # [N, 32]
+    soft = new_sequence @ _MOSAIC_TO_OPENDDE
     restype = feat.restype.at[:N].set(soft)
     profile = feat.profile.at[:N].set(soft)
     if feat.msa is not None:
@@ -84,28 +81,9 @@ def _inject_soft_pssm(
     return eqx.tree_at(lambda f: (f.restype, f.profile), feat, (restype, profile))
 
 
-# ---------------------------------------------------------------------------
-# In-loop binder geometry refresh
-# ---------------------------------------------------------------------------
-# `binder_features` allocates the binder at a fixed max-atom budget (a poly-Trp
-# buffer; Trp is the largest residue) so any designed sequence fits without a
-# recompile. But the poly-Trp buffer's atom-level features are Trp's, not the
-# designed residues'. `refresh_binder_geometry` rebuilds every atom- and
-# structural-token-indexed field from `argmax(pssm)` so the OpenDDE trunk /
-# diffusion see the designed side chains, while the PSSM gradient still flows
-# only through `restype` / `profile` / MSA (the refresh runs under
-# `stop_gradient`).
-#
-# Atom fields are tight-packed at the front of their fixed poly-Trp buffer;
-# target atoms shift after the packed binder and the remaining tail is masked.
-# Structural-token shape remains fixed at two tokens per binder residue. Gly's
-# absent sidechain token is retained as a phantom token with no mapped atom.
-#
-# Binder `ref_pos` conformers receive a fresh random rigid augmentation on each
-# loss call. Target conformers retain their featurized orientation.
 
-MAX_ATOMS_PER_RES = 15  # C-terminal Trp; the max atom budget across the 20 AAs.
-MAX_STRUCT_PER_RES = 2  # protein backbone + sidechain sub-token.
+MAX_ATOMS_PER_RES = 15
+MAX_STRUCT_PER_RES = 2
 
 
 class OpenDDEAtomTemplates(eqx.Module):
@@ -118,23 +96,20 @@ class OpenDDEAtomTemplates(eqx.Module):
     Leading axis 2 is the context: index 0 = ``int``, 1 = ``cterm``.
     """
 
-    # atom-axis (context, restype, atom-slot, ...)
     ref_pos: Float[Array, "2 20 A 3"]
     ref_element: Float[Array, "2 20 A 128"]
     ref_charge: Float[Array, "2 20 A"]
     ref_atom_name_chars: Float[Array, "2 20 A 4 64"]
     n_atoms: Int[Array, "2 20"]
-    disto_off: Int[Array, "2 20"]  # residue-branch distogram rep local atom offset
-    pae_off: Int[Array, "2 20"]  # residue-branch pae rep local atom offset
-    # structural-token axis: per local atom -> local sub-token (0=bb, 1=sc) + tokatom
+    disto_off: Int[Array, "2 20"]
+    pae_off: Int[Array, "2 20"]
     a_struct_tok: Int[Array, "2 20 A"]
     a_struct_tokatom: Int[Array, "2 20 A"]
-    # per local sub-token s in {0,1}: rep local atom offsets + frame (3 local offsets)
     s_disto_off: Int[Array, "2 20 2"]
     s_pae_off: Int[Array, "2 20 2"]
     s_frame_off: Int[Array, "2 20 2 3"]
-    s_valid: Int[Array, "2 20 2"]  # 1 if the sub-token exists (sc absent for Gly)
-    s_has_frame: Int[Array, "2 20 2"]  # native frame validity, distinct from existence
+    s_valid: Int[Array, "2 20 2"]
+    s_has_frame: Int[Array, "2 20 2"]
     max_atoms: int = eqx.field(static=True, default=MAX_ATOMS_PER_RES)
     max_struct: int = eqx.field(static=True, default=MAX_STRUCT_PER_RES)
 
@@ -183,7 +158,7 @@ def build_opendde_atom_templates(featurize_one) -> OpenDDEAtomTemplates:
             assert k <= ma, f"{aa} {ctx}: {k} atoms > MAX_ATOMS_PER_RES={ma}"
             m = a2t == tok
             block = g("ref_pos")[m]
-            ref_pos[ci, i, :k] = block - block.mean(0)  # centre over real atoms
+            ref_pos[ci, i, :k] = block - block.mean(0)
             ref_el[ci, i, :k] = g("ref_element")[m]
             ref_ch[ci, i, :k] = g("ref_charge")[m]
             ref_nm[ci, i, :k] = g("ref_atom_name_chars")[m]
@@ -210,7 +185,7 @@ def build_opendde_atom_templates(featurize_one) -> OpenDDEAtomTemplates:
                 ga = base + a
                 a_stok[ci, i, a] = int(ast[ga]) - s_base
                 a_stka[ci, i, a] = int(asta[ga])
-            if ns < ms:  # Gly: the phantom sidechain token gets a benign frame
+            if ns < ms:
                 s_froff[ci, i, 1] = s_froff[ci, i, 0]
 
     return OpenDDEAtomTemplates(
@@ -279,20 +254,19 @@ def refresh_binder_geometry(
     n_tgt = A_total - A_alloc
     ma = tmpl.max_atoms
 
-    ids = jax.lax.stop_gradient(jnp.argmax(pssm, axis=-1))  # [L] mosaic-20
-    is_cterm = jnp.arange(L) == L - 1  # last binder residue carries OXT
+    ids = jax.lax.stop_gradient(jnp.argmax(pssm, axis=-1))
+    is_cterm = jnp.arange(L) == L - 1
 
     def pick(field):
-        arr = getattr(tmpl, field)  # [2, 20, ...]
-        vi, vc = arr[0][ids], arr[1][ids]  # internal / cterm gathers, [L, ...]
+        arr = getattr(tmpl, field)
+        vi, vc = arr[0][ids], arr[1][ids]
         w = is_cterm.reshape((L,) + (1,) * (vi.ndim - 1))
         return jnp.where(w, vc, vi)
 
     k = jnp.where(is_cterm, tmpl.n_atoms[1][ids], tmpl.n_atoms[0][ids]).astype(jnp.int32)
-    offset = (jnp.cumsum(k) - k).astype(jnp.int32)  # exclusive prefix sum
+    offset = (jnp.cumsum(k) - k).astype(jnp.int32)
     sum_k = jnp.sum(k)
 
-    # per-residue random rigid augmentation (featurizer's ref_pos convention)
     kr, kt = jax.random.split(jax.lax.stop_gradient(key))
     R = _random_rotations(kr, L)
     t = jax.random.uniform(kt, (L, 3), minval=-1.0, maxval=1.0)
@@ -300,7 +274,7 @@ def refresh_binder_geometry(
 
     a_local = jnp.arange(ma, dtype=jnp.int32)[None, :]
     valid = a_local < k[:, None]
-    dest = jnp.where(valid, offset[:, None] + a_local, A_total).reshape(-1)  # drop a>=k
+    dest = jnp.where(valid, offset[:, None] + a_local, A_total).reshape(-1)
     b_tok = jnp.repeat(jnp.arange(L, dtype=jnp.int32), ma)
     b_tka = jnp.broadcast_to(a_local, (L, ma)).reshape(-1)
     tgt_src = jnp.arange(A_alloc, A_total)
@@ -314,11 +288,8 @@ def refresh_binder_geometry(
     new_el = scatter(jnp.zeros_like(feat.ref_element), pick("ref_element").reshape(-1, 128), feat.ref_element)
     new_ch = scatter(jnp.zeros_like(feat.ref_charge), pick("ref_charge").reshape(-1), feat.ref_charge)
     new_nm = scatter(jnp.zeros_like(feat.ref_atom_name_chars), pick("ref_atom_name_chars").reshape(-1, 4, 64), feat.ref_atom_name_chars)
-    # real atoms occupy [0, sum_k) (binder) + [sum_k, sum_k + n_tgt); mask the tail.
     new_mask = (jnp.arange(A_total) < (sum_k + n_tgt)).astype(feat.ref_mask.dtype)
 
-    # atom -> token: tail padding maps to n_token (OOB -> dropped by every
-    # aggregate_atom_to_token scatter-add, so it never dilutes a real token).
     def scatter_idx(buf_fill, binder_vals, target_full, dtype):
         buf = jnp.full((A_total,), buf_fill, dtype=dtype)
         buf = buf.at[dest].set(binder_vals.astype(dtype), mode="drop")
@@ -328,17 +299,11 @@ def refresh_binder_geometry(
     new_tka = scatter_idx(0, b_tka, feat.atom_to_tokatom_idx, feat.atom_to_tokatom_idx.dtype)
     d_lm, v_lm, pad = _rebuild_dense_trunk(new_pos, new_a2t)
 
-    # structural-token axis (fixed 2 sub-tokens per binder residue; Gly's sc is a
-    # phantom no atom maps to): binder atom -> 2*residue + local(0=bb,1=sc).
     b_stok = 2 * b_tok + pick("a_struct_tok").reshape(-1)
-    # This branch aggregates into the expanded token array. The residue count
-    # is generally an IN-RANGE structural index, so using it for padding would
-    # let padded atoms contribute to a real token's sum and count.
     n_struct = int(feat.structural_token_index.shape[0])
     new_astok = scatter_idx(n_struct, b_stok, feat.atom_to_structural_token_idx, feat.atom_to_structural_token_idx.dtype)
     new_astka = scatter_idx(0, pick("a_struct_tokatom").reshape(-1), feat.atom_to_structural_tokatom_idx, feat.atom_to_structural_tokatom_idx.dtype)
 
-    # representative-atom masks (per-atom booleans), residue + structural branch.
     def rep_mask(binder_at, template_field):
         buf = jnp.zeros((A_total,), dtype=getattr(feat, template_field).dtype)
         buf = buf.at[binder_at].set(1, mode="drop")
@@ -349,7 +314,6 @@ def refresh_binder_geometry(
     s_valid = pick("s_valid") > 0
 
     def structural_rep_mask(offset_field, mask_field):
-        # An absent subtoken has a placeholder offset, not a representative.
         representatives = jnp.where(s_valid, offset[:, None] + pick(offset_field), A_total)
         return rep_mask(representatives.reshape(-1), mask_field)
 
@@ -360,8 +324,6 @@ def refresh_binder_geometry(
         feat.structural_has_frame[2 * L:],
     ])
 
-    # frame atom indices (global): residue branch [n_token, 3] = N,CA,C; structural
-    # branch [2L + n_struct_tgt, 3]. Target rows shift by (sum_k - A_alloc).
     shift = sum_k - A_alloc
     fbind = offset[:, None] + jnp.arange(3, dtype=feat.frame_atom_index.dtype)[None, :]
     new_frame = jnp.concatenate([fbind.astype(feat.frame_atom_index.dtype), feat.frame_atom_index[L:] + shift], axis=0)
@@ -485,41 +447,34 @@ def opendde_forward_from_trunk(
     coords_ns = model.sample_coordinates(
         struct_feat, si_st, s_st, z_st, key,
         n_sample=1, n_step=n_step, extra_attn_bias=attn_bias,
-    )  # [1, N_atom, 3]
+    )
     coords = coords_ns[0]
 
-    # For design, optionally detach the diffusion coords so a confidence-head loss
-    # backprops to the sequence only through the trunk reps (z), not the
-    # stochastic sampler -- a deterministic, lower-variance gradient.
     conf_coords = jax.lax.stop_gradient(coords_ns) if stop_grad_conf_coords else coords_ns
     plddt_logits, pae_logits, _pde, _resolved = model.run_confidence_head(
         feat, s_inputs, s, z, conf_coords
     )
-    # Report and reduce confidence in float32, including BF16 model runs.
     distogram_logits = distogram_logits.astype(jnp.float32)
     plddt_logits = plddt_logits.astype(jnp.float32)
     pae_logits = pae_logits.astype(jnp.float32)
-    plddt_logits = plddt_logits[0]  # [N_atom, Bplddt]
-    pae_logits = pae_logits[0]      # [N, N, Bpae]
+    plddt_logits = plddt_logits[0]
+    pae_logits = pae_logits[0]
 
     a2t = feat.atom_to_token_idx.astype(jnp.int32)
     tokatom = feat.atom_to_tokatom_idx.astype(jnp.int32)
 
-    # per-token pLDDT in [0, 1] from each token's representative atom
     plddt_centers = _bin_centers(*plddt_bin_params)
     rep_mask = feat.distogram_rep_atom_mask.astype(bool)
     rep_idx = jnp.nonzero(rep_mask, size=n_token)[0]
-    plddt = jax.nn.softmax(plddt_logits[rep_idx], axis=-1) @ plddt_centers  # [N]
+    plddt = jax.nn.softmax(plddt_logits[rep_idx], axis=-1) @ plddt_centers
 
     pae_centers = _bin_centers(*pae_bin_params)
-    pae = jax.nn.softmax(pae_logits, axis=-1) @ pae_centers  # [N, N]
+    pae = jax.nn.softmax(pae_logits, axis=-1) @ pae_centers
 
-    # atom37 view: map each atom to its slot via (designed restype, tokatom idx).
-    restype_idx = feat.restype[:, :20].argmax(-1)  # [N] designed identity (0..19)
-    atom37_idx = dense_atom_to_atom37[restype_idx[a2t], tokatom]  # [N_atom]
+    restype_idx = feat.restype[:, :20].argmax(-1)
+    atom37_idx = dense_atom_to_atom37[restype_idx[a2t], tokatom]
     atom37_idx = jnp.where(feat.ref_mask > 0.5, atom37_idx, jnp.int32(-1))
     atom37_coords, atom37_mask = scatter_atom37(coords, a2t, atom37_idx, n_token)
-    # backbone N, CA, C, O == atom37 slots 0, 1, 2, 4
     backbone = atom37_coords[:, jnp.array([0, 1, 2, 4])]
 
     return StructureModelOutput(
@@ -547,9 +502,6 @@ class MultiSampleOpenDDELoss(LossTerm):
 
     model: JaxOpenDDE
     compute_precision: str = eqx.field(static=True, default="fp32", kw_only=True)
-    # Poly-Trp design features plus atom templates and binder extents. Setting
-    # the binder sequence always refreshes its atom + structural-token geometry,
-    # so the trunk sees the designed side chains (see `OpenDDEDesignFeatures`).
     features: OpenDDEDesignFeatures
     loss: LossTerm | LinearCombination
     dense_atom_to_atom37: Int[Array, "32 Adense"]
@@ -562,8 +514,6 @@ class MultiSampleOpenDDELoss(LossTerm):
     reduction: Callable = eqx.field(static=True, default=jnp.mean)
 
     def __call__(self, sequence: Float[Array, "N 20"], key):
-        # One geometry draw shared across diffusion samples (the featurizer
-        # augments once per featurization); diffusion noise varies per sample below.
         key, geom_key = jax.random.split(key)
         feat = set_binder_sequence(sequence, self.features, geom_key)
         if self.compute_precision == "bf16":

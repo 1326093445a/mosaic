@@ -69,7 +69,6 @@ def main():
     os.environ["JAX_PLATFORMS"] = "cpu" if args.cpu else "cuda"
     os.environ["CUDA_VISIBLE_DEVICES"] = "" if args.cpu else args.device
     os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-    # Keep this run limited to the explicitly listed tests and installed pytest.
     os.environ["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     os.environ.pop("PYTEST_ADDOPTS", None)
     sys.path.insert(0, str(REPO / "src"))

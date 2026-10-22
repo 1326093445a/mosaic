@@ -72,7 +72,6 @@ def audit_reference(model, chain_ids, sequences, references):
             raise ValueError("reference extraction changed residue order")
         require_nondegenerate(coords)
         distances = np.linalg.norm(np.diff(coords, axis=0), axis=1)
-        # Conservative sanity check, not proof of physical validity or units.
         if np.any((distances < 2.5) | (distances > 4.5)):
             raise ValueError(
                 f"CA spacing outside 2.5–4.5 A in {chain_id}; audit units/gaps"
@@ -265,8 +264,6 @@ def run_diagnostic(
         designable_mask=mask,
     )
 
-    # Prespecified rule: WT and the top-probability move under each objective,
-    # deduplicated. These are probes, not chosen by their observed outcome.
     probes = [("WT", wt.copy(), None)]
     seen = {tuple(wt)}
     for label, index in (

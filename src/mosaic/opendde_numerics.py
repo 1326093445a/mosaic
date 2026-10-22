@@ -60,7 +60,6 @@ def stable_segment_mean(values, indices, num_segments):
     end = jnp.concatenate([ids[:-1] != ids[1:], jnp.array([True])])
     destination = jnp.where(end & (ids < num_segments), ids, num_segments)
     means = sums / counts[:, None].astype(dtype)
-    # Only the final element of each valid segment writes an in-range index.
     return (
         jnp.zeros(shape, dtype=dtype)
         .at[..., destination, :]

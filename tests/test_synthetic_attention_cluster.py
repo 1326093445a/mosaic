@@ -88,7 +88,7 @@ def test_cleanup_stops_only_the_spawned_process_group(runner):
     try:
         runner.stop_process(proc)
         assert proc.poll() is not None
-        runner.stop_process(proc)  # Idempotent cleanup after completion.
+        runner.stop_process(proc)
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -152,7 +152,6 @@ def test_cpu_reference_keeps_jax_on_requested_gpu(runner, tmp_path):
 def test_preflight_policy_never_silently_falls_back(
     runner, monkeypatch, capsys, platform, selection, error
 ):
-    # Test capability-policy branching, not actual GPU execution.
     fake_jax = SimpleNamespace(
         __version__="test", devices=lambda: [SimpleNamespace(platform=platform)]
     )

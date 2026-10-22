@@ -72,49 +72,18 @@ from mosaic.optimizers import (
     simplex_APGM,
 )
 from mosaic.structure_prediction import TargetChain
-# Read THROUGH the module, never `from p17_reference_config import COMPLEX_PDB`.
-# A `from X import NAME` at module scope binds the value once, at import time,
-# into this module's own namespace -- so it is immune to patching either
-# `X.NAME` or this module's copy, and the two silently disagree. That is what
-# broke `test_winner_rescoring_exports_scored_pose_without_optimization` on
-# 2026-10-14: the constant moved from a function-local import (which read the
-# attribute at CALL time, after the test had patched it) to a module-level one,
-# and the rescorer copied the real P17_JN1.pdb over the test's fixture. Reading
-# the attribute at use time makes `p17_reference_config` the single place to
-# patch, for every consumer.
 import p17_reference_config as reference_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# ANARCI-verified (IMGT scheme, run directly on P17's chain B), cross-checked
-# against ~/boltzgen/Round2_Design/Nanobody/production/P17_JN1.yaml -- exact
-# match. 1-indexed. Do NOT reuse VHH72's CDR3 range (97-114) -- P17's CDR3
-# loop is real and shorter (97-109); see module docstring.
 CDR_RESIDUE_INDICES_1IDX = set(range(26, 34)) | set(range(51, 59)) | set(range(97, 110))
 
-# Real, evidenced hotspot residues on the JN.1 target (chain T, 1-indexed --
-# chain T's own numbering is a clean sequential 1..184, verified directly
-# against the loaded structure, so 1-indexed residue N is 0-indexed array
-# position N-1 with no offset/gap correction needed). From
-# ~/boltzgen/Round2_Design/Nanobody/production/P17_JN1.yaml's real,
-# 9IU1-cross-referenced hotspot list (N450D/L452W/N481K/E484K/F486P at JN.1
-# positions 115/117/146/148/150) -- amino acid identities at these positions
-# verified directly against P17_JN1.pdb before writing this file.
 HOTSPOT_TARGET_RESIDUE_INDICES_1IDX = {115, 117, 146, 148, 150}
 
-# Defaults, held fixed for this round -- matching the values already
-# used/verified for VHH72 (docs/guidance_alphaseq_testing_notes.md section
-# 12c's "class 2/3 knobs held fixed, sweep class 1" framing).
 WEIGHT_OPENDDE_CONTACT = 0.5
 WEIGHT_ABLANG2 = 0.10
 WEIGHT_EDIT_BUDGET = 5.0
 CONTACT_DISTANCE = 8.0
-# BinderPoseDistogramDrift's tolerance is NOT a fixed absolute Angstrom
-# value -- calibrated at runtime as measure_wt_distogram_pose_drift() + this
-# margin, same reasoning as VHH72's script (OpenDDE's cheap distogram-only
-# path has real, substantial inherent noise even on the true bound
-# structure -- this margin is a first-pass choice, tune against real
-# results, same caveat as every other first-pass default in this project).
 POSE_DRIFT_MARGIN = 3.0
 POSE_RMSD_MARGIN = 3.0
 CLIP_GRADIENT_NORM = 1.0
@@ -122,8 +91,8 @@ OPENDDE_RECYCLING_STEPS = 4
 OPENDDE_FULL_NUM_SAMPLES = 1
 APGM_STEPS = 200
 APGM_STEPSIZE = 0.05
-APGM_SCALE = 1.2  # >1.0 encourages sparsity, per simplex_APGM's own docstring
-APGM_INIT_WT_PROB = 1.0  # exact one-hot WT unless explicitly softened
+APGM_SCALE = 1.2
+APGM_INIT_WT_PROB = 1.0
 APGM_MOMENTUM = 0.5
 GREEDY_STEPS = 200
 GREEDY_BATCH_SIZE = 16
@@ -312,29 +281,13 @@ def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenize
         raise ValueError("pose_weight must be finite and nonnegative")
     if not np.isfinite(edit_budget_weight) or edit_budget_weight < 0:
         raise ValueError("edit_budget_weight must be finite and nonnegative")
-    # Keep the zero-weight term so paired runs preserve the random-key schedule.
-    # Existing callers retain their original objective unless explicitly enabled.
     if confidence_loss is not None and opendde_path != "full":
         raise ValueError("confidence_loss requires opendde_path='full'")
-    # epitope_idx restricts the contact loss to the 5 real hotspot target
-    # residues -- deliberate difference from VHH72's script (see module
-    # docstring): P17 has no downstream real-data validation to catch a
-    # design that binds somewhere biologically wrong, so the one piece of
-    # real, externally-validated knowledge available is used to constrain
-    # generation itself.
     contact_loss = WEIGHT_OPENDDE_CONTACT * BinderTargetContact(
         paratope_idx=designable_idx, contact_distance=CONTACT_DISTANCE,
         epitope_idx=epitope_idx,
     )
 
-    # Registry term, off unless weighted (§26). `BinderTargetContact` above
-    # reduces per binder residue -- "is residue i near any epitope column" --
-    # which a binder flipped at the correct epitope still satisfies: §25
-    # measured candidates rotated 156-178 degrees retaining 56-76% CDR
-    # interface and passing every aggregate site criterion. This term scores
-    # the specific reference contact pairs instead, so exchanging partners
-    # breaks it. On the real reference a paratope-preserving tumble costs it
-    # ~47x what it costs the aggregate term.
     if registry_weight < 0 or registry_repel_weight < 0:
         raise ValueError("registry weights must be nonnegative")
     if registry_weight > 0:
@@ -416,30 +369,6 @@ def build_composite_losses(*, opendde, features, ablang2_model, ablang2_tokenize
         CLIP_GRADIENT_NORM,
     )
 
-    # Weighted, not dropped, at 0: the term stays in the sum so a paired run
-    # keeps the same random-key schedule, exactly as registry does above.
-    #
-    # Why a caller would ever set this to 0. The hinge is `w * relu(E(s) - b)`
-    # with `E(s) = sum_pos (1 - p_parent)`, which is the EXPECTED Hamming
-    # distance under independent per-position sampling. At a one-hot that
-    # equals Hamming exactly, so for the discrete search it is inert below the
-    # cap and the default weight costs nothing. On a RELAXED sequence it is a
-    # different animal: a near-uniform start has E(s) ~ 27.6 over 29 designable
-    # positions, so the hinge opens near 113 against roughly 34 for every other
-    # term combined, and the only way to satisfy it is to drive p_parent toward
-    # 1 -- which is precisely the softmax saturation that kills the gradient
-    # (Fast SeqProp, arXiv:2005.11275). Measured on 2026-10-13: at weight 5.0
-    # the relaxation wanted 4-6 substitutions across all three optimizers and
-    # simplex_APGM wanted 0; at weight 0.0 the same runs wanted 27-29. The
-    # continuous seeding stage therefore turns it off and lets
-    # `project_to_budget` enforce the budget exactly, which it already did.
-    #
-    # On THIS loss, 2026-10-14 (section 32): weight 0.0 at 600 steps and init
-    # scale 1.0 gave bindcraft and colabdesign 15 wanted substitutions of 29
-    # on both replicates, and simplex_APGM 0 on both -- where the toy loss
-    # above had predicted 21 for it. That run has no hinge-on arm, so it
-    # confirms the toy's PREDICTION for this cell without attributing the
-    # movement to the hinge; the toy's per-method counts do not transfer.
     edit_loss = edit_budget_weight * EditBudget.from_residues(
         binder_seq, designable_idx, budget=float(edit_budget),
     )

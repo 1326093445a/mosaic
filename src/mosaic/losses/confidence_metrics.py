@@ -1,5 +1,3 @@
-### Confidence metrics on GPU
-# These are translated from alphafold.common.confidence
 import jax
 import jax.numpy as jnp
 import numpy as onp
@@ -9,7 +7,7 @@ def plddt(logits: jnp.ndarray) -> jnp.ndarray:
     num_bins = logits.shape[-1]
     bin_width = 1.0 / num_bins
     bin_centers = onp.arange(start=0.5 * bin_width, stop=1.0, step=bin_width)
-    probs = jax.nn.softmax(logits, -1)  # scipy.special.softmax(logits, axis=-1)
+    probs = jax.nn.softmax(logits, -1)
     predicted_lddt_ca = jnp.sum(probs * bin_centers[None, :], axis=-1)
     return predicted_lddt_ca * 100
 
@@ -50,9 +48,7 @@ def _calculate_bin_centers(breaks: jnp.ndarray):
     """
     step = breaks[1] - breaks[0]
 
-    # Add half-step to get the center
     bin_centers = breaks + step / 2
-    # Add a catch-all bin at the end.
     return jnp.append(bin_centers, bin_centers[-1:] + step, axis=0)
 
 
@@ -65,20 +61,13 @@ def predicted_tm_score(
     bin_centers = _calculate_bin_centers(breaks)
 
     num_res = logits.shape[0]
-    # Clip num_res to avoid negative/undefined d0.
     clipped_num_res = max(num_res, 19)
 
-    # Compute d_0(num_res) as defined by TM-score, eqn. (5) in Yang & Skolnick
-    # "Scoring function for automated assessment of protein structure template
-    # quality", 2004: http://zhanglab.ccmb.med.umich.edu/papers/2004_3.pdf
     d0 = 1.24 * (clipped_num_res - 15) ** (1.0 / 3) - 1.8
 
-    # Convert logits to probs.
     probs = jax.nn.softmax(logits, axis=-1)
 
-    # TM-Score term for every bin.
     tm_per_bin = 1.0 / (1 + jnp.square(bin_centers) / jnp.square(d0))
-    # E_distances tm(distance).
     predicted_tm_term = jnp.sum(probs * tm_per_bin, axis=-1)
 
     pair_mask = jnp.ones(shape=(num_res, num_res), dtype=bool)

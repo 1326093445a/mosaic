@@ -57,12 +57,6 @@ import numpy as np
 CUTOFF_ANGSTROM = 8.0
 TOP_N_HOTSPOT = 8
 
-# 1-indexed, matching res.seqid.num on chain A -- same as CDR_RESIDUE_INDICES
-# in vhh72_gradient_path_comparison.py. Derived via a real ANARCI run (IMGT
-# numbering scheme) on the real WT VHH72 sequence, verified fresh (not
-# trusted from memory) via examples/anarci_vhh72_cdr_boundaries.py --
-# confirmed exact match against these same 0-indexed boundaries (CDR1
-# 25-32, CDR2 50-57, CDR3 96-113) before this script was written.
 CDR_RESIDUE_INDICES = set(range(26, 34)) | set(range(51, 59)) | set(range(97, 115))
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -126,32 +120,12 @@ kept_names = "".join(gemmi.find_tabulated_residue(r.name).one_letter_code.upper(
 print(f"kept target seq_ids: {sorted(kept_seqids)}", flush=True)
 print(f"kept target residues (by original numbering, not necessarily contiguous): {kept_names}", flush=True)
 
-# Remove target residues NOT in the kept set. Iterate a static list of
-# indices in reverse so removal doesn't shift subsequent indices.
 to_remove = [i for i, res in enumerate(target_chain) if res.seqid.num not in kept_seqids]
 for i in reversed(to_remove):
     del target_chain[i]
 
 print(f"after: binder(A)={len(model['A'])} residues, target(A2)={len(model['A2'])} residues", flush=True)
 
-# NOT a bug, reverted: st.setup_entities() deliberately does NOT rebuild
-# entity.full_sequence from the post-deletion residue content --
-# _entity_poly.pdbx_seq_one_letter_code stays the FULL, uncropped 209-residue
-# target sequence even though _atom_site correctly has only the cropped 56
-# residues. This is exactly what BoltzGen's own mmCIF parser
-# (load_features_and_structure_writer, used by
-# vhh72_gradient_path_comparison.py) depends on: it positionally aligns
-# full_sequence against seqid numbering and treats the gaps as "unresolved"
-# residues (see its own log line "Removing leading and/or trailing
-# unresolved residues..."), which is exactly the semantics wanted here --
-# NOT a length mismatch to fix. An earlier version of this script
-# force-truncated full_sequence to match the kept residues, which fixed
-# OpenDDE's `opendde json` CLI (a naive reader that takes full_sequence at
-# face value) but broke BoltzGen's parser outright (AssertionError,
-# polymer[i].name != res_name) since it destroyed the positional
-# correspondence the "unresolved" gap-handling relies on. If OpenDDE's CLI
-# needs a genuinely truncated sequence again, build its JSON input directly
-# rather than truncating full_sequence here.
 
 binder_atoms_after = sum(len(r) for r in model["A"])
 target_atoms_after = sum(len(r) for r in model["A2"])

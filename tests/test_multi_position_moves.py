@@ -58,9 +58,6 @@ def pair_edits(moves, wt):
     return {frozenset(_move_edits(m, wt)) for m in moves if len(_move_edits(m, wt)) == 2}
 
 
-# --------------------------------------------------------------------------
-# backward compatibility
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("spent", range(BUDGET + 1))
 def test_single_move_set_matches_moves_at_every_budget_level(spent):
@@ -97,8 +94,6 @@ def test_arity_one_keeps_the_legacy_generator_verbatim():
         wt=wt, designable_mask=mask, gradient_fn=gradient_fn,
         confidence_fn=confidence_fn, config=config,
     )
-    # Every sequence the arity-1 search scored differs from its parent at one
-    # position, or at two when the cap forced an exchange.
     assert seen, "the search scored nothing"
     for candidate in seen:
         assert np.count_nonzero(np.asarray(candidate) != wt) <= BUDGET
@@ -117,9 +112,6 @@ def test_exchanges_at_the_cap_are_a_subset_of_the_pairs():
     assert exchanges <= pair_edits(pairs[count:], wt)
 
 
-# --------------------------------------------------------------------------
-# the operator itself
-# --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("spent", range(BUDGET + 1))
 def test_no_generated_move_can_break_the_budget(spent):
@@ -216,13 +208,10 @@ def test_a_valley_is_crossed_only_at_arity_two():
         seq = np.asarray(seq)
         hits = sum(1 for p, a in target.items() if seq[p] == a)
         off = int(np.count_nonzero(seq != wt)) - hits
-        # one edit of the pair: -1. both: +10. anything else: worse.
         value = (10.0 if hits == 2 else -1.0 * hits) - 2.0 * off
         return ConfidenceScore(value=value)
 
     def gradient_fn(seq):
-        # Point the ranking at the target pair so it is reachable at arity 2,
-        # while leaving each single unattractive to the ACCEPT test.
         g = np.zeros((LENGTH, ALPHABET))
         for p, a in target.items():
             g[p, a] = -5.0
@@ -246,9 +235,6 @@ def test_a_valley_is_crossed_only_at_arity_two():
     assert two.score > one.score
 
 
-# --------------------------------------------------------------------------
-# refusals
-# --------------------------------------------------------------------------
 
 def test_arity_three_is_refused_with_its_reason():
     sequence, wt, mask, gradient = problem()

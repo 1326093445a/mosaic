@@ -22,7 +22,6 @@ import numpy as np
 import pytest
 
 
-# --- #4: the catch-all bin center -----------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -30,7 +29,7 @@ import pytest
     [
         [0.0, 1.0, 2.0],
         [0.0, 0.5, 1.0, 1.5, 2.0],
-        list(np.linspace(0.0, 31.0, 31)),  # the AF2 pTM shape
+        list(np.linspace(0.0, 31.0, 31)),
     ],
 )
 def test_bin_centers_match_the_vendored_alphafold_implementation(breaks):
@@ -59,7 +58,6 @@ def test_the_catch_all_bin_extends_past_the_last_edge():
     assert got[-1] != got[-2], "the catch-all bin must not duplicate its neighbour"
 
 
-# --- #5: the per-row d0 broadcast -----------------------------------------
 
 
 def _directional_interface(n_a=40, n_b=60, n_bins=16):
@@ -127,7 +125,6 @@ def test_the_column_aligned_broadcast_gives_a_different_answer():
     n_res = jnp.sum(pair_mask, -1, keepdims=True)
     d0 = 1.24 * (jnp.clip(n_res, min=27) - 15) ** (1.0 / 3) - 1.8
     tm = 1.0 / (1 + jnp.square(bins) / jnp.square(d0))
-    # the old behaviour: no [:, None, :], so (N, B) broadcasts as (1, N, B)
     old = jnp.sum(jnp.sum(probs * tm, -1) * (pair_mask / (1e-8 + n_res)), -1)
     assert not np.allclose(np.asarray(got), np.asarray(old), atol=1e-4), (
         "the row- and column-aligned results coincide on this fixture, so it no "
@@ -151,7 +148,6 @@ def test_a_single_chain_pair_count_below_the_clip_is_unaffected():
     assert np.isfinite(out).all() and (out >= 0).all() and (out <= 1).all()
 
 
-# --- #6: the reverse proposal path ----------------------------------------
 
 
 def test_the_reverse_path_restores_the_sequence_it_started_from():
@@ -169,7 +165,6 @@ def test_the_reverse_path_restores_the_sequence_it_started_from():
     original = jnp.asarray(rng.integers(0, 20, size=12), dtype=jnp.int32)
     gradient = jnp.asarray(rng.normal(size=(12, 20)), dtype=jnp.float32)
 
-    # a three-step forward path, recorded the way gradient_MCMC records it
     proposal, mutations = original, []
     for position, new_token in ((3, 7), (9, 1), (3, 15)):
         mutations.append((position, new_token, int(proposal[position])))
@@ -214,7 +209,6 @@ def test_the_reverse_logprob_differs_from_re_applying_the_forward_tokens():
 
     correct, _ = _reverse_path_logprob(proposal, mutations, gradient, 0.01, 20)
 
-    # the old behaviour, written out: score the forward token and assign it
     stale, log_q_old = proposal.copy(), 0.0
     for position, new_token, _prev in reversed(mutations):
         _p, log_p = _proposal(stale, gradient, 0.01, alphabet_size=20)
@@ -227,12 +221,6 @@ def test_the_reverse_logprob_differs_from_re_applying_the_forward_tokens():
     )
 
 
-# --- #7: reproducibility from the supplied key ----------------------------
-#
-# Both tests below assert the sampler actually MOVED. An earlier version used a
-# loss whose optimum was the starting sequence, so nothing was ever accepted,
-# both runs returned the start unchanged, and the reproducibility assertion
-# passed without exercising anything.
 
 
 @pytest.fixture(scope="module")
@@ -299,14 +287,6 @@ def test_different_keys_still_give_different_trajectories(mcmc_problem):
     assert len({o.tobytes() for o in outs}) > 1, "every key gave the same trajectory"
 
 
-# --- #1: the APGM best_x contract -----------------------------------------
-#
-# `best_val` held the loss at the momentum extrapolation `v` while `best_x` was
-# set to the post-update `x`, so the two described different points and the
-# returned "best" could be worse than the input. The gradient is still taken at
-# `v` -- the trajectory is untouched -- and selection now scores the FEASIBLE
-# iterates on a fixed key of its own. Both the initial and final iterates are
-# eligible; `track_best=False` skips the extra forward passes.
 
 
 @pytest.fixture
@@ -411,15 +391,6 @@ def test_batched_apgm_best_x_is_never_worse_than_its_start():
     np.testing.assert_allclose(best.sum(-1), 1.0, atol=1e-5)
 
 
-# --------------------------------------------------------------------------- #
-# Defect 8: a NaN-scoring iterate could be selected as `best_x`
-#
-# `_eval_loss` passed its value through `nan_to_num(value, nan=1e6)`, so a
-# diverged candidate scored 1e6 -- which beats any legitimate loss above 1e6 --
-# and the `isnan` guard at the selection site could never fire, because the NaN
-# had already been replaced by the time it was tested. Scoring now returns the
-# raw value and selection rejects anything nonfinite.
-# --------------------------------------------------------------------------- #
 
 
 @pytest.fixture
@@ -474,8 +445,6 @@ def test_apgm_never_selects_a_nan_scoring_iterate(nan_cliff):
     def at(a):
         return _eval_loss(nan_cliff, a, jax.random.key(0))
 
-    # Not vacuous: the run has to actually reach the cliff, or there was never
-    # a NaN candidate to reject and this test proves nothing.
     assert np.isnan(at(x)), "fixture did not reach the NaN region"
     assert np.isfinite(at(best_x)), (
         f"best_x scores {at(best_x)}; a nonfinite iterate was selected"
@@ -533,19 +502,6 @@ def test_tracking_costs_one_forward_pass_per_step_plus_one(quadratic, monkeypatc
         )
 
 
-# --------------------------------------------------------------------------- #
-# Defect 9: the proposal redraw broke detailed balance
-#
-# `gradient_MCMC` redrew any proposal that came back equal to the current
-# sequence, up to 50 times. That conditions the proposal distribution on
-# y != x, so the realised kernel is q(y|x) / (1 - q(x|x)), while the Hastings
-# ratio is computed from the unconditioned q. The truncation factor differs
-# between states and so does not cancel.
-#
-# This fixes the redraw. It does NOT establish that the sampler is correct --
-# `detailed_balance=False` applies no Hastings term at all, and nothing here
-# tests the multi-step path beyond the reverse-path invariant above.
-# --------------------------------------------------------------------------- #
 
 
 def _two_state_flows(truncate):
@@ -576,7 +532,6 @@ def _two_state_flows(truncate):
     pi = pi / pi.sum()
 
     def accept(a, b):
-        # exactly what the sampler computes: unconditioned q on both sides
         return np.exp(min(0.0, (value(np.array([a])) - value(np.array([b]))) / temp
                           + np.log(q[b][a]) - np.log(q[a][b])))
 
@@ -604,8 +559,6 @@ def test_taking_the_draw_as_it_comes_restores_detailed_balance():
     )
 
 
-# One step calls `_proposal` once per forward draw, plus exactly once more for
-# the reverse path, hence the +1 in each expectation.
 @pytest.mark.parametrize(
     "detailed_balance, draws_per_step", [(True, 1 + 1), (False, 50 + 1)]
 )

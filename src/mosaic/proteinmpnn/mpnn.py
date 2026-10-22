@@ -1,8 +1,3 @@
-# Uses a simple pattern described here (https://github.com/nboyd/joltz/blob/main/src/joltz/__init__.py) to translate ProteinMPNN from torch to jax
-# Would probably be a lot more readable if we didn't follow the original ProteinMPNN implementation so closely
-#
-# Derived from ProteinMPNN (https://github.com/dauparas/ProteinMPNN),
-# Copyright (c) 2022 Justas Dauparas, MIT License. See ./NOTICE.
 
 import equinox as eqx
 import jax
@@ -44,7 +39,6 @@ class PositionalEncodings(AbstractFromTorch):
         return self.linear(d_onehot)
 
 
-# Not clear how important it is to exactly match pytorch gelu
 def gelu(x, approximate: bool = False) -> Array:
     if approximate:
         sqrt_2_over_pi = np.sqrt(2 / np.pi).astype(x.dtype)
@@ -88,15 +82,12 @@ def gather_nodes(nodes, neighbor_idx):
     batch_size, num_nodes, num_channels = nodes.shape
     _, _, num_neighbors = neighbor_idx.shape
 
-    # Flatten and expand indices
     neighbors_flat = neighbor_idx.reshape((batch_size, -1))
 
-    # Create batch indices
     batch_idx = jnp.arange(batch_size)[:, None, None]
     batch_idx = jnp.broadcast_to(batch_idx, (batch_size, num_nodes, num_neighbors))
     batch_idx = batch_idx.reshape((batch_size, -1))
 
-    # Gather features
     neighbor_features = nodes[batch_idx, neighbors_flat]
     neighbor_features = neighbor_features.reshape(
         batch_size, num_nodes, num_neighbors, num_channels
@@ -109,11 +100,9 @@ def gather_nodes_t(nodes, neighbor_idx):
     batch_size, num_nodes, num_channels = nodes.shape
     _, num_neighbors = neighbor_idx.shape
 
-    # Create batch indices
     batch_idx = jnp.arange(batch_size)[:, None]
     batch_idx = jnp.broadcast_to(batch_idx, (batch_size, num_neighbors))
 
-    # Gather features
     neighbor_features = nodes[batch_idx, neighbor_idx]
 
     return neighbor_features
@@ -148,43 +137,35 @@ class EncLayer(AbstractFromTorch):
     def __call__(self, h_V, h_E, E_idx, mask_V=None, mask_attend=None):
         h_EV = cat_neighbors_nodes(h_V, h_E, E_idx)
 
-        # Expand h_V to match h_EV's size
         _, _, num_neighbors, _ = h_EV.shape
-        # h_V_expand = jnp.expand_dims(h_V, axis=-2)
         h_V_expand = h_V[:, :, None, :]
         h_V_expand = jnp.broadcast_to(
             h_V_expand,
             (h_EV.shape[0], h_EV.shape[1], h_EV.shape[2], h_V_expand.shape[-1]),
         )
 
-        # Concatenate and process through MLP
         h_EV = jnp.concatenate([h_V_expand, h_EV], axis=-1)
         h_message = h_EV
         h_message = self.act(self.W1(h_message))
         h_message = self.act(self.W2(h_message))
         h_message = self.W3(h_message)
 
-        # Apply attention mask if provided
         if mask_attend is not None:
             mask_attend = jnp.expand_dims(mask_attend, axis=-1)
             h_message = mask_attend * h_message
 
-        # Aggregate messages and apply normalization
         dh = jnp.sum(h_message, axis=-2) / self.scale
         dh = self.dropout1(dh)
         h_V = self.norm1(h_V + dh)
 
-        # Dense layer update
         dh = self.dense(h_V)
         dh = self.dropout2(dh)
         h_V = self.norm2(h_V + dh)
 
-        # Apply node mask if provided
         if mask_V is not None:
             mask_V = jnp.expand_dims(mask_V, axis=-1)
             h_V = mask_V * h_V
 
-        # Second branch - edge update
         h_EV = cat_neighbors_nodes(h_V, h_E, E_idx)
         h_V_expand = jnp.expand_dims(h_V, axis=-2)
         h_V_expand = jnp.broadcast_to(
@@ -193,14 +174,12 @@ class EncLayer(AbstractFromTorch):
         )
         h_EV = jnp.concatenate([h_V_expand, h_EV], axis=-1)
 
-        # Process through second MLP
         h_message = h_EV
         h_message = self.act(self.W11(h_message))
         h_message = self.act(self.W12(h_message))
         h_message = self.W13(h_message)
 
-        # Final edge update with normalization
-        h_message = self.dropout3(h_message)  # Training mode
+        h_message = self.dropout3(h_message)
         h_E = self.norm3(h_E + h_message)
 
         return h_V, h_E
@@ -223,36 +202,30 @@ class DecLayer(AbstractFromTorch):
 
     def __call__(self, h_V, h_E, mask_V=None, mask_attend=None):
         """Parallel computation of full transformer layer"""
-        # Expand h_V to match h_E's neighbor dimension
         _, _, num_neighbors, _ = h_E.shape
         h_V_expand = jnp.expand_dims(h_V, axis=-2)
         h_V_expand = jnp.broadcast_to(
             h_V_expand, (*h_V.shape[:-1], num_neighbors, h_V.shape[-1])
         )
 
-        # Concatenate and process through MLP
         h_EV = jnp.concatenate([h_V_expand, h_E], axis=-1)
         h_message = h_EV
         h_message = self.act(self.W1(h_message))
         h_message = self.act(self.W2(h_message))
         h_message = self.W3(h_message)
 
-        # Apply attention mask if provided
         if mask_attend is not None:
             mask_attend = jnp.expand_dims(mask_attend, axis=-1)
             h_message = mask_attend * h_message
 
-        # Aggregate messages and apply normalization
         dh = jnp.sum(h_message, axis=-2) / self.scale
         dh = self.dropout1(dh)
         h_V = self.norm1(h_V + dh)
 
-        # Position-wise feedforward
         dh = self.dense(h_V)
         dh = self.dropout2(dh)
         h_V = self.norm2(h_V + dh)
 
-        # Apply node mask if provided
         if mask_V is not None:
             mask_V = jnp.expand_dims(mask_V, axis=-1)
             h_V = mask_V * h_V
@@ -313,25 +286,14 @@ class ProteinFeatures(AbstractFromTorch):
             key, use_key = jax.random.split(key)
             X = X + self.augment_eps * jax.random.normal(use_key, X.shape)
 
-        ##########################
-        # get atoms
-        ##########################
-        # N,Ca,C,O,Cb
-        Y = X.swapaxes(0, 1)  # (length, atoms, 3) -> (atoms, length, 3)
+        Y = X.swapaxes(0, 1)
         assert Y.shape[0] == 4
-        # add Cb
         b, c = (Y[1] - Y[0]), (Y[2] - Y[1])
         Cb = -0.58273431 * jnp.cross(b, c) + 0.56802827 * b - 0.54067466 * c + Y[1]
         Y = jnp.concatenate([Y, Cb[None]], 0)
 
-        ##########################
-        # gather edge features
-        ##########################
-        # get edge indices (based on ca-ca distances)
         E_idx = self._get_edge_idx(Y[1], mask)
 
-        # rbf encode distances between atoms
-        # This is pretty ugly.
         edges = jnp.array(
             [
                 [1, 1],
@@ -365,12 +327,10 @@ class ProteinFeatures(AbstractFromTorch):
         RBF_all = RBF_all.transpose((1, 2, 0, 3))
         RBF_all = RBF_all.reshape(RBF_all.shape[:-2] + (-1,))
 
-        # residue index offset
         offset = jnp.take_along_axis(
             residue_idx[:, None] - residue_idx[None, :], E_idx, 1
         )
 
-        # chain index offset
         E_chains = (chain_idx[:, None] == chain_idx[None, :]).astype(int)
         E_chains = jnp.take_along_axis(E_chains, E_idx, 1)
         E_positional = self.embeddings(offset, E_chains)
@@ -421,7 +381,6 @@ class ProteinMPNN(AbstractFromTorch):
         chain_encoding_all: Int[Array, " N"],
         key
     ):
-        # add batch dimension :/
         (X, mask, residue_idx, chain_encoding_all) = jax.tree.map(
             lambda x: x[None], (X, mask, residue_idx, chain_encoding_all)
         )
@@ -445,17 +404,13 @@ class ProteinMPNN(AbstractFromTorch):
         decoding_order: Float[Array, " N"],
         mask: Bool[Array, " N"],
     ):
-        # add batch dim to S, decoding_order, mask
         S, decoding_order, mask  = jax.tree.map(lambda x: x[None], (S, decoding_order, mask))
-        # Concatenate sequence embeddings for autoregressive decoder
         h_S = S @ self.W_s.weight
         h_ES = cat_neighbors_nodes(h_S, h_E, E_idx)
 
-        # Build encoder embeddings
         h_EX_encoder = cat_neighbors_nodes(jnp.zeros_like(h_S), h_E, E_idx)
         h_EXV_encoder = cat_neighbors_nodes(h_V, h_EX_encoder, E_idx)
 
-        # generate a random decoding order
         decoding_order = jnp.argsort(
             decoding_order,
             axis=-1,
@@ -464,7 +419,6 @@ class ProteinMPNN(AbstractFromTorch):
         permutation_matrix_reverse = jax.nn.one_hot(
             decoding_order, num_classes=mask_size
         )
-        # turn the decoding order into an autoregressive mask
         order_mask_backward = jnp.einsum(
             "ij, biq, bjp->bqp",
             (1 - jnp.triu(jnp.ones((mask_size, mask_size)))),
@@ -513,7 +467,6 @@ class ProteinMPNN(AbstractFromTorch):
             Float[Array, "N 23"] - Log-probabilities of each amino acid at each position in the sequence
 
         """
-        # add batch dimension :/
         (X, S, mask, residue_idx, chain_encoding_all, decoding_order) = jax.tree.map(
             lambda x: x[None],
             (X, S, mask, residue_idx, chain_encoding_all, decoding_order),
@@ -524,21 +477,17 @@ class ProteinMPNN(AbstractFromTorch):
         h_V = jnp.zeros((E.shape[0], E.shape[1], E.shape[-1]))
         h_E = self.W_e(E)
 
-        # Encoder is unmasked self-attention
         mask_attend = gather_nodes(mask[..., None], E_idx)[..., 0]
         mask_attend = mask[..., None] * mask_attend
         for layer in self.encoder_layers:
             h_V, h_E = layer(h_V, h_E, E_idx, mask, mask_attend)
 
-        # Concatenate sequence embeddings for autoregressive decoder
-        h_S = S @ self.W_s.weight  # self.W_s(S)
+        h_S = S @ self.W_s.weight
         h_ES = cat_neighbors_nodes(h_S, h_E, E_idx)
 
-        # Build encoder embeddings
         h_EX_encoder = cat_neighbors_nodes(jnp.zeros_like(h_S), h_E, E_idx)
         h_EXV_encoder = cat_neighbors_nodes(h_V, h_EX_encoder, E_idx)
 
-        # generate a random decoding order
         decoding_order = jnp.argsort(
             decoding_order,
             axis=-1,
@@ -547,7 +496,6 @@ class ProteinMPNN(AbstractFromTorch):
         permutation_matrix_reverse = jax.nn.one_hot(
             decoding_order, num_classes=mask_size
         )
-        # turn the decoding order into an autoregressive mask
         order_mask_backward = jnp.einsum(
             "ij, biq, bjp->bqp",
             (1 - jnp.triu(jnp.ones((mask_size, mask_size)))),

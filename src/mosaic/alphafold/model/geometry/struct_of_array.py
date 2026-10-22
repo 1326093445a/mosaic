@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 """Class decorator to represent (nested) struct of arrays."""
 
 import dataclasses
@@ -47,7 +34,7 @@ def get_len(instance):
   if shape:
     return shape[0]
   else:
-    raise TypeError('len() of unsized object')  # Match jax.numpy behavior.
+    raise TypeError('len() of unsized object')
 
 
 @property
@@ -63,14 +50,12 @@ def get_dtype(instance):
   elif instance.same_dtype:
     field_value = getattr(instance, fields[0].name)
   else:
-    # Should this be Value Error?
     raise AttributeError('Trying to access Dtype on Struct of Array without'
                          'either "same_dtype" or field setting dtype')
 
   if hasattr(field_value, 'dtype'):
     return field_value.dtype
   else:
-    # Should this be Value Error?
     raise AttributeError(f'field_value {field_value} does not have dtype')
 
 
@@ -83,11 +68,6 @@ def post_init(instance):
   array_fields = get_array_fields(instance)
   arrays = list(get_array_fields(instance, return_values=True).values())
   first_field = array_fields[0]
-  # These slightly weird constructions about checking whether the leaves are
-  # actual arrays is since e.g. vmap internally relies on being able to
-  # construct pytree's with object() as leaves, this would break the checking
-  # as such we are only validating the object when the entries in the dataclass
-  # Are arrays or other dataclasses of arrays.
   try:
     dtype = instance.dtype
   except AttributeError:
@@ -193,9 +173,7 @@ class StructOfArray:
     cls.__len__ = get_len
     cls.__getitem__ = get_item
     cls.__post_init__ = post_init
-    new_cls = dataclasses.dataclass(cls, frozen=True, eq=False)  # pytype: disable=wrong-keyword-args
-    # pytree claims to require metadata to be hashable, not sure why,
-    # But making derived dataclass that can just hold metadata
+    new_cls = dataclasses.dataclass(cls, frozen=True, eq=False)
     new_cls.metadata_cls = make_metadata_class(new_cls)
 
     def unflatten(aux, data):

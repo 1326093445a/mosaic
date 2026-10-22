@@ -22,8 +22,6 @@ from time import perf_counter
 from p17_pose_experiment import REPO, devices_from_csv, run_stage
 
 PATHS = ("mosaic", "direct", "native")
-# Identical-input evaluations per worker. The collector requires exactly this
-# many reports before it will call a worker complete.
 REPEATS_PER_WORKER = 2
 ATOM_FIELDS = (
     "atom_to_token_idx",
@@ -231,7 +229,6 @@ def prepare_native(args, sequences):
     cfg = update_gpu_compatible_configs(cfg)
     with fast_init():
         runner = InferenceRunner(cfg)
-    # Use the native loader without constructing a second, converted model.
     predictor = Predictor(None, runner, cfg, None)
     seed_preparation()
     data, atom_array = predictor._load_batch(
@@ -242,7 +239,6 @@ def prepare_native(args, sequences):
         raw = runner.model.relative_position_encoding.generate_relp(raw, lazy=False)
         raw = update_input_feature_dict(raw)
     arrays = feature_arrays(raw)
-    # Independent native atom-array names must agree with the model metadata.
     from p17_structure_audit import decode_atom_names
     import numpy as np
 
@@ -276,8 +272,6 @@ def prepare_jax(args, sequences):
 
     model = OpenDDEModelAbag(compute_precision=args.opendde_dtype)
     seed_preparation()
-    # The design path splits this same key internally. Mirror that split once,
-    # retain its exact refreshed features, and call the common forward explicitly.
     key, geom_key = jax.random.split(jax.random.key(args.seed))
     if args.path == "mosaic":
         bundle, _ = model.binder_features(
@@ -301,7 +295,6 @@ def prepare_jax(args, sequences):
             sampling_steps=args.sampling_steps,
             key=key,
         )
-        # Keep raw coordinates, while discarding large confidence logits.
         return eqx.tree_at(
             lambda o: (o.distogram_logits, o.distogram_bins, o.pae_logits, o.pae_bins),
             output,
@@ -330,7 +323,6 @@ def memory_stats(native):
 
 
 def run_worker(args):
-    # Must precede any JAX import; native Torch should own its GPU exclusively.
     if args.path == "native":
         os.environ["JAX_PLATFORMS"] = "cpu"
     if args.path != "native":
@@ -398,8 +390,6 @@ def run_worker(args):
     import importlib.metadata
 
     if args.path != "native":
-        # The dependency patch imports these at trace time. Import them now so
-        # the pre-prediction provenance report includes the exact kernel source.
         for module_name in ("mosaic.opendde_numerics", "mosaic.opendde_padding"):
             importlib.import_module(module_name)
 
@@ -480,7 +470,6 @@ def run_worker(args):
                 output.atom37_mask if output is not None else None,
             )
             report.update(repeat=repeat, elapsed_seconds=perf_counter() - tick)
-            # Invalid finite geometry is evidence to preserve, not a worker crash.
             if np.isfinite(coords).all():
                 write_raw_cif(
                     root / f"structures/repeat_{repeat}_raw.cif",
@@ -525,9 +514,6 @@ def run_worker(args):
             seed=args.seed,
             sampling_steps=args.sampling_steps,
             recycles=args.recycles,
-            # Recorded here, not only in config.json, so a consumer deciding
-            # whether this archive covers its configuration can check the
-            # precision and reference without opening further files.
             opendde_dtype=args.opendde_dtype,
             reference=str(args.reference),
             reference_sha256=sha256_file(args.reference),
@@ -642,8 +628,6 @@ def collect_results(root, jobs):
                     mapping_agrees=report.get("mapping_agrees"),
                     raw_CA_median_max_A=largest_median("adjacent_CA"),
                     raw_N_CA_median_max_A=largest_median("N_CA"),
-                    # Keep the field set identical to `incomplete_row`: the CSV
-                    # writer takes its columns from the first row only.
                     note=None,
                 )
             )
@@ -802,8 +786,6 @@ def main(argv=None):
                     check=True,
                 )
         if any(path != "native" for path in args.paths):
-            # Build a schema-updated template cache once before parallel workers
-            # can race to create it with different host RNG states.
             print("Preparing shared atom-template cache on CPU...", flush=True)
             cache_env = dict(os.environ, JAX_PLATFORMS="cpu")
             with (root / "logs/template_cache.log").open("x") as handle:

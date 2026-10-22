@@ -47,7 +47,6 @@ from mosaic.structure_prediction import (
 _DEFAULT_NUM_CYCLES = 4
 _DEFAULT_NUM_SAMPLING_STEPS = 20
 
-# `opendde_v1` relative-position-encoding parameters.
 _RELP_R_MAX = 32
 _RELP_S_MAX = 2
 
@@ -73,7 +72,6 @@ def _target_a3m(sequence: str) -> str:
             use_pairing=False,
             host_url=_MSA_SERVER,
         )
-        # run_mmseqs2 returns list[str] or a tuple of lists depending on version.
         a3m_strings = result[0] if isinstance(result, tuple) else result
         a3m_path.write_text(a3m_strings[0])
     return str(a3m_path)
@@ -105,7 +103,7 @@ def _build_dense_atom_to_atom37() -> np.ndarray:
 
     max_dense = max(len(v) for v in ATOM14_PADDED.values())
     table = -np.ones((32, max_dense), dtype=np.int32)
-    for rt, letter in enumerate(PROTEIN_TYPES_ONE_LETTER):  # rt 0..19
+    for rt, letter in enumerate(PROTEIN_TYPES_ONE_LETTER):
         names = ATOM14_PADDED[PROTEIN_COMMON_ONE_TO_THREE[letter]]
         for j, name in enumerate(names):
             if name and name in ATOM37_ORDER:
@@ -128,9 +126,6 @@ def _build_spec(chains: list[TargetChain], *, name: str = "design", seed: int = 
     return [{"name": name, "modelSeeds": [seed], "sequences": sequences}]
 
 
-# ---------------------------------------------------------------------------
-# Featurization
-# ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=None)
 def _cached_featurize_config(cache_root: str):
@@ -181,8 +176,6 @@ def _target_template_features(
 
     n_res = sum(len(c.sequence) for c in chains)
     gap = STD_RESIDUES_WITH_GAP["-"]
-    # OpenDDE represents an empty template row with GAP and pads additional rows
-    # with ALA. Padded identities still affect embeddings despite zero masks.
     aatype = np.zeros((max_templates, n_res), dtype=np.int32)
     aatype[0] = gap
     positions = np.zeros((max_templates, n_res, 24, 3), dtype=np.float32)
@@ -238,8 +231,6 @@ def _featurize(chains: list[TargetChain]):
     from jopendde.inference import _spec_tempfile, _to_numpy
 
     cfg = _featurize_configs()
-    # Per-chain a3m presence (set in `_build_spec`) controls MSA depth; the
-    # featurizer gate is on when any chain supplies one.
     cfg.use_msa = any(c.use_msa for c in chains)
     spec = _build_spec(chains)
     seed = int(spec[0]["modelSeeds"][0])
@@ -259,11 +250,6 @@ def _featurize(chains: list[TargetChain]):
     if template_features is not None:
         raw_np.update(template_features)
     feat = Features.from_dict(raw_np)
-    # `_to_numpy` deliberately keeps the OpenDDE data pipeline torch-free, but
-    # the resulting `Features` is consumed by JAX and Mosaic mutates several
-    # leaves with `.at[...]` during soft-sequence injection/geometry refresh.
-    # Convert array leaves at this single host-to-JAX boundary while preserving
-    # Python scalar metadata such as DenseTrunkPad.q_pad/k_pad_left.
     feat = jax.tree.map(
         lambda x: jnp.asarray(x) if isinstance(x, (np.ndarray, np.generic)) else x,
         feat,
@@ -277,18 +263,13 @@ class OpenDDEModel(StructurePredictionModel):
     model: JaxOpenDDE
     compute_precision: str = eqx.field(static=True, default="fp32", kw_only=True)
     dense_atom_to_atom37: Int[Array, "32 Adense"]
-    # Architecture-level residue atom/layout templates used to refresh design
-    # geometry. These are not target-chain structural templates.
     atom_templates: OpenDDEAtomTemplates
-    # (min_bin, max_bin, no_bins) for the confidence heads, read from the
-    # checkpoint config at construction (static -> baked into the loss).
     pae_bin_params: tuple = eqx.field(static=True, default=(0.0, 32.0, 64))
     plddt_bin_params: tuple = eqx.field(static=True, default=(0.0, 1.0, 50))
     default_sampling_steps: int = eqx.field(
         static=True, default=_DEFAULT_NUM_SAMPLING_STEPS
     )
 
-    # ------------------------------------------------------------------ features
     def target_only_features(self, chains: list[TargetChain]):
         """Featurize real protein chains. Returns `(feat, atom_array)` where `feat`
         is the jopendde `Features` and `atom_array` is the biotite writer for
@@ -319,7 +300,6 @@ class OpenDDEModel(StructurePredictionModel):
         )
         return design_features, atom_array
 
-    # ------------------------------------------------------------------ loss
     def build_loss(
         self,
         *,
@@ -397,7 +377,6 @@ class OpenDDEModel(StructurePredictionModel):
             num_cycles=recycling_steps,
         )
 
-    # ------------------------------------------------------------------ forward
     @eqx.filter_jit
     def model_output(
         self,
@@ -413,13 +392,9 @@ class OpenDDEModel(StructurePredictionModel):
         if sampling_steps is None:
             sampling_steps = self.default_sampling_steps
         if PSSM is not None:
-            # `features` is a design bundle; setting the binder sequence also
-            # refreshes its atom + structural-token geometry from the PSSM.
             key, geom_key = jax.random.split(key)
             feat = set_binder_sequence(PSSM, features, geom_key)
         else:
-            # No PSSM: fold as featurized (a bare Features, or an OpenDDEDesignFeatures'
-            # untouched poly-Trp placeholder geometry).
             feat = (
                 features.features if isinstance(features, OpenDDEDesignFeatures) else features
             )
@@ -485,7 +460,6 @@ def _binder_extents(features) -> tuple[int, int]:
     return binder_length, binder_atom_alloc
 
 
-# Atom templates are architecture data derived from OpenDDE CCD features.
 _ATOM_TEMPLATE_ARCH = "opendde_v1"
 _ATOM_TEMPLATE_SCHEMA_VERSION = 2
 _ATOM_TEMPLATE_CACHE: dict[tuple[str, str, str, int], OpenDDEAtomTemplates] = {}
@@ -654,22 +628,13 @@ def _build_model(
 ) -> OpenDDEModel:
     from jopendde.inference import Predictor
 
-    compute_dtype(compute_precision)  # Validate before checkpoint loading.
+    compute_dtype(compute_precision)
     predictor = Predictor.from_checkpoint(
         model_name,
         checkpoint_file=checkpoint_file,
         asset_cache_dir=cache_dir() / "opendde",
     )
     sp = predictor.summary_params
-    # jopendde's from_torch conversion (convert.py) leaves every parameter as a
-    # plain numpy array, not a jax array. That's harmless for ops like
-    # jnp.einsum (which coerce numpy inputs), but jopendde's Embedding layer does
-    # raw Python indexing (`self.weight[tokens]`) -- numpy.ndarray.__getitem__
-    # can't accept a JAX tracer, so any embedding lookup crashes the instant the
-    # model is traced under jax.jit/jax.vmap (e.g. refold_pareto_with_opendde's
-    # batched scoring), even though eager (non-jit) forward passes work fine.
-    # Convert all array leaves once at this host-to-JAX boundary, mirroring the
-    # same fix already applied to featurized inputs in `_featurize` above.
     model = jax.tree.map(
         lambda x: jnp.asarray(x) if isinstance(x, (np.ndarray, np.generic)) else x,
         predictor.model,

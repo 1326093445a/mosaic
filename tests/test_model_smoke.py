@@ -27,8 +27,6 @@ from mosaic.structure_prediction import (
 )
 
 
-# Imports stay lazy so normal test collection does not initialize every model
-# stack. The matrix covers every common-interface factory used in examples.
 MODEL_FACTORIES = [
     pytest.param(("mosaic.models.af2", "AlphaFold2"), id="alphafold2"),
     pytest.param(("mosaic.models.boltz1", "Boltz1"), id="boltz1"),
@@ -62,7 +60,6 @@ def structure_model(request):
         model = factory()
         yield model
 
-        # Avoid retaining several large checkpoints in one pytest process.
         del model
     jax.clear_caches()
     gc.collect()

@@ -60,7 +60,6 @@ def make_run(tmp_path, name, *, searches=2, calibration=False):
     return run
 
 
-# Preconditions --------------------------------------------------------------
 
 
 def test_run_is_required(tmp_path):
@@ -91,7 +90,6 @@ def test_completed_searches_are_counted(tmp_path):
     assert "searches: 4 completed" in result.stdout
 
 
-# Target inference -----------------------------------------------------------
 
 
 @pytest.mark.parametrize("name", ["decoy", "budget", "posezero"])
@@ -140,7 +138,6 @@ def test_an_unknown_target_is_refused(tmp_path):
     assert "must be jn1 or alpha" in result.stderr
 
 
-# The stage directory --------------------------------------------------------
 
 
 def test_the_failed_attempt_is_preserved_by_default(tmp_path):
@@ -166,7 +163,6 @@ def test_a_dry_run_creates_nothing(tmp_path):
     assert not list(run.glob("heldout*"))
 
 
-# Occupancy ------------------------------------------------------------------
 
 
 def test_a_busy_device_stops_the_retry(tmp_path):

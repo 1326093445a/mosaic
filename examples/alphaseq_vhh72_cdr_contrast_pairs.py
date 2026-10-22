@@ -66,16 +66,11 @@ import numpy as np
 
 ALPHASEQ_CSV = "/home/yfeng17/SBSAb/dataset/alphaseq/alphaseq_all_ptgen_v1.csv"
 
-# 0-indexed, derived via ANARCI/IMGT on the real WT VHH72 sequence -- see
-# module docstring.
 CDR1 = set(range(25, 33))
 CDR2 = set(range(50, 58))
 CDR3 = set(range(96, 114))
 CDR_ALL = CDR1 | CDR2 | CDR3
 
-# From the 12 WT_synonymous AlphaSeq replicates (same protein, different
-# silent-codon DNA, same target) -- see module docstring. A pair delta below
-# this is not distinguishable from assay noise on this evidence alone.
 NOISE_FLOOR_THRESHOLD = 0.3
 
 
@@ -96,7 +91,7 @@ def extract_sequences_and_kd(rows_by_group: dict):
     seqs, kd_by_group = {}, {}
     for ag, rows in rows_by_group.items():
         st = gemmi.read_structure(rows[0]["structure_path"])
-        chain = st[0]["A"]  # VHH72 is Ligand_Chains="A" for this family
+        chain = st[0]["A"]
         seqs[ag] = gemmi.one_letter_code([r.name for r in chain]).upper()
         kd_by_group[ag] = {}
         for row in rows:

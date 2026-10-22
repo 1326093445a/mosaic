@@ -87,12 +87,11 @@ def _():
 
 @app.cell
 def _(Path, download_target, select_residues):
-    ### User settings
 
     BINDER_LEN = 80
 
-    target = download_target("3di3")  # Interleukin-7 Complex
-    TARGET_CHAIN = select_residues(target[0]["B"], 17, 209)  # Chain B is IL7Ra. Using auth residue numbering. 
+    target = download_target("3di3")
+    TARGET_CHAIN = select_residues(target[0]["B"], 17, 209)
 
     RUN_ID = "3di3_0"
     OUT_PATH = Path(".") / "3di3"
@@ -100,11 +99,10 @@ def _(Path, download_target, select_residues):
     N_SAMPLES = 60
     BATCH_SIZE = 12
 
-    # N_SAMPLES will be rounded up to the nearest multiple of BATCH_SIZE to prevent recompilation
 
-    USE_POSTTRAINING_WEIGHTS = True # Use Escalante's finetuned and RL'd Boltzgen structure model weights
+    USE_POSTTRAINING_WEIGHTS = True
 
-    FILTER_RMSD: float = 2.5 # Filtering threshold for refolding structure RMSD
+    FILTER_RMSD: float = 2.5
     return (
         BATCH_SIZE,
         BINDER_LEN,
@@ -153,7 +151,6 @@ def _(
 
 @app.cell
 def _(OUT_PATH, RUN_ID, samples, write_structures):
-    # write results + structures to disk
     results_dataframe = write_structures(samples, run_id=RUN_ID, path=OUT_PATH)
     results_dataframe.write_json(OUT_PATH / f"{RUN_ID}.json")
     results_dataframe
@@ -352,7 +349,7 @@ def _(NamedTemporaryFile, gemmi, load_features_and_structure_writer):
         model = gemmi.Model("0")
         model.add_chain(target_chain)
         struct.add_model(model)
-        struct[0][0].name = "A"  # reset chain name
+        struct[0][0].name = "A"
 
         with NamedTemporaryFile(suffix=".pdb", mode="w") as tf:
             struct.write_pdb(tf.name)
@@ -452,7 +449,7 @@ def _(
             mpnn,
             binder_len,
             model_output,
-            mpnn_temp,  # mpnn temperature
+            mpnn_temp,
             fold_in(key, "inverse fold"),
             bias=mpnn_bias,
         )
@@ -477,7 +474,6 @@ def _(TOKENS):
 def _(calculate_rmsd, eqx, jax):
     @eqx.filter_jit
     def batched_backbone_rmsd(x, y):
-        ## calculate_rmsd expects (N,3) but backbone atoms are (M,4,3)
         return jax.vmap(
             lambda i, j: calculate_rmsd(i.reshape(-1, 3), j.reshape(-1, 3))
         )(x, y)
@@ -573,8 +569,8 @@ def _(
 
         pad_length = (
             sequences[0].size * 14 + target_atom_size
-        )  # max 14 heavy atoms per residue
-        pad_length = ((pad_length + 31) // 32) * 32  # boltz needs a multiple of 32
+        )
+        pad_length = ((pad_length + 31) // 32) * 32
 
         assert pad_length >= max_atom_size
         assert pad_length % 32 == 0

@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Functions for processing confidence metrics."""
 
@@ -86,9 +73,7 @@ def _calculate_bin_centers(breaks: np.ndarray):
   """
   step = (breaks[1] - breaks[0])
 
-  # Add half-step to get the center
   bin_centers = breaks + step / 2
-  # Add a catch-all bin at the end.
   bin_centers = np.concatenate([bin_centers, [bin_centers[-1] + step]],
                                axis=0)
   return bin_centers
@@ -111,7 +96,6 @@ def _calculate_expected_aligned_error(
   """
   bin_centers = _calculate_bin_centers(alignment_confidence_breaks)
 
-  # Tuple of expected aligned distance error and max possible error.
   return (np.sum(aligned_distance_error_probs * bin_centers, axis=-1),
           np.asarray(bin_centers[-1]))
 
@@ -160,11 +144,9 @@ def pae_json(pae: np.ndarray, max_pae: float) -> str:
   Returns:
     PAE output format as a JSON string.
   """
-  # Check the PAE array is the correct shape.
   if pae.ndim != 2 or pae.shape[0] != pae.shape[1]:
     raise ValueError(f'PAE must be a square matrix, got {pae.shape}')
 
-  # Round the predicted aligned errors to 1 decimal place.
   rounded_errors = np.round(pae.astype(np.float64), decimals=1)
   formatted_output = [{
       'predicted_aligned_error': rounded_errors.tolist(),
@@ -195,28 +177,19 @@ def predicted_tm_score(
     ptm_score: The predicted TM alignment or the predicted iTM score.
   """
 
-  # residue_weights has to be in [0, 1], but can be floating-point, i.e. the
-  # exp. resolved head's probability.
   if residue_weights is None:
     residue_weights = np.ones(logits.shape[0])
 
   bin_centers = _calculate_bin_centers(breaks)
 
   num_res = int(np.sum(residue_weights))
-  # Clip num_res to avoid negative/undefined d0.
   clipped_num_res = max(num_res, 19)
 
-  # Compute d_0(num_res) as defined by TM-score, eqn. (5) in Yang & Skolnick
-  # "Scoring function for automated assessment of protein structure template
-  # quality", 2004: http://zhanglab.ccmb.med.umich.edu/papers/2004_3.pdf
   d0 = 1.24 * (clipped_num_res - 15) ** (1./3) - 1.8
 
-  # Convert logits to probs.
   probs = scipy.special.softmax(logits, axis=-1)
 
-  # TM-Score term for every bin.
   tm_per_bin = 1. / (1 + np.square(bin_centers) / np.square(d0))
-  # E_distances tm(distance).
   predicted_tm_term = np.sum(probs * tm_per_bin, axis=-1)
 
   pair_mask = np.ones(shape=(num_res, num_res), dtype=bool)

@@ -56,16 +56,12 @@ COMPLEX_PDB = REPO_ROOT / "P17_JN1.pdb"
 BINDER_CHAIN = "B"
 TARGET_CHAIN = "T"
 
-# Same CDR/hotspot definitions as examples/p17_hallucination_search.py --
-# real loss shape, not a stripped-down synthetic one.
 CDR_RESIDUE_INDICES_1IDX = set(range(26, 34)) | set(range(51, 59)) | set(range(97, 110))
 HOTSPOT_TARGET_RESIDUE_INDICES_1IDX = {115, 117, 146, 148, 150}
 
 WEIGHT_OPENDDE_CONTACT = 0.5
 WEIGHT_ABLANG2 = 0.10
 WEIGHT_EDIT_BUDGET = 5.0
-# Real-confidence weights, matching the "default mosaic" template
-# (examples/protenij.py) rather than inventing new numbers.
 WEIGHT_IPTM = 0.025
 WEIGHT_INTERFACE_PAE = 0.05
 WEIGHT_PTM_ENERGY = 0.025
@@ -164,7 +160,7 @@ def build_confidence_aware_full_loss(state):
         BinderPoseRMSD(
             reference_binder_ca=state["reference_binder_ca"],
             reference_target_ca=state["reference_target_ca"],
-            rmsd_tolerance=0.0,  # unhinged for this smoke test -- real value doesn't matter here
+            rmsd_tolerance=0.0,
         ),
         CLIP_GRADIENT_NORM,
     )

@@ -51,7 +51,6 @@ ATOM37_CA = ATOM37_INDEX["CA"]
 ATOM37_C = ATOM37_INDEX["C"]
 
 
-# ── dihedral / binning helpers (JAX) ────────────────────────────────────────
 
 def _dihedral(
     p0: Float[Array, "... 3"],
@@ -105,8 +104,8 @@ def _sidechain_feat(
     Missing-atom positions are masked out via `chi_mask`.
     """
     T = coords.shape[0]
-    chi_atom_indices = jnp.asarray(_CHI_ATOM_INDICES_NP, dtype=jnp.int32)  # [20, 4, 4]
-    chi_angles_mask = jnp.asarray(_CHI_ANGLES_MASK_NP, dtype=jnp.float32)  # [20, 4]
+    chi_atom_indices = jnp.asarray(_CHI_ATOM_INDICES_NP, dtype=jnp.int32)
+    chi_angles_mask = jnp.asarray(_CHI_ANGLES_MASK_NP, dtype=jnp.float32)
     chi_atoms = chi_atom_indices[residue_types]
     chi_mask = chi_angles_mask[residue_types]
     rows = jnp.arange(T)[:, None, None]
@@ -118,7 +117,6 @@ def _sidechain_feat(
     return jnp.concatenate([binned.reshape(T, -1), final_mask], axis=-1)
 
 
-# ── Proteina inverse fold (verbatim from mosaic/examples/proteina.py) ──────
 
 @eqx.filter_jit
 def inverse_fold(
@@ -172,7 +170,6 @@ def inverse_fold(
     )
 
 
-# ── Loss term ───────────────────────────────────────────────────────────────
 
 class ProteinaInverseFoldingRecovery(LossTerm):
     """`-mean_n (avg_proteina_sequence · sequence)`.
@@ -208,7 +205,6 @@ class ProteinaInverseFoldingRecovery(LossTerm):
         target_atom_mask = output.atom37_mask[binder_length:]
         target_residue_types = output.full_sequence[binder_length:].argmax(-1)
 
-        # Center on target CA COM (proteina training convention).
         ca_present = target_atom_mask[:, ATOM37_CA]
         com = (target_coords[:, ATOM37_CA, :] * ca_present[:, None]).sum(0) / jnp.maximum(
             ca_present.sum(), 1.0,

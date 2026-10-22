@@ -46,7 +46,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import FancyBboxPatch, Rectangle
 
-# --- palette, shared with docs/report.css ---
 PAPER = "#eef1f4"
 SURFACE = "#f7f9fb"
 INK = "#15191e"
@@ -62,17 +61,14 @@ PROPOSE = "#6b4a7d"
 SANS = ["DejaVu Sans"]
 MONO = ["DejaVu Sans Mono"]
 
-# --- measured facts -----------------------------------------------------------
-# 1-indexed residue numbers of the designable window, in three CDR blocks.
 WINDOW = list(range(26, 34)) + list(range(51, 59)) + list(range(97, 110))
 PARENT = "GRTSSVYN" "ITGNGGTT" "AAGGWGKERNYAY"
 BLOCKS = [(0, 8, "CDR1"), (8, 16, "CDR2"), (16, 29, "CDR3")]
 assert len(WINDOW) == len(PARENT) == 29
 
 BUDGET = 5
-SCORE_MAX = 0.85            # the best single seed in the run reached 0.8086
+SCORE_MAX = 0.85
 
-# Control search seed 2: the one cell whose whole five-step ascent is recorded.
 ASCENT = [
     dict(res=101, to="A", after=0.004527, call=1,   reject=("H", 0.0)),
     dict(res=54,  to="E", after=0.011049, call=2,   reject=None),
@@ -88,10 +84,6 @@ SOFT_FROM, SOFT_TO = 40.50, 12.25
 HARD_SCORE = 0.0002
 WANTED = 15
 
-# --- illustrative distributions for the continuous clip -----------------------
-# The soft simplex itself was not written out, so the heights are invented; what
-# is held to the record is that fifteen positions end up preferring a non-parent
-# residue and that the five the projection keeps are the five real seed edits.
 _rng = np.random.default_rng(17)
 _POOL = "ADEFGHIKLMNQRSTVWY"
 _real = {WINDOW.index(r): a for r, a in SEED_BINDCRAFT}
@@ -115,18 +107,12 @@ for i in range(29):
     DIST.append(dict(par=par, alt=alt, third=third,
                      p_alt=p_alt, p_par=p_alt - margin, p_third=spread,
                      margin=margin, wants=margin > 0))
-KEEP = sorted(_real)                                   # the five real seed edits
+KEEP = sorted(_real)
 DROP = sorted(i for i in range(29) if DIST[i]["wants"] and i not in _real)
 assert len(KEEP) == BUDGET and len(KEEP) + len(DROP) == WANTED
-# the projection keeps the top-margin five, and those are the real ones
 assert sorted(sorted(range(29), key=lambda i: -DIST[i]["margin"])[:BUDGET]) == KEEP
 
 
-# --- retention policy, measured ------------------------------------------------
-# The four live slots at the end of control search seed 2, their scores, and a
-# real recorded proposal (candidate id 11, score 0.1542) with its Hamming
-# distance to each slot. Same cell the discrete clip animates: slot 2 is that
-# clip's winner.
 WIDTH = 4
 POP = [
     ("slot 0", 0.1410, ["R27V", "S29A", "S30A", "T57Q", "K103H"]),
@@ -134,15 +120,13 @@ POP = [
     ("slot 2", 0.3246, ["V31F", "N54E", "W101A", "R105E", "A108Q"]),
     ("slot 3", 0.2543, ["S29A", "N33A", "G56D", "E104N", "R105Y"]),
 ]
-POP_HAMMING = "8 to 10"                 # pairwise, of a possible 10 at budget 5
-PROPOSAL = (0.1542, ["N54E", "W101A", "R105E"], 2)   # score, subs, parent slot
+POP_HAMMING = "8 to 10"
+PROPOSAL = (0.1542, ["N54E", "W101A", "R105E"], 2)
 PROPOSAL_DIST = [8, 7, 2, 7]
-# Every proposal event in the 20 control cells, from logs/events.jsonl.
 EV_TOTAL = 5024
-EV_CROWD = 9            # competitor slot != parent slot, excluding startup fill
-EV_ELITE = 1140         # blocked by elite protection
+EV_CROWD = 9
+EV_ELITE = 1140
 EV_ACCEPT = 1020
-# Section 27.2: the only matched-compute comparison, 10 seeds, pinned exploration.
 POLICY_RESULT = dict(pop_ipsae=0.529, ind_ipsae=0.470, pop_pose=30.5,
                      ind_pose=27.4, sens_ipsae=0.11, sens_pose=6.0)
 
@@ -165,7 +149,7 @@ class Clip:
     """Base: a list of (name, seconds) cuts and a pure state(frame)."""
     cuts: list = []
     name = ""
-    layout = "logo"      # "row" reserves no band for the distributions
+    layout = "logo"
 
     def __init__(self, fps: int):
         self.fps = fps
@@ -217,7 +201,6 @@ class Discrete(Clip):
             score, shown = before, f"{before:.4f}"
             rej = mv["reject"]
             if rej is not None and u < 0.46:
-                # a real recorded candidate at this depth that scored no better
                 rres = rej[2] if len(rej) > 2 else mv["res"]
                 i = WINDOW.index(rres)
                 st["letters"][i], st["outline"] = rej[0], i
@@ -385,10 +368,6 @@ class Continuous(Clip):
 class Proposed(Clip):
     name = "proposed"
     cuts = [("open", 2.6), ("keep", 3.2), ("bias", 6.0), ("close", 3.6)]
-    # Which substitution the biased search tries, in order. Every one is a
-    # position the relaxation actually wants -- two it kept and two it had to
-    # drop for budget -- because that is the whole point: the ranking offers all
-    # fifteen and the predictor, not the budget, decides.
     TRIES = [(KEEP[0], True), (DROP[1], False), (KEEP[2], True), (DROP[4], False)]
 
     def state(self, f):
@@ -572,8 +551,6 @@ class Policy(Clip):
             ("population, mean ipSAE", R["pop_ipsae"] / 0.8, f"{R['pop_ipsae']:.3f}", ACCENT),
             ("independent, mean ipSAE", R["ind_ipsae"] / 0.8, f"{R['ind_ipsae']:.3f}", INK_FAINT),
         ]
-        # Two meters already reach the caption, so this scene carries its extra
-        # numbers in the note rather than in bullets.
         st["note"] = (
             f"crowding fired {EV_CROWD} times in {EV_TOTAL:,} proposals "
             f"\u2014 {100 * EV_CROWD / EV_TOTAL:.2f}%\n"
@@ -590,7 +567,6 @@ class Painter:
     def __init__(self, fig, ax, clip):
         self.fig, self.ax, self.clip = fig, ax, clip
 
-    # --- geometry ---
     X0, X1 = 0.055, 0.945
     BGAP = 0.016
 
@@ -620,9 +596,6 @@ class Painter:
         if st["schedule"] is not None:
             self._schedule(st["schedule"])
 
-        # One vertical plan per clip, so nothing jumps between cuts: a clip that
-        # shows distributions always reserves the band, even in the cuts that
-        # have none left to show.
         if self.clip.layout == "logo":
             row_y, row_h, note_y, meter_y = 0.435, 0.058, 0.395, 0.318
             if st["logo"] is not None:
@@ -667,8 +640,6 @@ class Painter:
                 "P17 nanobody vs JN1 · frozen OpenDDE · project record §33",
                 fontsize=9, color=INK_FAINT, family=MONO, va="bottom")
         if st["tag"]:
-            # on the footer rather than beside the title, where a long title and
-            # a long tag were running into each other
             ax.text(self.X1, 0.030, st["tag"], fontsize=9.5,
                     color=NULL if "not run" in st["tag"] else INK_FAINT,
                     family=MONO, ha="right", va="bottom")
@@ -706,7 +677,6 @@ class Painter:
         for i, ((x, w), d) in enumerate(zip(self.cells(), DIST)):
             cx = x + w / 2
             a = 0.22 if i in dim else 1.0
-            # at g=0 the position is the parent one-hot; at g=1 it is the mixture
             ps = [(d["par"], 1.0 - g * (1.0 - d["p_par"]), ACCENT_DIM),
                   (d["alt"], g * d["p_alt"], ACCENT),
                   (d["third"], g * d["p_third"], INK_FAINT)]
@@ -766,7 +736,6 @@ class Painter:
             ax.text(x + wid / 2, ly, lab, fontsize=9,
                     color=INK_FAINT, family=MONO, ha="center", va="bottom")
 
-    # --- stacked layout: several sequences at once, for the policy clip ---
     GUTTER, SX0, SX1 = 0.055, 0.190, 0.900
 
     def _scells(self):

@@ -1,16 +1,3 @@
-# Copyright 2021 DeepMind Technologies Limited
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 """Parses the mmCIF file format."""
 import collections
@@ -23,7 +10,6 @@ from absl import logging
 from Bio import PDB, Data
 from Bio.Data.PDBData import protein_letters_3to1_extended
 
-# Type aliases:
 ChainId = str
 PdbHeader = Mapping[str, Any]
 PdbStructure = PDB.Structure.Structure
@@ -37,8 +23,6 @@ class Monomer:
   num: int
 
 
-# Note - mmCIF format provides no guarantees on the type of author-assigned
-# sequence numbers. They need not be integers.
 @dataclasses.dataclass(frozen=True)
 class AtomSite:
   residue_name: str
@@ -51,7 +35,6 @@ class AtomSite:
   model_num: int
 
 
-# Used to map SEQRES index to a residue in the structure.
 @dataclasses.dataclass(frozen=True)
 class ResiduePosition:
   chain_id: str
@@ -185,19 +168,14 @@ def parse(*,
     handle = io.StringIO(mmcif_string)
     full_structure = parser.get_structure('', handle)
     first_model_structure = _get_first_model(full_structure)
-    # Extract the _mmcif_dict from the parser, which contains useful fields not
-    # reflected in the Biopython structure.
     parsed_info = parser._mmcif_dict  # pylint:disable=protected-access
 
-    # Ensure all values are lists, even if singletons.
     for key, value in parsed_info.items():
       if not isinstance(value, list):
         parsed_info[key] = [value]
 
     header = _get_header(parsed_info)
 
-    # Determine the protein chains, and their start numbers according to the
-    # internal mmCIF numbering scheme (likely but not guaranteed to be 1).
     valid_chains = _get_protein_chains(parsed_info=parsed_info)
     if not valid_chains:
       return ParsingResult(
@@ -205,15 +183,10 @@ def parse(*,
     seq_start_num = {chain_id: min([monomer.num for monomer in seq])
                      for chain_id, seq in valid_chains.items()}
 
-    # Loop over the atoms for which we have coordinates. Populate two mappings:
-    # -mmcif_to_author_chain_id (maps internal mmCIF chain ids to chain ids used
-    # the authors / Biopython).
-    # -seq_to_structure_mappings (maps idx into sequence to ResidueAtPosition).
     mmcif_to_author_chain_id = {}
     seq_to_structure_mappings = {}
     for atom in _get_atom_site_list(parsed_info):
       if atom.model_num != '1':
-        # We only process the first model at the moment.
         continue
 
       mmcif_to_author_chain_id[atom.mmcif_chain_id] = atom.author_chain_id
@@ -221,9 +194,6 @@ def parse(*,
       if atom.mmcif_chain_id in valid_chains:
         hetflag = ' '
         if atom.hetatm_atom == 'HETATM':
-          # Water atoms are assigned a special hetflag of W in Biopython. We
-          # need to do the same, so that this hetflag can be used to fetch
-          # a residue from the Biopython structure by id.
           if atom.residue_name in ('HOH', 'WAT'):
             hetflag = 'W'
           else:
@@ -242,7 +212,6 @@ def parse(*,
                                              hetflag=hetflag)
         seq_to_structure_mappings[atom.author_chain_id] = current
 
-    # Add missing residue information to seq_to_structure_mappings.
     for chain_id, seq_info in valid_chains.items():
       author_chain = mmcif_to_author_chain_id[chain_id]
       current_mapping = seq_to_structure_mappings[author_chain]
@@ -258,12 +227,6 @@ def parse(*,
       author_chain = mmcif_to_author_chain_id[chain_id]
       seq = []
       for monomer in seq_info:
-        # `protein_letters_3to1_extended` is what this module imports, and the
-        # extended table is the one AlphaFold wants: it carries the modified
-        # residues an mmCIF entity sequence can name. The bare
-        # `protein_letters_3to1` was never defined here, so every parse raised
-        # NameError, which `parse` catches into `errors` -- so the failure was
-        # silent and `mmcif_object` came back None for every input.
         code = protein_letters_3to1_extended.get(monomer.id, 'X')
         seq.append(code if len(code) == 1 else 'X')
       seq = ''.join(seq)
@@ -306,8 +269,6 @@ def _get_header(parsed_info: MmCIFDict) -> PdbHeader:
   header['structure_method'] = ','.join([
       experiment['_exptl.method'].lower() for experiment in experiments])
 
-  # Note: The release_date here corresponds to the oldest revision. We prefer to
-  # use this for dataset filtering over the deposition_date.
   if '_pdbx_audit_revision_history.revision_date' in parsed_info:
     header['release_date'] = get_release_date(parsed_info)
   else:
@@ -352,7 +313,6 @@ def _get_protein_chains(
   Returns:
     A dict mapping mmcif chain id to a list of Monomers.
   """
-  # Get polymer information for each entity in the structure.
   entity_poly_seqs = mmcif_loop_to_list('_entity_poly_seq.', parsed_info)
 
   polymers = collections.defaultdict(list)
@@ -361,12 +321,8 @@ def _get_protein_chains(
         Monomer(id=entity_poly_seq['_entity_poly_seq.mon_id'],
                 num=int(entity_poly_seq['_entity_poly_seq.num'])))
 
-  # Get chemical compositions. Will allow us to identify which of these polymers
-  # are proteins.
   chem_comps = mmcif_loop_to_dict('_chem_comp.', '_chem_comp.id', parsed_info)
 
-  # Get chains information for each entity. Necessary so that we can return a
-  # dict keyed on chain id rather than entity.
   struct_asyms = mmcif_loop_to_list('_struct_asym.', parsed_info)
 
   entity_to_mmcif_chains = collections.defaultdict(list)
@@ -375,12 +331,10 @@ def _get_protein_chains(
     entity_id = struct_asym['_struct_asym.entity_id']
     entity_to_mmcif_chains[entity_id].append(chain_id)
 
-  # Identify and return the valid protein chains.
   valid_chains = {}
   for entity_id, seq_info in polymers.items():
     chain_ids = entity_to_mmcif_chains[entity_id]
 
-    # Reject polymers without any peptide-like components, such as DNA/RNA.
     if any(['peptide' in chem_comps[monomer.id]['_chem_comp.type'].lower()
             for monomer in seq_info]):
       for chain_id in chain_ids:

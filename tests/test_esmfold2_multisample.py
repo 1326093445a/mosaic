@@ -81,6 +81,4 @@ def test_esmfold2_loss_runs_trunk_once(monkeypatch, num_samples):
     )
     assert calls == {"prepare": 1, "trunk": 1}
     assert np.isclose(value, expected.mean())
-    # Scalar aux is always returned as a loss-sorted list (no single-sample
-    # squeeze), uniformly across sample counts -- a 1-element list when num_samples == 1.
     assert np.allclose(np.asarray(auxiliary["sample"]), np.sort(expected))

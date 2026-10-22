@@ -209,10 +209,6 @@ def main(argv=None):
 
     wildtype = jnp.array(anchor, dtype=jnp.int32)
     designable_jnp = jnp.array(designable_idx, dtype=jnp.int32)
-    # SetPositions fills the fixed positions from `wildtype`, so a sequence
-    # that differs from the anchor OUTSIDE the designable mask would be
-    # silently evaluated as the anchor there. Refuse rather than report a
-    # gradient of a sequence nobody asked about.
     outside = [
         int(i) for i in np.flatnonzero(tokens != anchor) if i not in set(designable_idx)
     ]
@@ -262,10 +258,6 @@ def main(argv=None):
         cosines[f"{a}|{b}"] = cosine(gradients[a], gradients[b])
 
     ranked = sorted(summary, key=lambda n: summary[n]["grad_norm"], reverse=True)
-    # A term with an exactly zero gradient carries no direction, and dividing by
-    # it reports the guard floor rather than a spread. This is the normal case,
-    # not an edge one: `edit` is exactly zero at every one-hot with Hamming <=
-    # budget, which is every point this instrument evaluates.
     nonzero = [n for n in ranked if summary[n]["grad_norm"] > 0.0]
     zero_terms = [n for n in ranked if summary[n]["grad_norm"] <= 0.0]
     spread = (

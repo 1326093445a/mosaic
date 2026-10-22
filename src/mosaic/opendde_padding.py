@@ -11,7 +11,6 @@ def active_atoms(indices, n_token):
 
 def occupied_tokens(indices, n_token):
     destination = jnp.where(active_atoms(indices, n_token), indices, n_token)
-    # Integer counts have no floating-point reduction-order ambiguity.
     return jnp.zeros(n_token, dtype=jnp.int32).at[destination].add(1, mode="drop") > 0
 
 

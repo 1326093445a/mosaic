@@ -123,10 +123,6 @@ exit 0
 """
 
 
-# A stand-in `nvidia-smi` on PATH. These are control-flow tests: without it the
-# launcher's capacity check reads the HOST's GPUs, so the suite passed or failed
-# according to what happened to be resident on the machine running it. The stub
-# reports eight idle 140 GB devices, which is the cluster the launchers target.
 IDLE_EIGHT = """#!/usr/bin/env bash
 case "$*" in
   *--query-gpu*) for i in 0 1 2 3 4 5 6 7; do echo "$i, 143771, 1024"; done ;;
@@ -204,8 +200,6 @@ def test_the_plan_records_the_commit_that_produced_it(stage, tmp_path):
     plan = json.loads((out / "plan.json").read_text())
     assert len(plan["git_commit"]) == 40, plan["git_commit"]
     assert isinstance(plan["git_dirty"], bool)
-    # The nested OpenDDE checkout is permanently untracked, so a dirty flag
-    # computed without --ignore-submodules=all would be the constant True.
     tracked = subprocess.run(
         ["git", "status", "--porcelain", "--ignore-submodules=all"],
         capture_output=True, text=True, cwd=STAGE.parents[1],
@@ -247,9 +241,6 @@ def test_the_truncation_verdict_tracks_what_the_relaxation_wanted(stage, tmp_pat
         assert phrase in (out / "seeds" / "gate.txt").read_text()
 
 
-# --------------------------------------------------------------------------- #
-# A fourth review round. Each of these passed the checks added in the third.
-# --------------------------------------------------------------------------- #
 
 
 def test_an_external_seed_dir_is_not_overwritten_by_stage_seed(stage, tmp_path):
@@ -355,12 +346,10 @@ def test_the_dirty_check_ignores_untracked_submodule_content_and_nothing_more():
                 cwd=outer, capture_output=True, text=True,
             ).stdout.strip()
 
-        # untracked content inside the dependency: both flags must hide it
         (outer / "dep" / "scratch.tmp").write_text("junk\n")
         assert status("untracked") == "", status("untracked")
         assert status("all") == ""
 
-        # a TRACKED edit inside the dependency: only `all` hides it
         (outer / "dep" / "lib.py").write_text("x = 2\n")
         assert "dep" in status("untracked"), (
             "a tracked dependency edit must still show as dirty"
@@ -376,10 +365,6 @@ def test_both_launchers_use_that_ignore_level():
         assert "--ignore-submodules=all" not in source, name
 
 
-# --------------------------------------------------------------------------- #
-# A fifth round. All four are ways to run the script and get exit 0 for a job
-# that did not happen, or happened differently from what was asked.
-# --------------------------------------------------------------------------- #
 
 
 @pytest.mark.parametrize("flag, value, marker", [
@@ -477,10 +462,6 @@ def test_results_carrying_the_wrong_identity_are_refused(stage, tmp_path):
     )
 
 
-# --------------------------------------------------------------------------- #
-# A sixth round: validation and execution disagreeing, and a verdict stated
-# more broadly than the data it was computed from.
-# --------------------------------------------------------------------------- #
 
 
 def test_whitespace_other_than_spaces_still_selects_the_stages(stage, tmp_path):
@@ -601,11 +582,6 @@ esac
     assert "Expect an OOM" in done.stderr
 
 
-# --------------------------------------------------------------------------- #
-# After the 2026-10-14 real-loss run (section 32): the gate printed a
-# hardcoded denominator, and `0 wanted` had two opposite causes it could not
-# separate.
-# --------------------------------------------------------------------------- #
 
 
 def test_the_gate_reads_the_designable_count_from_the_runs(stage, tmp_path):
@@ -623,17 +599,12 @@ def test_the_gate_reads_the_designable_count_from_the_runs(stage, tmp_path):
     assert "designable 29" in gate, gate
     assert "assumed" not in gate, "the count IS recorded; nothing is assumed"
 
-    # 29 is the mask shipped today, so the assertion above passes against a
-    # gate that reads the field AND against one that prints the constant. The
-    # discriminating case is a run on a different mask.
     other = tmp_path / "denominator_17"
     done = stage("--stages", "seed", "--output-dir", str(other), seeds="mask_17")
     assert done.returncode == 0, done.stdout[-2000:]
     gate = (other / "seeds" / "gate.txt").read_text()
     assert "designable 17" in gate, gate
     assert "designable 29" not in gate, gate
-    # And the verdict's own threshold was picked against 29, so it says so
-    # rather than ranking 17 positions against a cutoff of 25.
     assert "threshold below was chosen against 29" in gate, gate
 
 
@@ -695,7 +666,6 @@ def test_zero_wanted_separates_a_converged_relaxation_from_a_frozen_one(
     assert b.returncode == 0, b.stdout[-2000:]
     ga = (frozen / "seeds" / "gate.txt").read_text()
     gb = (moved / "seeds" / "gate.txt").read_text()
-    # Identical readouts in everything the argmax can see.
     for gate in (ga, gb):
         assert "0 edits kept / 0 wanted" in gate, gate
         assert "no truncation" in gate, gate
@@ -705,9 +675,6 @@ def test_zero_wanted_separates_a_converged_relaxation_from_a_frozen_one(
     assert "may never have left the start" not in gb, gb
 
 
-# --edit-budget, added 2026-10-15. It was a pinned assignment with no flag, so
-# the only way to run the 2026-10-15 budget-7 arm was to sed a copy of this
-# script -- which silently resolves REPO_DIR from wherever the copy landed.
 
 
 def test_the_edit_budget_defaults_to_five(stage, tmp_path):
@@ -726,8 +693,6 @@ def test_a_raised_edit_budget_reaches_the_plan_and_the_driver(stage, tmp_path):
     assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:]
     plan = json.loads((out / "plan.json").read_text())
     assert plan["search_stage"]["edit_budget"] == 7
-    # Both, so a reader of an old plan can tell a 7 that was chosen from a 7
-    # that was the default of the day.
     assert plan["search_stage"]["edit_budget_default"] == 5
     recorded = [f.read_text().split() for f in seen.glob("driver_*.args")]
     assert recorded, "the mock driver was never invoked, so this asserts nothing"
@@ -753,13 +718,6 @@ def test_an_edit_budget_that_is_not_a_positive_integer_is_refused(
     assert "positive integer" in done.stderr, done.stderr
 
 
-# --- the seed-value gate (2026-10-16) ------------------------------------
-#
-# A hand-off that does not beat the parent cannot help the discrete search: it
-# arrives with its edit budget already spent, so reverting it and climbing from
-# the parent is the search's best move. That is what the 2026-10-15 run did,
-# and nothing in the record said so until the structures came back. The seed
-# stage now writes `rounded_gain_over_parent`; these cover how search reads it.
 
 def _seed_dir(tmp_path, name, extra):
     seeds = tmp_path / name
@@ -794,11 +752,9 @@ def test_a_seed_that_does_not_beat_the_parent_is_flagged(stage, tmp_path, gain):
         "rounded_gain_over_parent": gain, "rounded_loss_eval_error": None})
     done = stage("--stages", "search", "--cells", "bindcraft",
                  "--output-dir", str(tmp_path / "out"), "--seed-dir", str(seeds))
-    # Not a failed run. The cell ran and its numbers are real; they just do not
-    # answer the question the cell was built to ask.
     assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
     assert "NO GAIN" in done.stderr
-    assert "3 free moves" in done.stderr          # 5 budget - 2 spent
+    assert "3 free moves" in done.stderr
     assert "not whether seeding helps" in done.stdout
 
 

@@ -58,14 +58,14 @@ def test_per_step_metrics_orthogonal_directions_give_cosine_zero():
 
 def test_per_step_metrics_norm_ratio_matches_known_scale():
     unguided = np.ones((STEPS, 1, M, 3))
-    guided = np.ones((STEPS, 1, M, 3)) * 3.0  # 3x larger displacement
+    guided = np.ones((STEPS, 1, M, 3)) * 3.0
     diag = _diag(unguided_step_delta=unguided, guided_step_delta=guided)
     out = per_step_metrics(diag)
     assert np.allclose(out["norm_ratio"], 3.0, atol=1e-4)
 
 
 def test_per_step_metrics_cos_bind_nat_is_nan_when_nat_unused():
-    diag = _diag()  # g_nat all zero (guidance_fn_nat was None)
+    diag = _diag()
     out = per_step_metrics(diag)
     assert np.all(np.isnan(out["cos_bind_nat"]))
 
@@ -74,7 +74,7 @@ def test_per_step_metrics_cos_bind_nat_is_real_when_nat_active():
     g_bind = np.zeros((STEPS, 1, M, 3))
     g_bind[:, 0, 0, 0] = 1.0
     g_nat = np.zeros((STEPS, 1, M, 3))
-    g_nat[:, 0, 0, 0] = 1.0  # identical to g_bind -> cos = 1
+    g_nat[:, 0, 0, 0] = 1.0
     diag = _diag(g_bind=g_bind, g_nat=g_nat)
     out = per_step_metrics(diag)
     assert np.allclose(out["cos_bind_nat"], 1.0, atol=1e-5)
@@ -88,7 +88,6 @@ def test_per_step_metrics_rejects_batch_size_other_than_one():
 
 
 def test_per_step_metrics_no_designable_keys_without_mask():
-    # Backward compat: no atom_partial_mask -> no *_designable keys at all.
     diag = _diag()
     out = per_step_metrics(diag)
     assert "cos_guided_unguided_designable" not in out
@@ -96,20 +95,15 @@ def test_per_step_metrics_no_designable_keys_without_mask():
 
 
 def test_per_step_metrics_whole_complex_dilutes_designable_disagreement():
-    # Regression guard for the diagnostics-masking bug: 3 of 4 atoms are
-    # "frozen" (identical direction -> perfect agreement), 1 atom is
-    # "designable" and fully disagrees (opposite direction). The
-    # whole-complex cosine should be diluted by the frozen majority; the
-    # designable-only cosine should show the real, full disagreement.
     unguided = np.zeros((STEPS, 1, M, 3))
     guided = np.zeros((STEPS, 1, M, 3))
-    unguided[:, 0, :3, 0] = 1.0  # atoms 0,1,2: unguided points +x
-    guided[:, 0, :3, 0] = 1.0    # atoms 0,1,2: guided agrees exactly
-    unguided[:, 0, 3, 0] = 1.0   # atom 3 (designable): unguided points +x
-    guided[:, 0, 3, 0] = -1.0    # atom 3 (designable): guided points -x
+    unguided[:, 0, :3, 0] = 1.0
+    guided[:, 0, :3, 0] = 1.0
+    unguided[:, 0, 3, 0] = 1.0
+    guided[:, 0, 3, 0] = -1.0
 
     diag = _diag(unguided_direction=unguided, guided_direction=guided)
-    atom_partial_mask = np.array([0.0, 0.0, 0.0, 1.0])  # only atom 3 designable
+    atom_partial_mask = np.array([0.0, 0.0, 0.0, 1.0])
 
     out = per_step_metrics(diag, atom_partial_mask=atom_partial_mask)
 
@@ -142,18 +136,13 @@ def test_summarize_prefers_designable_metrics_when_present():
     per_step = per_step_metrics(diag, atom_partial_mask=atom_partial_mask)
     summary = summarize(per_step)
 
-    # Primary stat reflects the designable-region (real) disagreement...
     assert np.isclose(summary["mean_cos_guided_unguided"], -1.0, atol=1e-5)
-    # ...while the whole-complex (diluted) value is still reported, labeled.
     assert np.isclose(
         summary["mean_cos_guided_unguided_whole_complex"], 0.5, atol=1e-5
     )
 
 
 def test_summarize_whole_complex_key_present_without_mask_too():
-    # Even with no mask, mean_cos_guided_unguided_whole_complex is always
-    # present (redundant with mean_cos_guided_unguided in that case, but a
-    # stable key across both call styles).
     diag = _diag()
     summary = summarize(per_step_metrics(diag))
     assert summary["mean_cos_guided_unguided_whole_complex"] == pytest.approx(
@@ -162,11 +151,10 @@ def test_summarize_whole_complex_key_present_without_mask_too():
 
 
 def test_summarize_disagreement_fraction():
-    # 2 of 5 steps orthogonal (cos=0, below threshold), 3 identical (cos=1)
     unguided = np.ones((STEPS, 1, M, 3))
     guided = np.ones((STEPS, 1, M, 3))
     guided[0:2] = 0.0
-    guided[0:2, 0, 0, 1] = 1.0  # orthogonal to unguided's all-ones for those steps
+    guided[0:2, 0, 0, 1] = 1.0
     diag = _diag(unguided_direction=unguided, guided_direction=guided)
     per_step = per_step_metrics(diag)
     summary = summarize(per_step, disagreement_cos_threshold=0.5)
@@ -185,12 +173,12 @@ def test_correlate_with_outcomes_detects_perfect_linear_relationship():
     records = [
         {"summary": {"mean_cos_guided_unguided": c, "mean_norm_ratio": 1.0,
                       "frac_strong_disagreement": 0.0},
-         "outcome": {"ipsae": c, "rmsd": 1.0}}  # unused, zero-variance
+         "outcome": {"ipsae": c, "rmsd": 1.0}}
         for c in [0.1, 0.5, 0.9, 1.0]
     ]
     out = correlate_with_outcomes(records)
     assert out["mean_cos_guided_unguided_vs_ipsae"] == pytest.approx(1.0, abs=1e-6)
-    assert out["mean_cos_guided_unguided_vs_rmsd"] is None  # zero-variance outcome
+    assert out["mean_cos_guided_unguided_vs_rmsd"] is None
 
 
 def test_correlate_with_outcomes_returns_none_below_three_records():

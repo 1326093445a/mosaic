@@ -72,15 +72,12 @@ COMPLEX_PDB = REPO_ROOT / "P17_JN1.pdb"
 BINDER_CHAIN = "B"
 TARGET_CHAIN = "T"
 
-# Same CDR/hotspot definitions as p17_hallucination_search.py.
 CDR_RESIDUE_INDICES_1IDX = set(range(26, 34)) | set(range(51, 59)) | set(range(97, 110))
 HOTSPOT_TARGET_RESIDUE_INDICES_1IDX = {115, 117, 146, 148, 150}
 
 WEIGHT_OPENDDE_CONTACT = 0.5
 WEIGHT_ABLANG2 = 0.10
 WEIGHT_EDIT_BUDGET = 5.0
-# Real-confidence weights for the rescoring loss, matching the "default
-# mosaic" template (examples/protenij.py), same as the smoke test.
 WEIGHT_IPTM = 0.025
 WEIGHT_INTERFACE_PAE = 0.05
 WEIGHT_PTM_ENERGY = 0.025
@@ -281,7 +278,7 @@ def main():
     rescore_grad_fn = eqx.filter_jit(eqx.filter_value_and_grad(rescore_loss, has_aux=True))
 
     parent = np.array([TOKENS.index(c) for c in binder_seq], dtype=np.int32)
-    current_seq = parent.copy()  # start from WT -- equivalent to --apgm-steps 0
+    current_seq = parent.copy()
 
     rows = []
     steps_done = 0
@@ -315,15 +312,6 @@ def main():
         print(f"[chunk {chunk_idx}] rescore done ({rescore_wall:.1f}s), "
               f"real_value={float(real_value):.4f}", flush=True)
 
-        # real_aux is a nested pytree (ClippedGradient/LinearCombination
-        # wrap each sub-loss's own aux dict, same ".0.0.target_contact"-style
-        # nesting the cheap MCMC log lines above already show) -- not a flat
-        # dict, so look up each named metric via the same nested-aux helper
-        # optimizers.py's own biohub_optimizer uses for exactly this.
-        # AUX_KEY_NAMES maps our snake_case result name -> the loss class's
-        # own actual aux dict key (pTMEnergy.__call__ literally returns
-        # {"pTMEnergy": E}, camelCase, not "ptm_energy" -- a real mismatch
-        # that silently NaN'd this metric in every earlier run).
         AUX_KEY_NAMES = {
             "target_contact": "target_contact", "binder_pose_rmsd": "binder_pose_rmsd",
             "iptm": "iptm", "bt_pae": "bt_pae", "tb_pae": "tb_pae", "ptm_energy": "pTMEnergy",
