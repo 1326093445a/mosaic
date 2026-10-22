@@ -387,7 +387,11 @@ def test_each_confidence_component_contributes_a_sequence_gradient(runner, weigh
     assert float(gradient[0, 0]) < 0
 
 
-def test_full_confidence_terms_reach_the_shared_proposal_gradient(runner, monkeypatch):
+@pytest.mark.parametrize("designable", [[0, 1], [0]])
+@pytest.mark.parametrize("soft_input", [False, True])
+def test_full_confidence_terms_reach_the_shared_proposal_gradient(
+    runner, monkeypatch, designable, soft_input
+):
     from types import SimpleNamespace
     import equinox as eqx
     import jax
@@ -444,7 +448,7 @@ def test_full_confidence_terms_reach_the_shared_proposal_gradient(runner, monkey
         reference_binder_ca=np.zeros((2, 3)),
         reference_target_ca=np.zeros((2, 3)),
         binder_seq="AR",
-        designable_idx=np.array([0, 1]),
+        designable_idx=np.array(designable),
         epitope_idx=np.array([0]),
         edit_budget=2,
         stop_grad_ablang2=False,
@@ -454,9 +458,13 @@ def test_full_confidence_terms_reach_the_shared_proposal_gradient(runner, monkey
         opendde_num_samples=1,
     )
     terms = runner.build_confidence_terms(0.025, 0.05, 0.025)
-    enabled, _ = original.build_composite_losses(**kwargs, confidence_loss=terms)
-    legacy, _ = original.build_composite_losses(**kwargs)
+    enabled, enabled_restricted = original.build_composite_losses(
+        **kwargs, confidence_loss=terms
+    )
+    legacy, legacy_restricted = original.build_composite_losses(**kwargs)
     sequence = jax.nn.one_hot(jnp.array([0, 1]), 20)
+    if soft_input:
+        sequence = sequence.at[0].set(0.6 * sequence[0] + 0.4 * sequence[1])
     (value, aux), gradient = eqx.filter_jit(
         eqx.filter_value_and_grad(enabled, has_aux=True)
     )(sequence, key=jax.random.key(0))
@@ -465,6 +473,22 @@ def test_full_confidence_terms_reach_the_shared_proposal_gradient(runner, monkey
     )
     assert np.isfinite(value)
     assert not np.allclose(gradient, old_gradient)
+    # The two stage interfaces must agree at the SAME probability input and
+    # settings, before the continuous optimizer's logit transformation. Use
+    # the production composite builder (including clipping) with a toy model;
+    # this checks wiring, not OpenDDE predictions or optimization performance.
+    for full, restricted in ((enabled, enabled_restricted), (legacy, legacy_restricted)):
+        (full_value, _), full_gradient = eqx.filter_value_and_grad(full, has_aux=True)(
+            sequence, key=jax.random.key(0)
+        )
+        (restricted_value, _), restricted_gradient = eqx.filter_value_and_grad(
+            restricted, has_aux=True
+        )(sequence[jnp.asarray(designable)], key=jax.random.key(0))
+        np.testing.assert_allclose(restricted_value, full_value, rtol=1e-6, atol=1e-7)
+        np.testing.assert_allclose(
+            restricted_gradient, full_gradient[jnp.asarray(designable)],
+            rtol=1e-6, atol=1e-7,
+        )
     for name in ("iptm", "bt_pae", "tb_pae", "pTMEnergy"):
         assert _ranking_leaf(aux, name) is not None
     assert model.calls[0]["sampling_steps"] == 8
@@ -489,6 +513,25 @@ def test_runner_defaults_to_full_guidance_with_recordable_weights(runner):
         0.025,
     )
     assert args.pose_rmsd_tolerance == 0.0
+    assert args.retention_mode == "confidence"
+    assert args.retention_pose_ceiling is None
+
+
+@pytest.mark.parametrize("flags", [
+    ["--retention-mode", "pareto"],
+    ["--retention-pose-ceiling", "3"],
+    ["--retention-mode", "pareto", "--retention-pose-ceiling", "-1"],
+    ["--retention-mode", "pareto", "--retention-pose-ceiling", "nan"],
+    ["--retention-mode", "pareto", "--retention-pose-ceiling", "3", "--width", "1"],
+    ["--retention-mode", "pareto", "--retention-pose-ceiling", "3", "--policy", "independent"],
+    ["--retention-mode", "pareto", "--retention-pose-ceiling", "3", "--retention-pose-margin", "1"],
+    ["--retention-mode", "pareto", "--retention-pose-ceiling", "3", "--pose-diagnostic"],
+])
+def test_invalid_joint_retention_fails_before_output_creation(runner, tmp_path, flags):
+    output = tmp_path / "invalid"
+    with pytest.raises(SystemExit):
+        runner.main(["--policy", "population", "--output-dir", str(output), *flags])
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(
@@ -656,7 +699,7 @@ def test_export_rejects_misidentified_or_invalid_structures(
     assert not list((tmp_path / "structures").rglob("*.pdb"))
 
 
-@pytest.mark.parametrize("retention", [False, True])
+@pytest.mark.parametrize("retention", ["confidence", "margin", "pareto"])
 def test_runner_writes_complete_layout_without_extra_predictions(
     runner, export_prediction, tmp_path, monkeypatch, retention
 ):
@@ -709,7 +752,11 @@ def test_runner_writes_complete_layout_without_extra_predictions(
             "population",
             "--output-dir",
             str(out),
-            *(["--retention-pose-margin", "3"] if retention else []),
+            *{
+                "confidence": [],
+                "margin": ["--retention-pose-margin", "3"],
+                "pareto": ["--retention-mode", "pareto", "--retention-pose-ceiling", "0"],
+            }[retention],
             "--width",
             "2",
             "--max-score-calls",
@@ -724,7 +771,7 @@ def test_runner_writes_complete_layout_without_extra_predictions(
         ]
     )
     summary = json.loads((out / "summary.json").read_text())
-    assert (summary["retention_pose_ceiling_A"] is not None) == retention
+    assert (summary["retention_pose_ceiling_A"] is not None) == (retention != "confidence")
     assert summary["best_constraint_violation"] == 0
     assert summary["full_prediction_calls"] == 4
     assert summary["full_gradient_calls"] == 1
@@ -732,6 +779,16 @@ def test_runner_writes_complete_layout_without_extra_predictions(
     predictions = list(csv.DictReader((out / "tables/predictions.csv").open()))
     candidates = list(csv.DictReader((out / "tables/candidates.csv").open()))
     assert len(predictions) == 4 and len(candidates) == 2
+    best = next(c for c in candidates if c["best"] == "True")
+    assert best["rank"] == "1"
+    if retention == "pareto":
+        assert summary["retention_mode"] == "pareto"
+        assert summary["best_pose_qualified"] is False
+        assert summary["pareto_front_ids"]
+        assert best["pose_qualified"] == "False"
+        assert float(best["worst_pose_rmsd_A"]) == min(
+            float(c["worst_pose_rmsd_A"]) for c in candidates
+        )
     assert all(float(p["binder_pose_rmsd_A"]) >= 0 for p in predictions)
     assert len(list((out / "structures").rglob("*.cif"))) == 4
     for candidate in candidates:

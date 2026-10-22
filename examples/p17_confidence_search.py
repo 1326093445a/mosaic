@@ -34,7 +34,12 @@ import time
 
 import numpy as np
 
-from mosaic.search import ConfidenceScore, SearchConfig, run_gradient_search
+from mosaic.search import (
+    ConfidenceScore,
+    SearchConfig,
+    candidate_selection_key,
+    run_gradient_search,
+)
 from p17_search_outputs import SearchOutputs, compact_prediction, pose_metrics
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -240,6 +245,20 @@ def build_parser():
         help="reference contact cutoff defining the pair set (default: %(default)s)",
     )
     parser.add_argument(
+        "--retention-mode",
+        choices=["confidence", "pareto"],
+        default="confidence",
+        help="pareto preserves confidence/pose tradeoffs in a population; "
+        "requires an absolute pose ceiling for final selection and ignores acceptance temperature.",
+    )
+    parser.add_argument(
+        "--retention-pose-ceiling",
+        type=float,
+        default=None,
+        help="Pareto mode only: absolute worst-selection-seed target-aligned pose RMSD "
+        "ceiling (angstroms) for final selection. Calibrate from reference controls.",
+    )
+    parser.add_argument(
         "--retention-pose-margin",
         type=float,
         default=None,
@@ -345,6 +364,10 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if (args.retention_mode == "pareto") != (args.retention_pose_ceiling is not None):
+            raise ValueError(
+                "--retention-mode pareto and --retention-pose-ceiling must be used together"
+            )
         config = SearchConfig(
             **{
                 name: getattr(args, name)
@@ -360,7 +383,9 @@ def main(argv=None):
                     "seed",
                     "move_arity",
                 )
-            }
+            },
+            pareto_metric="worst_pose_rmsd_A" if args.retention_mode == "pareto" else None,
+            pareto_ceiling=args.retention_pose_ceiling,
         )
         if args.proposal_model_seed < 0 or any(
             seed < 0 for seed in args.selection_seeds
@@ -393,6 +418,13 @@ def main(argv=None):
             or args.retention_pose_margin < 0
         ):
             raise ValueError("retention pose margin must be finite and nonnegative")
+        if args.retention_mode == "pareto":
+            if args.retention_pose_ceiling < 0:
+                raise ValueError("retention pose ceiling must be nonnegative")
+            if args.retention_pose_margin is not None:
+                raise ValueError(
+                    "Pareto retention cannot be combined with a WT-relative margin"
+                )
         if (
             any(
                 not np.isfinite(v) or v <= 0
@@ -409,6 +441,7 @@ def main(argv=None):
             args.proposal_path != "full"
             or args.weight_pose <= 0
             or args.retention_pose_margin is not None
+            or args.retention_mode != "confidence"
             or args.edit_budget == 0
         ):
             raise ValueError(
@@ -911,7 +944,17 @@ def main(argv=None):
             return pae, ca, iptm, geometry
         return pae, ca, iptm
 
-    retention_ceiling = None
+    retention_ceiling = args.retention_pose_ceiling
+    if args.retention_mode == "pareto":
+        metadata["retention"] = dict(
+            kind="pareto",
+            metric=config.pareto_metric,
+            ceiling_A=retention_ceiling,
+            population_selection="Pareto frontier with normalized crowding distance",
+            final_selection="highest ipSAE within ceiling; lowest RMSD fallback if none qualify",
+            interpretation="selection-seed pose qualification, "
+            "not held-out or experimental validation",
+        )
 
     def confidence_fn(sequence):
         nonlocal retention_ceiling
@@ -1078,11 +1121,14 @@ def main(argv=None):
             if args.save_saliency:
                 saliency_handle.close()
     active_ids = {candidate.id for candidate in result.active}
+    pareto_ids = {candidate.id for candidate in result.pareto_front}
     ranking = {
         c.id: i + 1
         for i, c in enumerate(
             sorted(
-                result.evaluated, key=lambda c: (c.constraint_violation, -c.score, c.id)
+                result.evaluated,
+                key=lambda c: candidate_selection_key(c, config),
+                reverse=True,
             )
         )
     }
@@ -1102,6 +1148,8 @@ def main(argv=None):
                 "proposal_loss",
                 "active",
                 "best",
+                "pareto_front",
+                "pose_qualified",
             ],
         )
         writer.writeheader()
@@ -1120,6 +1168,12 @@ def main(argv=None):
                     proposal_loss=result.cheap_losses.get(candidate.id, ""),
                     active=candidate.id in active_ids,
                     best=candidate.id == result.best.id,
+                    pareto_front=candidate.id in pareto_ids,
+                    pose_qualified=(
+                        candidate.metrics["worst_pose_rmsd_A"] <= retention_ceiling
+                        if retention_ceiling is not None
+                        else ""
+                    ),
                 )
             )
     best_structure_files = outputs.copy_best(result.best.id, args.selection_seeds)
@@ -1133,7 +1187,15 @@ def main(argv=None):
         best_id=result.best.id,
         best_score=result.best.score,
         best_constraint_violation=result.best.constraint_violation,
+        retention_mode=args.retention_mode,
         retention_pose_ceiling_A=retention_ceiling,
+        best_worst_pose_rmsd_A=result.best.metrics["worst_pose_rmsd_A"],
+        best_pose_qualified=(
+            result.best.metrics["worst_pose_rmsd_A"] <= retention_ceiling
+            if retention_ceiling is not None
+            else None
+        ),
+        pareto_front_ids=[candidate.id for candidate in result.pareto_front],
         best_sequence="".join(TOKENS[i] for i in result.best.sequence),
         active_ids=[candidate.id for candidate in result.active],
         full_prediction_calls=result.stats["score_calls"] * len(args.selection_seeds),
@@ -1150,6 +1212,13 @@ def main(argv=None):
         f"Finished: {result.stop_reason}; best ipSAE={result.best.score:.4f}",
         flush=True,
     )
+    if args.retention_mode == "pareto":
+        print(
+            f"Worst-seed pose RMSD={summary['best_worst_pose_rmsd_A']:.3f} A; "
+            f"pose-qualified={summary['best_pose_qualified']} "
+            f"at ceiling {retention_ceiling:.3f} A",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

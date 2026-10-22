@@ -323,7 +323,7 @@ and separate forward scoring are implemented. Independent trajectories and local
 population competition are experimental policies; current results do not establish
 which is better. Confidence, pose error and measured fitness are distinct quantities.
 The earlier empirical record also found that lower composite loss could accompany
-worse experimental agreement; see [OpenDDE validation history](opendde_validation_history.md).
+worse experimental agreement; see [OpenDDE validation history](../P17_JN1.md).
 
 ## Documentation and implementation map
 
@@ -331,8 +331,8 @@ worse experimental agreement; see [OpenDDE validation history](opendde_validatio
 |---|---|
 | [Setup](../../SETUP.md) | Environment checks and OpenDDE documentation entry point |
 | [Detailed project record](../P17_JN1.md) | Historical results, implementation decisions and references |
-| [Literature review](protein_search_policy_review.md) | Search-policy papers and limits of the review |
-| [Earlier empirical evidence](opendde_validation_history.md) | OpenDDE findings retained from the mixed experiment log |
+| [Literature review](search_policy_review.md) | Search-policy papers and limits of the review |
+| [Earlier empirical evidence](../P17_JN1.md) | OpenDDE findings retained from the mixed experiment log |
 | [Cluster launcher](../../examples/run_p17_pose_experiment_cluster.sh) | Single entry point: preflight, patches, caches, then the gated run at the validated settings |
 | [Pose geometry tests](../../tests/test_pose_rmsd_geometry.py) | CPU orientation/shape separation and Kabsch alignment-derivative checks |
 | [Pose experiment](../../examples/p17_pose_experiment.py) | Stage barriers, bounded GPU workers and comparison summaries |

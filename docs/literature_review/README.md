@@ -1,5 +1,14 @@
 # Literature review: reaching a *specified* arrangement with predictor gradients
 
+**Project-context correction — 2026-10-22.** This is a dated literature
+review, not the current results summary. [P17_JN1.md](../P17_JN1.md), §§25,
+30–34, supersedes its early local diagnosis: a 14–27 Å pose RMSD does not
+mean the designed chain is that far from the specified site. Direct contact
+analysis found a mean closest approach of 2.7 Å, with orientation/registry
+errors. Later runs support gradient attribution on pose and Alpha recovery,
+but do not prove a JN1 performance ceiling. The literature sources were not
+re-audited as part of this documentation cleanup.
+
 Reviewed 2026-10-05. Entry point for this notes folder.
 
 ## Why this review exists, in proof-of-concept terms
@@ -46,29 +55,25 @@ nativeness of a location.** This is the most proof-of-concept-relevant
 conclusion in the whole review, because it says our retention metric cannot in
 principle carry the pose claim. ipSAE's pair set is
 `outer(chains==c1, chains==c2) & (PAE < cutoff)` — it never references the
-intended site, so no reduction over it can be made site-aware. We had already
-applied both obvious hardenings (mean rather than `max_i`, min rather than max
-over directions, both stricter than published ipSAE) and they changed nothing,
-which is now explained rather than puzzling. **The decisive object is the mask.**
+intended site. **Correction:** the implemented native helper retains `max_i`
+after averaging eligible partner residues. The local score takes the minimum
+of chain directions and averages across prediction seeds. A site-restricted
+mask would change the metric and require separate calibration.
 
-**3. "Stronger pose weight" is answered no, with measurements.** Three
-independent lines: a 10×-dominant RMSD term needed ~5× *more* optimisation
-steps with low RMSD "not guaranteed"; weight-based guidance achieved 0%
-constraint satisfaction across ~100k samples where a dual-variable method
-reached 100%; and Rosetta ramps coordinate restraints *down*, not up. What
-these pipelines schedule is the sequence *parameterisation*, not geometric
-weights. A larger edit budget is also the wrong lever — and should be expected
-to make off-site convergence *more* likely absent a site gate.
+**3. Weight changes are hypotheses, not established remedies.** The surveyed
+examples motivate checking gradient contributions and objective tradeoffs;
+they do not establish that every larger weight or edit budget must fail here.
+The local per-term gradient measurements are recorded later in §31.6.
 
-**4. Our pose term has no published precedent.** No published work backprops an
-inter-chain, align-on-target/measure-on-designed chain reference-pose RMSD through a
-predictor to optimise sequence. Every placement-specifying pipeline works in
-**distogram or contact space** instead. The mechanistic reason is gradient
-density: a distogram term feeds every pair directly from a network output head,
-whereas a global pose RMSD yields one scalar per step and the Kabsch step
-removes precisely the rigid-body component that constitutes most of the error.
-A hinge on that scalar is worse — `relu(rmsd − tol)` has gradient magnitude
-exactly 1 or 0 and carries no distance information at all.
+**4. Target-aligned pose RMSD retains relative placement error.** The local
+implementation fits the target and applies that transform to the designed
+chain; it does not independently align away that chain's orientation or
+translation. Both coordinate and distogram objectives may reduce to a scalar,
+so the number of output scalars does not establish gradient density. For
+`relu(rmsd − tol)`, the active derivative with respect to RMSD is one, but the
+sequence derivative still includes the geometry-dependent RMSD Jacobian.
+The cited implementations are useful comparisons, not a diagnosis of the
+local gradient without measurement.
 
 **5. Our two negative results are the novel contributions.** The failure mode
 has no accepted name; no design paper runs a compute-matched permuted-site
@@ -101,9 +106,10 @@ They measure complete pipelines including redesign, filtering and wet-lab
 triage, under budget accounting that is not commensurable with a score-call
 count. What transfers is mechanism.
 
-## Implementable items, mapped to this repository
+## Historical proposals, mapped to this repository
 
-Ordered by how much each changes the proof-of-concept readout per unit of work.
+Proposed in the original review; their ordering and benefit were not validated
+by a local comparison. Use the main record §34 for current evaluation priorities.
 
 | # | Change | Where | Grounding |
 |---|---|---|---|
@@ -114,9 +120,9 @@ Ordered by how much each changes the proof-of-concept readout per unit of work.
 | 5 | In-trajectory abort | search loop | RFantibody discards a trajectory when the closest specified residue is >10 Å from any designed loop, and aborts the job after 20 failures. Off by default; the existence of a failure counter implies the authors saw it fire often. |
 | 6 | Input-space site restriction | featurisation | BindCraft2 lysinates exposed surface outside a 10 Å shell; target-trimming to site fragments is reported to help. Both make an off-site pose unattractive or geometrically unavailable **without touching a loss weight**, which suits a sequence-gradient pipeline since it acts where we are already free to act. |
 
-Scale reference: a 14–27 Å displacement fails **every** published site-contact
-threshold — 4 Å heavy-atom, 5 Å atom / 15 Å token, 6 Å, 8 Å Cβ, 10 Å Cβ. Even
-the loosest criterion in the literature rejects these candidates.
+**Geometric correction:** pose RMSD and minimum site-contact distance are
+different measurements. A 14–27 Å pose RMSD does not imply failure of every
+contact gate. §25 measured nearby contacts despite substantial pose error.
 
 Two things not to copy: BindCraft 1's `Hotspot_RMSD` compares a design to its
 own hallucinated trajectory, unaligned, so an off-site trajectory is *rewarded*
@@ -136,7 +142,7 @@ independently confirmed.
 | `wrong_epitope_failure_mode_and_controls.md` | Whether the failure mode is documented, what negative controls the field runs, reported detection and mitigation |
 | `distance_restraint_conditioning.md` | Distance/pocket conditioning as a model input: what the predictor was trained to respond to, and parameter values |
 | `can_mutations_reorient_binding.md` | Whether sequence substitutions alone can reorient an existing arrangement, and the evidence behind it |
-| `continuous_relaxation_and_the_discretization_gap.md` | **Added 2026-10-07.** Relaxed vs discrete sequence optimization: the measured efficiency win, the cost of rounding back, initialization when a parent exists, and position-vs-identity proposals (RSO, RSS, Fast SeqProp, BindCraft staging, CoSiNE) |
+| `continuous_relaxation_and_the_discretization_gap.md` | **Updated 2026-10-22.** Reading map for continuous, discrete and gradient-guided search; BindCraft 1/2 code comparison, Fast SeqProp, RSO, PPDE, GWG, LaMBO-2, RSS, GGS and CoSiNE. Historical claims are qualified by the current review. |
 | `../site_targeting_synthesis.md` | Full synthesis, ~6,600 words, 48 inline citations |
 
 ## Caveats to carry forward

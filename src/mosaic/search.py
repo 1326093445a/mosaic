@@ -26,6 +26,8 @@ class SearchConfig:
     acceptance_temperature: float = 0.02
     seed: int = 0
     move_arity: int = 1
+    pareto_metric: str | None = None
+    pareto_ceiling: float | None = None
 
     def __post_init__(self):
         if self.policy not in ("independent", "population"):
@@ -57,6 +59,17 @@ class SearchConfig:
             or self.acceptance_temperature < 0
         ):
             raise ValueError("acceptance_temperature must be finite and >= 0")
+        if (self.pareto_metric is None) != (self.pareto_ceiling is None):
+            raise ValueError("pareto_metric and pareto_ceiling must be supplied together")
+        if self.pareto_metric is not None:
+            if not isinstance(self.pareto_metric, str) or not self.pareto_metric.strip():
+                raise ValueError("pareto_metric must be a nonempty metric name")
+            if self.policy != "population" or self.width < 2:
+                raise ValueError(
+                    "Pareto retention requires population policy and width >= 2"
+                )
+            if not np.isfinite(self.pareto_ceiling):
+                raise ValueError("pareto_ceiling must be finite")
 
 
 @dataclass(frozen=True)
@@ -88,6 +101,73 @@ class SearchResult:
     cheap_losses: dict[int, float]
     stats: dict[str, int | float]
     stop_reason: str
+    pareto_front: list[Candidate] = field(default_factory=list)
+
+
+def candidate_selection_key(candidate: Candidate, config: SearchConfig):
+    """Larger is better; ties select the earliest evaluation.
+
+    Pareto mode selects the highest score satisfying the metric ceiling. If no
+    candidate qualifies, it falls back to the smallest metric, then score.
+    Explicit constraint violations always take priority in either mode.
+    """
+    prefix = (-candidate.constraint_violation,)
+    if config.pareto_metric is None:
+        return (*prefix, candidate.score, -candidate.id)
+    metric = candidate.metrics[config.pareto_metric]
+    qualified = metric <= config.pareto_ceiling
+    return (
+        *prefix,
+        qualified,
+        candidate.score if qualified else -metric,
+        -metric if qualified else candidate.score,
+        -candidate.id,
+    )
+
+
+def pareto_front(candidates: list[Candidate], metric: str) -> list[Candidate]:
+    """Maximize score and minimize a metric, at the lowest constraint violation.
+
+    Objective ties retain the earliest evaluation. The returned frontier is
+    ordered by increasing metric, with strictly increasing scores.
+    """
+    if not candidates:
+        return []
+    violation = min(c.constraint_violation for c in candidates)
+    ordered = sorted(
+        (c for c in candidates if c.constraint_violation == violation),
+        key=lambda c: (c.metrics[metric], -c.score, c.id),
+    )
+    front, best_score = [], -np.inf
+    for candidate in ordered:
+        if candidate.score > best_score:
+            front.append(candidate)
+            best_score = candidate.score
+    return front
+
+
+def _pareto_population(front: list[Candidate], metric: str, width: int):
+    """Keep both extremes, then normalized crowding distance; pad small fronts.
+
+    This uses the entire evaluated frontier, including points previously omitted
+    from the active population. It makes no model calls and uses no randomness.
+    """
+    if len(front) > width:
+        distance = np.zeros(len(front))
+        distance[[0, -1]] = np.inf
+        for values in (
+            np.array([c.score for c in front]),
+            np.array([c.metrics[metric] for c in front]),
+        ):
+            span = values[-1] - values[0]
+            if span > 0:
+                distance[1:-1] += (values[2:] - values[:-2]) / span
+        indices = sorted(
+            range(len(front)), key=lambda i: (-distance[i], front[i].id)
+        )[:width]
+        front = [front[i] for i in indices]
+    chosen = sorted(front, key=lambda c: c.id)
+    return [chosen[i % len(chosen)] for i in range(width)]
 
 
 def _moves(sequence, wt, mask, budget, gradient):
@@ -325,6 +405,13 @@ def run_gradient_search(
     challenged incumbent's violation. All-zero violations preserve the original
     confidence-only behavior.
 
+    With `pareto_metric`, population retention instead maximizes confidence and
+    minimizes that metric. The active population samples the evaluated Pareto
+    frontier by crowding distance, preserving its two extremes. There is no
+    stochastic acceptance in this mode; acceptance_temperature is unused.
+    The metric ceiling governs final selection, not admission to the frontier,
+    so an initially out-of-ceiling population can still make progress.
+
     Unique confidence evaluations and unique parent gradient calls have separate
     ceilings. A proposal limit bounds duplicate revisits. Equal ceilings do not
     guarantee equal elapsed compute: returned counters/timings must be compared.
@@ -404,6 +491,10 @@ def run_gradient_search(
         metrics = {name: float(value) for name, value in score.metrics.items()}
         if not np.isfinite(value) or not all(np.isfinite(v) for v in metrics.values()):
             raise ValueError("confidence callback returned a nonfinite score or metric")
+        if config.pareto_metric is not None and config.pareto_metric not in metrics:
+            raise ValueError(
+                f"confidence callback is missing Pareto metric {config.pareto_metric!r}"
+            )
         stats["score_seconds"] += perf_counter() - before
         stats["score_calls"] += 1
         candidate = Candidate(len(archive), sequence, value, metrics, violation)
@@ -421,6 +512,10 @@ def run_gradient_search(
         return candidate, False
 
     active = [evaluate(sequence)[0] for sequence in initial]
+    front = []
+    if config.pareto_metric is not None:
+        front = pareto_front(list(archive.values()), config.pareto_metric)
+        active = _pareto_population(front, config.pareto_metric, config.width)
     emit("initialization", active_ids=[c.id for c in active])
     stop_reason = "proposal_budget"
     for attempt in range(config.max_proposals):
@@ -488,34 +583,43 @@ def run_gradient_search(
             proposal[position] = residue
         candidate, cache_hit = evaluate(validate(proposal))
         stats["proposals"] += 1
-        slot = _competitor(active, candidate, parent_slot, config.policy)
-        incumbent = active[slot]
-        improvement = candidate.score - incumbent.score
-        constraint_change = (
-            candidate.constraint_violation - incumbent.constraint_violation
-        )
-        duplicate = config.policy == "population" and any(
-            c.sequence == candidate.sequence for c in active
-        )
-        filling = (
-            config.policy == "population"
-            and sum(c.sequence == incumbent.sequence for c in active) > 1
-        )
-        protected = (
-            config.policy == "population"
-            and not filling
-            and candidate.retention_key < incumbent.retention_key
-            and incumbent.retention_key == max(c.retention_key for c in active)
-        )
-        accept = False
-        if not duplicate and not protected and constraint_change <= 0:
-            accept = constraint_change < 0 or filling or improvement >= 0
-            if not accept and config.acceptance_temperature > 0:
-                accept = rng.random() < np.exp(
-                    improvement / config.acceptance_temperature
-                )
+        if config.pareto_metric is not None:
+            duplicate = any(c.id == candidate.id for c in active)
+            front = pareto_front(list(archive.values()), config.pareto_metric)
+            active = _pareto_population(front, config.pareto_metric, config.width)
+            accept = not duplicate and any(c.id == candidate.id for c in active)
+            slot, incumbent, constraint_change = None, None, None
+            filling, protected = False, False
+        else:
+            slot = _competitor(active, candidate, parent_slot, config.policy)
+            incumbent = active[slot]
+            improvement = candidate.score - incumbent.score
+            constraint_change = (
+                candidate.constraint_violation - incumbent.constraint_violation
+            )
+            duplicate = config.policy == "population" and any(
+                c.sequence == candidate.sequence for c in active
+            )
+            filling = (
+                config.policy == "population"
+                and sum(c.sequence == incumbent.sequence for c in active) > 1
+            )
+            protected = (
+                config.policy == "population"
+                and not filling
+                and candidate.retention_key < incumbent.retention_key
+                and incumbent.retention_key == max(c.retention_key for c in active)
+            )
+            accept = False
+            if not duplicate and not protected and constraint_change <= 0:
+                accept = constraint_change < 0 or filling or improvement >= 0
+                if not accept and config.acceptance_temperature > 0:
+                    accept = rng.random() < np.exp(
+                        improvement / config.acceptance_temperature
+                    )
+            if accept:
+                active[slot] = candidate
         if accept:
-            active[slot] = candidate
             stats["accepted"] += 1
         emit(
             "proposal",
@@ -523,7 +627,7 @@ def run_gradient_search(
             parent_slot=parent_slot,
             parent_id=parent.id,
             candidate_id=candidate.id,
-            competitor_id=incumbent.id,
+            competitor_id=incumbent.id if incumbent is not None else None,
             competitor_slot=slot,
             accepted=bool(accept),
             constraint_change=constraint_change,
@@ -538,6 +642,8 @@ def run_gradient_search(
             proposal_temperature=temperature,
             feasible_moves=len(moves),
             active_ids=[c.id for c in active],
+            retention_mode="pareto" if config.pareto_metric is not None else "confidence",
+            pareto_front_ids=[c.id for c in front],
             score_calls=stats["score_calls"],
             gradient_calls=stats["gradient_calls"],
         )
@@ -545,14 +651,15 @@ def run_gradient_search(
         if stats["score_calls"] >= config.max_score_calls:
             stop_reason = "score_budget"
     stats["elapsed_seconds"] = perf_counter() - started
-    best = max(archive.values(), key=lambda c: c.retention_key)
+    best = max(archive.values(), key=lambda c: candidate_selection_key(c, config))
     emit(
         "complete",
         stop_reason=stop_reason,
         best_id=best.id,
         active_ids=[c.id for c in active],
+        pareto_front_ids=[c.id for c in front],
         stats=stats.copy(),
     )
     return SearchResult(
-        best, active, list(archive.values()), cheap_losses, stats, stop_reason
+        best, active, list(archive.values()), cheap_losses, stats, stop_reason, front
     )

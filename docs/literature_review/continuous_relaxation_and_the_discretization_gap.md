@@ -1,5 +1,110 @@
 # Continuous relaxation of a discrete sequence, and the cost of rounding it back
 
+## Current reading map and BindCraft2 code comparison — 2026-10-22
+
+**Continuous and discrete describe the search representation; gradient guidance
+can be used with either.** The hybrid idea has several precedents. A staged
+handoff, straight-through optimization, gradient-informed discrete proposals
+and guided diffusion are different ways to combine them, not interchangeable
+implementations of one algorithm.
+
+This update supersedes the categorical recommendations in the October 7 review.
+The comparison below distinguishes published papers, a preprint, current
+software documentation and observations from this repository.
+
+| Source | How continuous/discrete variables and gradients interact | Relevance and evidence limit |
+|---|---|---|
+| [BindCraft 1, Nature 2025](https://www.nature.com/articles/s41586-025-09429-6); [official algorithm description](https://github.com/martinpacesa/BindCraft#implemented-design-algorithms) | Relaxed gradient optimization transitions to hard sequences and semigreedy refinement. | Direct precedent for staged hybrid search. The complete pipeline's experimental results do not isolate the contribution of each optimizer stage. |
+| [BindCraft2 design guide](https://github.com/PacesaLab/BindCraft2/blob/b6fb3ae15ab6a702f1156cffc11bcc3323c2fd06/docs/source/design-guide.md) | Relaxed stages, gradient-based hardening, mutation polishing, then ProteinMPNN redesign and validation. | Code-level comparator, not a reproduction of its performance. The [official site](https://www.pacesalab.com/bindcraft) labels its preprint “coming soon” at this review date. |
+| [Fast SeqProp: Fast activation maximization for molecular sequence design, 2021](https://pmc.ncbi.nlm.nih.gov/articles/PMC8527647/) | Evaluates sampled discrete sequences while updating normalized continuous logits with a straight-through estimator. | A within-iteration bridge between the two representations. Straight-through gradients are surrogate gradients, not exact derivatives of discrete sampling. |
+| [RSO: Scalable protein design using optimization in a relaxed sequence space, Science 2024](https://pmc.ncbi.nlm.nih.gov/articles/PMC11734486/) | Relaxed sequence optimization produces a backbone; ProteinMPNN generates discrete sequences for that backbone. | Evidence for relaxed search plus a separate decoder. It is not evidence that simple rounding preserves the result or that a parent-relative edit cap is satisfied. |
+| [PPDE / EvoProtGrad, 2023](https://arxiv.org/abs/2212.09925) | Uses gradients to propose discrete sequence changes in a product-of-experts MCMC framework. | Relevant to gradient-guided discrete search; it does not require a continuous seeding phase. The local confidence-retention harness is not automatically the same sampler. |
+| [Gibbs With Gradients: Oops I Took A Gradient, ICML 2021](https://proceedings.mlr.press/v139/grathwohl21a.html) | Uses local gradient information to construct discrete Metropolis–Hastings proposals. | Foundational explanation of how gradients guide discrete moves. Its sampling guarantees do not transfer to an arbitrary acceptance rule. |
+| [LaMBO-2 / NOS: Protein Design with Guided Discrete Diffusion, NeurIPS 2023](https://proceedings.neurips.cc/paper_files/paper/2023/hash/29591f355702c3f4436991335784b503-Abstract-Conference.html) | Guides discrete diffusion through gradients in denoiser hidden states; saliency supports edit-constrained design. | Particularly relevant to the distinction between choosing positions and generating replacements. It requires a generative model and is not a drop-in logit optimizer. |
+| [RSS: Relaxed Sequence Sampling for Diverse Protein Design, 2025 preprint](https://arxiv.org/abs/2510.23786) | Combines gradient-informed moves and language-model-informed jumps in continuous logit space. | Relevant to combining local guidance and broader exploration. Its reported gains concern computational designability and diversity; jumps do not make the maintained state a hard sequence. |
+| [GGS: Improving Protein Optimization with Smoothed Fitness Landscapes](https://arxiv.org/abs/2307.00494) | Learns a smoothed fitness landscape and applies discrete MCMC. | Separates the quality of the modeled landscape from the search procedure; it adds modeling work beyond a frozen-predictor optimizer. |
+| [CoSiNE: Conditionally Site-Independent Neural Evolution of Antibody Sequences, ICML 2026](https://arxiv.org/abs/2602.18982) | A learned continuous-time Markov chain over discrete sequences, with guided sampling. | Continuous **time** is not a continuous sequence relaxation. Useful adjacent work, but a different model family. |
+
+### What the supplied BindCraft2 checkout actually does
+
+Read-only inspection of `/storage/frank/BindCraft2`, clean at commit
+`b6fb3ae15ab6a702f1156cffc11bcc3323c2fd06` (2026-10-20):
+
+- [`build_stage_plan`](https://github.com/PacesaLab/BindCraft2/blob/b6fb3ae15ab6a702f1156cffc11bcc3323c2fd06/bindcraft/trajectory.py#L207)
+  constructs `screen`, `refine`, `anneal`, then `harden`. The first stages use
+  continuous parameters; hardening still uses sequence gradients.
+- [`straight_through_one_hot`](https://github.com/PacesaLab/BindCraft2/blob/b6fb3ae15ab6a702f1156cffc11bcc3323c2fd06/bindcraft/sequence_optimization.py#L38)
+  presents a hard sequence in the forward computation while retaining a soft
+  gradient path. Hard model input therefore does not imply gradient-free search.
+- [`run_sequence_mutation_stage`](https://github.com/PacesaLab/BindCraft2/blob/b6fb3ae15ab6a702f1156cffc11bcc3323c2fd06/bindcraft/trajectory.py#L152)
+  uses forward predictions and weighted design loss. Its mutation sampler uses
+  confidence-weighted position choices and stored sequence values; this stage
+  does not call `sequence_gradients` for fresh gradient-ranked proposals.
+- [`select_best_sequence`](https://github.com/PacesaLab/BindCraft2/blob/b6fb3ae15ab6a702f1156cffc11bcc3323c2fd06/bindcraft/sequence_optimization.py#L212)
+  retains the lower design loss. Final campaign acceptance and ranking occur
+  later, with redesign, validation and filters. Design loss and final ranking
+  should not be conflated.
+
+### Relationship to the local pipeline
+
+Our `bindcraft` branch is Mosaic's implementation of a BindCraft-style staged
+optimizer, operating with OpenDDE and local losses. It already includes a
+straight-through hard stage. It returns probabilities, which the seeder
+projects to a budget-feasible sequence. The discrete harness then starts from
+that sequence; it does not receive the full continuous optimizer state.
+
+Our discrete proposals use composite-loss gradients, while default retention uses
+ipSAE. The optional Pareto mode now retains confidence–pose tradeoffs (§35).
+BindCraft2's mutation polishing uses design-loss selection and forward
+predictions. These are material differences, not evidence that one must win.
+Both are sequential hybrids; the local experiment has not tested every possible
+way of coupling continuous and discrete search.
+
+**Interpretation for the project:** the literature supports studying hybrid
+methods. The local results in [P17_JN1.md](../P17_JN1.md), §§30–34, establish
+some gradient attribution but no demonstrated advantage from the tested
+continuous-seeding handoff. That comparison cannot reject hybrid methods in
+general. The relevant comparison remains the quality of final feasible discrete
+outputs under comparable total compute, with selection and evaluation metrics
+reported separately.
+
+### Verification scope
+
+The update checked the supplied BindCraft2 stage, optimizer and mutation code,
+its official documentation, published RSO and Fast SeqProp full-text passages,
+RSS full text, and primary publication/abstract pages for the remaining papers.
+BindCraft 1's publication record and official algorithm description were
+available; full-text access was blocked on this pass. Paper experiments and
+BindCraft2 model runs were not reproduced. The older detailed note below retains
+its own access limits; its absence-of-literature claims are not exhaustive.
+
+### Follow-up: enforcing a small edit budget during search
+
+The following primary sources were checked specifically for the five-edit
+question. They support different components, not a complete validated local method.
+
+| Paper | Relevant mechanism | Limit of the evidence |
+|---|---|---|
+| [LaMBO-2 / NOS, NeurIPS 2023, §4.2 and Fig. 6](https://papers.neurips.cc/paper_files/paper/2023/file/29591f355702c3f4436991335784b503-Paper-Conference.pdf) | Samples a bounded set of edit positions using gradient saliency, then generates replacements while preserving unselected positions. Position selection was influential in its limited-edit ablation. | A learned diffusion/value-model system; not evidence that a changing top-five gate inside OpenDDE works. A small edit count also does not guarantee pose preservation. |
+| [Fast SeqProp, 2021](https://pmc.ncbi.nlm.nih.gov/articles/PMC8527647/) | Evaluates discrete samples while updating continuous sampling parameters through a straight-through approximation. | Supports the hard-forward/continuous-update bridge, not an exact parent-relative five-edit guarantee. |
+| [PPDE, §3–4](https://arxiv.org/html/2212.09925) | Builds a path of gradient-informed discrete edits and accepts or rejects its combined endpoint, avoiding exhaustive enumeration of multi-edit neighborhoods. | Path length is a proposal-size limit, not a cumulative distance cap from the original sequence. First-order proposals still approximate interactions. |
+
+**Local inference:** test budget-aware position choice and joint endpoint
+evaluation before committing to a continuously learned position gate. The
+original reference must remain the budget anchor across feedback rounds; a
+fresh allowance per round would solve a different problem. An expected-edit
+penalty alone is not an exact bound on every sampled sequence.
+
+The proposed feedback loop is agreed in principle. Its mechanism, objective
+consistency, and recovery performance require separate tests. The concrete
+consistency checks and their current status are recorded in
+[P17_JN1.md §35.4](../P17_JN1.md#354-objective-consistency-what-is-checked-and-what-is-pending).
+
+---
+
+## October 7 review, with corrections
+
+
 Scope note: this covers (a) whether optimizing a *relaxed* (continuous, simplex- or
 logit-valued) sequence beats taking discrete moves, and on what evidence; (b) what
 is known about the loss incurred when the relaxed result is rounded back to a
@@ -26,9 +131,8 @@ the starting sequence? See §22.5, §23.4, §24.6 and §27 of
 
 ### Takeaway
 
-**Yes, decisively, on the one direct benchmark I found — but in the unconstrained
-de novo regime, and scored by self-consistency rather than by agreement with a
-specified reference arrangement.** The relaxed-sequence-space (RSO) paper is the
+**RSO reports an advantage in its benchmark, but this does not establish a
+universal ordering of continuous and discrete methods.** The relaxed-sequence-space (RSO) paper is the
 only source located that runs relaxed, rounded-discrete and MCMC variants against
 each other inside one framework. No source compares a relaxed stage against a
 discrete search *under an edit budget measured from a parent sequence*, which is
@@ -89,20 +193,17 @@ this project's regime.
 
 ### Takeaway
 
-**No, and this is measured rather than argued.** RSO reports that taking its
-relaxed result to one-hot directly produced unusable designs, which is *why* a
-separate discrete refinement model is a required pipeline stage rather than a
-convenience. Every relaxed method located ends with a discrete model cleaning up
-after it. **No source consumes `argmax` of its own relaxed optimum as the answer.**
+**Rounding can lose the benefit of relaxation.** The published RSO paper
+reports structural disagreement after direct argmax conversion and uses
+ProteinMPNN for sequence generation. This is evidence for its pipeline, not a
+universal claim that rounding always fails or every method needs a separate decoder.
 
 ### Cited Findings
 
-- RSO: the discrete conversion is post-hoc, **"saved as pdb files with a
-  placeholder sequence generated by taking the argmax of the sequence logits"** —
-  and directly one-hot-encoding the relaxed sequences **"resulted in largely
-  insoluble proteins"**, which the authors give as the reason a separate
-  inverse-folding refinement stage is necessary despite successful optimization.
-  No quantified size for the rounding loss is given — [RSO](https://www.biorxiv.org/content/10.1101/2023.02.24.529906v1.full)
+- **Correction from the published RSO text (2026-10-22):** direct argmax
+  conversion caused structural disagreement; sequences obtained after annealing
+  had poor experimental success. The earlier insolubility wording conflated
+  distinct outcomes. [Published RSO](https://pmc.ncbi.nlm.nih.gov/articles/PMC11734486/)
 - RSS avoids the problem by **never binarizing during search**: logits stay
   continuous, their softmax gives per-position distributions, and a discrete model
   is applied only at final evaluation. No intermediate rounding step exists —
@@ -121,13 +222,10 @@ after it. **No source consumes `argmax` of its own relaxed optimum as the answer
 
 ### Inferences
 
-- The field has exactly three answers to the rounding problem, and they are
-  mutually exclusive in practice: **anneal to discrete inside the optimization**
-  (BindCraft), **never discretize and correct the search instead** (RSS), or
-  **round and then repair with a separate discrete model** (RSO). A fourth option —
-  round once, by truncation, and treat the result as a finished starting point — is
-  not used by any source located, and RSO's insolubility finding is direct evidence
-  against it.
+- Staged hardening, straight-through sampling and inverse-folding decoding
+  are different approaches to the continuous/discrete boundary. They are not
+  mutually exclusive or an exhaustive taxonomy. Their existence does not
+  establish which handoff is best for this project's constraints.
 - Fast SeqProp's framing is the most relevant diagnosis for a ranking built on
   margins in probability space. Once the relaxed variable saturates near a simplex
   vertex, differences between the preferred and the parent entry compress toward
@@ -141,8 +239,7 @@ after it. **No source consumes `argmax` of its own relaxed optimum as the answer
 
 ### Gaps
 
-- Nobody quantifies the rounding loss. RSO's evidence is a qualitative outcome
-  ("largely insoluble"), not a measured drop in the optimized objective between
+- Nobody quantifies the rounding loss. RSO's evidence includes structural disagreement and experimental outcomes, not a measured drop in the optimized objective between
   the relaxed point and its rounding.
 - No source evaluates rounding **under a budget truncation** — i.e. keeping only
   the *k* largest changes and reverting the rest. That operation has no published
@@ -287,39 +384,21 @@ the composite move reversible.
 
 ## What this implies for the project
 
-Stated as consequences, not recommendations, with the relevant sections named.
+**Updated 2026-10-22.** The former list treated proposed mechanisms as proved
+requirements. Anchored initialization is a choice, not a theorem; probability
+margins alone cannot establish sequence quality; and a literature search cannot
+prove that a handoff has no precedent. The local launcher now measures the
+combined edit budget against the reference, so the old double-budget warning
+does not describe that implemented path. A comparison must verify its actual
+budget anchor rather than infer one from the names of the stages.
 
-1. **Anchoring the relaxed initialization is forced rather than preferred.** No
-   published method anchors, because none has a parent; the noise initialization is
-   inherited from a regime with no starting point. The hinge arithmetic in Q3
-   explains what the current initialization costs.
-2. **Taking `argmax` of a budget-truncated relaxed result is the one option the
-   literature does not use.** The three published resolutions are anneal-to-discrete
-   inside the optimization (BindCraft), never discretize (RSS), or round-then-repair
-   with a separate model (RSO). Round-and-consume has no precedent and RSO's
-   insolubility result argues against it.
-3. **If the round-then-repair shape is chosen, the budget accounting is the hazard.**
-   §22.5 established that the edit cap is measured from the search's own start, so a
-   seed at *k* edits followed by a fresh *k*-edit budget permits `2k` from the true
-   parent — and §27.3 measured that more edits produced more of the inverted
-   placement mode. A pose regression under that arrangement would be attributable to
-   the doubled budget, not to the relaxed stage.
-4. **Ranking kept substitutions by a margin in probability space is the known failure
-   mode, not an implementation detail.** Fast SeqProp's normalization-plus-hard-loss
-   is the published alternative. §8.7 already lists that paper as relevant to this
-   handoff.
-5. **The cheapest item with literature behind it needs no relaxed stage at all:**
-   positions from gradient magnitude, identities from the pretrained sequence model
-   (RSS's jump kernel, minus MALA). It targets §22.5's measured gap directly and is
-   a change to the proposal distribution inside the existing harness.
-6. **§24.6 is unaffected.** It rejected a relaxed representation as a *placement*
-   fix, and nothing above connects the reparameterization to placement. The case in
-   this note is about identity selection and budget traversal (§23.2), which is a
-   different claim.
+The current reading map above supplies the applicable distinctions. None of
+these papers establishes the cause of this project's inconclusive seeding
+comparison or proves that changing representation will recover a reference pose.
 
-## Access limits and provenance
+## Historical access limits and provenance
 
-- **Fast SeqProp:** the arXiv PDF would not parse and the publisher version is
+- **Fast SeqProp (October 7 access; published PMC text checked October 22):** the arXiv PDF would not parse and the publisher version is
   behind an authentication redirect. Its mechanism and headline numbers here come
   from the abstract and indexed summaries of the published version, **not** verified
   full text. The initialization-sensitivity question put to it is unanswered.
@@ -330,8 +409,9 @@ Stated as consequences, not recommendations, with the relevant sections named.
   not confirmed in the body text and should be treated as unverified.**
 - **RSS:** read from the full HTML version. Initialization is genuinely unspecified
   in the text, not merely unretrieved.
-- **RSO:** read from the full text. The insolubility and iteration-count findings are
-  from its own reporting; neither was reproduced.
+- **RSO:** the original note used the preprint. The published-text correction
+  above replaces the insolubility attribution; the older iteration comparison
+  was not independently rechecked or reproduced in this update.
 - **PPDE:** mechanism from the abstract and a search summary only.
 - No paper's experiments were reproduced, and no claim in this note was tested
   against this project's models.

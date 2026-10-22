@@ -1,5 +1,14 @@
 # Specified site / binding-site specification and enforcement in diffusion-based and inverse-folding sequence optimization pipelines
 
+**Project-context correction — 2026-10-22.** This is a dated literature
+review, not the current results summary. [P17_JN1.md](../P17_JN1.md), §§25,
+30–34, supersedes its early local diagnosis: a 14–27 Å pose RMSD does not
+mean the designed chain is that far from the specified site. Direct contact
+analysis found a mean closest approach of 2.7 Å, with orientation/registry
+errors. Later runs support gradient attribution on pose and Alpha recovery,
+but do not prove a JN1 performance ceiling. The literature sources were not
+re-audited as part of this documentation cleanup.
+
 **Scope note.** Notes current as of 2026-10. Where a mechanism is read directly from source, the file path and line numbers are given. Local paths refer to clones on this machine; GitHub URLs are given alongside so the report-writer can cite publicly.
 
 **Terminology used consistently below (this is the distinction the user cares about):**
@@ -352,9 +361,9 @@ No paper in this set reports an aggregate rate of designs binding an unintended 
 - BindCraft reports specificity in the cross-reactivity sense rather than the specified site-location sense: *"no off-target binding observed even at 10 μM designed chain concentration to other allergens"*, with cryo-EM validation — [Nature 2025](https://www.nature.com/articles/s41586-025-09429-6)
 
 ### Inferences
-- The absence of a published "fraction of designs that bound the wrong site" number is itself the finding: the field's standard reporting unit is *designed chains obtained per designs tested*, which silently conflates site-correct and site-incorrect binding. The user's observed failure (correct fold, large interface, 14-27 Å displaced, high ipSAE) is therefore not anomalous or well-characterised in the literature — it is the failure mode that published pipelines prevent at the *conditioning/restraint* stage and verify only in the wet lab.
+- The absence of a published "fraction of designs that bound the wrong site" number is itself the finding: the field's standard reporting unit is *designed chains obtained per designs tested*, which silently conflates site-correct and site-incorrect binding. The local combination of correct fold, large interface, high ipSAE and large pose RMSD does not by itself identify an off-site failure. Direct geometry is needed to distinguish location from orientation and registry.
 - Every published remedy sits at one of two points, and neither is a confidence metric: **before/during generation** (conditioning channel, contact loss, mid-trajectory abort) or **after the experiment** (competition, mutagenesis, cryo-EM). The only in-silico post-hoc site check found anywhere in released code is BindCraft's `Average_Hotspot_RMSD < 6`.
-- The thresholds that recur — 4 Å heavy-atom (BindCraft interface enumeration), 5 Å atom / 15 Å token (BoltzGen), 6 Å (Boltz-2 pocket `max_distance`; BindCraft anchor residue RMSD), 8 Å Cβ (RFantibody anchor residue training definition), 10 Å Cβ (RFdiffusion anchor residue definition; RFantibody abort threshold) — give a defensible range for a specified site-contact gate. A 14-27 Å displacement is far outside all of them, so even the loosest published criterion would reject the user's designs.
+- The thresholds that recur — 4 Å heavy-atom (BindCraft interface enumeration), 5 Å atom / 15 Å token (BoltzGen), 6 Å (Boltz-2 pocket `max_distance`; BindCraft anchor residue RMSD), 8 Å Cβ (RFantibody anchor residue training definition), 10 Å Cβ (RFdiffusion anchor residue definition; RFantibody abort threshold) — give a defensible range for a specified site-contact gate. These are contact-distance thresholds, not pose-RMSD thresholds. The local 14–27 Å pose RMSD cannot determine whether any of these gates would reject a candidate; §25 supplies direct contact measurements.
 
 ### Gaps
 - No pipeline publishes a site-recovery rate (e.g. "X% of designs had ≥50% specified site overlap"). I found no reliable source for such a statistic for any of RFdiffusion, RFantibody, AlphaProteo, EvoBind, or BindCraft.

@@ -22,20 +22,23 @@ entry, and the cosine between every pair of term gradients. Five terms:
 Weighted values are reported, because the question is about relative influence on
 the search, not about the bare terms.
 
+This legacy diagnostic omits the confidence terms used by the full discrete
+proposal objective. It is not a continuous-versus-discrete consistency test.
+
 ⚠️ THREE LIMITS, EACH OF WHICH CHANGES HOW THE NUMBERS READ.
 
 1. The three structure terms are built as separate `opendde.build_loss` objects,
-   so each gets its own forward pass. That matches how the real composite is
-   constructed, but it is NOT one prediction decomposed: with stochastic
-   sampling the three gradients are taken through three different predictions.
-   `--key-seed` is fixed and shared so they are as comparable as the model
-   allows, and `--repeats` quantifies what is left.
+   so each gets its own forward evaluation. The production composite instead
+   combines its structure terms inside one model loss. Shared top-level keys
+   alone do not establish agreement with that composite's effective model key.
+   This script does not verify that agreement or decompose a shared forward pass.
 
 2. The real composite applies `ClippedGradient(..., CLIP_GRADIENT_NORM)` to the
-   COMBINED OpenDDE loss, not to each structure term. These per-term norms are
-   therefore pre-clipping influences. A term can dominate here and still be
-   clipped back in the real run, so read the ratios as "what each term asks
-   for", not "what the search received".
+   COMBINED OpenDDE loss. Here, `through_opendde` clips each structure term
+   separately (and the pose term has its own inner clipping). These norms are
+   NOT pre-clipping norms and their gradients cannot in general be summed to
+   recover the production gradient. Their shares do not measure causal influence
+   on candidate selection.
 
 3. One sequence is one point. §28.3 is the standing caution that the objective is
    evaluated at a one-hot vertex and the gradient is a local object; a term that
@@ -293,11 +296,12 @@ def main(argv=None):
         interpretation=(
             "Weighted per-term gradient norms over the designable rows at one "
             "sequence. Each structure term is built through its own "
-            "opendde.build_loss, so the three were differentiated through three "
-            "separate predictions rather than one decomposed prediction; the "
-            "real composite also clips the COMBINED OpenDDE gradient, so these "
-            "are pre-clipping influences. Read them as what each term asks for, "
-            "not as what the search received."
+            "opendde.build_loss, so the three use separate forward evaluations "
+            "rather than one decomposed model evaluation; the "
+            "real composite clips the COMBINED OpenDDE gradient, whereas this "
+            "diagnostic clips each structure term separately. These are not "
+            "pre-clipping gradients and their sum need not match production. "
+            "Confidence terms are omitted; this is not a stage-consistency test."
         ),
     ), indent=2) + "\n")
 

@@ -1,6 +1,11 @@
 ## Functional, multi-objective protein design using continuous relaxation.
 
-For the OpenDDE work in this checkout, start with the [detailed project record](docs/P17_JN1.md) (its last section is the current status; the [2026-10-03 handoff](docs/archive/p17_status_and_next_steps.md) is archived), [setup](SETUP.md), and the [detailed project record](docs/P17_JN1.md). The current result is **§33 (2026-10-16)**: continuous-relaxation seeding does not help the discrete search at edit budgets 5 or 7, the exchange-move confound is closed, and the ~7 Angstrom optimum is a degenerate plateau whose height is set by the objective rather than by the search. All 120 structures in that run remain CAPRI-incorrect, so nothing there is about binding. The general Mosaic reference follows.
+For the OpenDDE work, start with the [project record](docs/P17_JN1.md),
+[documentation index](docs/README.md), and [setup guide](SETUP.md).
+The current assessment (2026-10-22, §34) supports a computational proof of
+concept: gradients improve predicted pose relative to uniform proposals, and
+an Alpha recovery control succeeds. Reliable JN1 recovery and a continuous
+seeding advantage remain unestablished. The general Mosaic reference follows.
 
 
 > **WARNING**: Unlike [BindCraft](https://www.nature.com/articles/s41586-025-09429-6) (which is a well-tested and well-tuned method for generic binder design), `mosaic` may require substantial hand-holding (tuning learning rates, etc), often produces proteins that fail simple in-silico tests, should be combined with standard filtering methods, etc. This is not for the faint of heart: the intent is to provide a framework in which to implement custom objective functions and optimization algorithms for your application. You can read about some applications in [our blog](https://blog.escalante.bio).

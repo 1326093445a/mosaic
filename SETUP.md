@@ -1,9 +1,10 @@
 # OpenDDE setup and validation
 
 This guide covers the OpenDDE work in this checkout. Start with
-[the current status and next steps](docs/archive/p17_status_and_next_steps.md) for the
-latest findings; [the detailed record](docs/P17_JN1.md) contains history
-and references.
+[the project record](docs/P17_JN1.md) for the current assessment and
+[the documentation index](docs/README.md) for related reviews. The
+[October 3 handoff](docs/archive/p17_status_and_next_steps.md) is a historical
+snapshot, not current launch guidance.
 
 ## Environment
 

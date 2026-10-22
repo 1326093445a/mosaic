@@ -1,5 +1,14 @@
 # Can a Small Number of Sequence Mutations Reorient a Designed chain?
 
+**Project-context correction — 2026-10-22.** This is a dated literature
+review, not the current results summary. [P17_JN1.md](../P17_JN1.md), §§25,
+30–34, supersedes its early local diagnosis: a 14–27 Å pose RMSD does not
+mean the designed chain is that far from the specified site. Direct contact
+analysis found a mean closest approach of 2.7 Å, with orientation/registry
+errors. Later runs support gradient attribution on pose and Alpha recovery,
+but do not prove a JN1 performance ceiling. The literature sources were not
+re-audited as part of this documentation cleanup.
+
 > Scope note: this file covers *binding-mode / orientation / approach-angle* change versus *affinity* change under few mutations. Throughout, I mark explicitly whether a cited change is (a) affinity only, (b) local side-chain/loop conformation, (c) intramolecular domain reorientation (e.g. VH–VL torsion, elbow angle), or (d) a change in the rigid-body docking pose of the designed chain on the antigen. The project's failure mode (12–52° rotations, 156–178° flips at the correct specified site) is category (d). Conflating (a)–(c) with (d) is the dominant error in this literature.
 >
 > Verification note: several claims below were surfaced only as search-engine synthesis of a source's text and I could not retrieve the full text (paywalls, and a number of fetches were blocked mid-session by a tool-side safety classifier). Every such claim is flagged `[snippet-only]` and, where the primary attribution is uncertain, `[attribution unverified]`. Treat flagged items as leads for the report writer to confirm, not as established numbers.
@@ -169,7 +178,12 @@ Docking practice is built on the premise that point mutations modulate affinity 
 ## Q8. Bottom line for the project
 
 ### Takeaway
-State it plainly: **no published work — in silico or experimental — demonstrates that a sequence-space search over a handful of designable region point substitutions reorients a designed chain on its target.** The documented determinants of approach angle and docking polarity are germline V-gene identity, designable region 3 length/indels, and canonical backbone class; the documented effect of designable region point substitutions is affinity, preorganisation and rigidification *within* a conserved pose. A 5-substitution, fixed-length, designable-only budget edits the one variable that the structural evidence says does not set orientation. A null result from such a search is a property of the feasible set, not a failure of the optimiser.
+The reviewed examples emphasize scaffold, backbone and loop geometry, but an
+unsuccessful search does not prove that a solution lies outside its feasible
+set. The Alpha control explicitly includes a reachable reference, and later
+§31 results recover one candidate with mean iRMSD 1.72 Å. The survey's absence
+of a matching published example is a limit of the reviewed evidence, not an
+impossibility result for this predictor. JN1 reachability remains unresolved.
 
 ### Cited Findings
 Consolidated, highest-weight evidence:
@@ -184,11 +198,11 @@ Consolidated, highest-weight evidence:
 - **The one documented single-mutation pose effect is basin selection, at a fixed position** — W116Y collapsed a bimodal ipTM pose distribution to a single mode: [arXiv:2606.12772](https://arxiv.org/html/2606.12772).
 
 ### Inferences
-- Two testable, decision-relevant predictions follow for the project:
-  1. **The 156–178° population is almost certainly unreachable** from a fixed designable region 3 length and fixed framework. Its natural analogues (IGHV3-53 mode A/B; reversed TCR docking) are produced by ≥5-residue designable region 3 length differences and by different germline V genes. Measure it: check whether the reference pose and the recovered flipped poses would require different designable region 3 lengths or FR2 exposure to be optimal.
-  2. **The 12–52° population may be partly reachable, but as basin selection rather than steering.** If the frozen predictor already places the scaffold in a bimodal pose distribution (as EasyNano's unmodified AQP4 framework did, and as VHH contact face-ensemble studies would predict), then a few substitutions — including *framework* substitutions, which the current budget excludes — can shift which basin dominates. That is a different search problem from continuous rotation and should be instrumented as such (count basins, not degrees).
-- Design-space implication, stated in the field's own terms: to make orientation reachable the search must include at least one of (a) designable region 3 length / indels, (b) framework and FR2 positions, (c) germline/scaffold choice, or (d) explicit backbone generation against the specified pose, as RFdiffusion-antibody does. Keeping the 5-substitution designable-only budget and expecting reorientation is asking sequence to do a job the structural literature assigns to the backbone.
-- A corollary for how to report a null: because orientation appears to be outside the feasible set, the informative experiment is not "did the search reorient the designed chain" but "did the search improve interface quality at an unchanged pose". If it did, the optimiser worked and the parameterisation was wrong.
+- **Correction to the original local implications:** the review does not
+establish that flipped poses are unreachable or that a broader sequence space
+is required. Basin selection, search failure and proxy mismatch remain
+possible explanations. Report the observed recovery and its controls without
+assigning a null result to the feasible set alone.
 
 ### Gaps
 - **No dedicated negative-result paper exists.** The claim "nobody has shown sequence-only reorientation" rests on (i) my failure to find any such report across ~15 distinct queries spanning structural immunology, affinity maturation, designed chain structure, docking and design, and (ii) the explicit fixed-pose premises of MutDock, ProteinMPNN and EasyNano. It should be reported with that epistemic status, not as a cited impossibility proof.

@@ -1,6 +1,15 @@
 # The "high interface confidence, wrong binding site" failure mode in AF-guided sequence optimization: names, documented instances, detection, controls, mitigations
 
-**Scope note / headline caveat for the report writer.** The specific failure the user describes — a design that reaches *native-level* predicted interface confidence (ipSAE 0.77 vs 0.795) while docking 14–27 Å away from the specified specified site, with correct fold and a large 36–50 residue interface — is **not a named, well-documented, experimentally-confirmed failure mode in the published literature**. What *is* documented, and documented well, are four adjacent things that together make the user's observation expected rather than anomalous: (1) binding to the *wrong target* ("off-design hits"); (2) binding mode / docking-pose deviation from the design model; (3) AF interface confidence being a poor and adversarially-satisfiable discriminator, especially for antibody–antigen; (4) the near-total absence of negative-control *targets* (scrambled/permuted sites) in design papers. The user's permuted-specified site control scoring ~2× the real target at matched compute is, as far as I can find, a **control almost nobody in the field runs** — which is itself the most important finding here. Below, computational-only vs experimentally-confirmed is flagged throughout.
+**Project-context correction — 2026-10-22.** This is a dated literature
+review, not the current results summary. [P17_JN1.md](../P17_JN1.md), §§25,
+30–34, supersedes its early local diagnosis: a 14–27 Å pose RMSD does not
+mean the designed chain is that far from the specified site. Direct contact
+analysis found a mean closest approach of 2.7 Å, with orientation/registry
+errors. Later runs support gradient attribution on pose and Alpha recovery,
+but do not prove a JN1 performance ceiling. The literature sources were not
+re-audited as part of this documentation cleanup.
+
+**Scope note / headline caveat for the report writer.** The specific failure the user describes — a design that reaches *native-level* predicted interface confidence (ipSAE 0.77 vs 0.795) while showing 14–27 Å target-aligned pose RMSD (not distance from the specified site), with correct fold and a large 36–50 residue interface — is **not a named, well-documented, experimentally-confirmed failure mode in the published literature**. What *is* documented, and documented well, are four adjacent things that together make the user's observation expected rather than anomalous: (1) binding to the *wrong target* ("off-design hits"); (2) binding mode / docking-pose deviation from the design model; (3) AF interface confidence being a poor and adversarially-satisfiable discriminator, especially for antibody–antigen; (4) the near-total absence of negative-control *targets* (scrambled/permuted sites) in design papers. The user's permuted-specified site control scoring ~2× the real target at matched compute is, as far as I can find, a **control almost nobody in the field runs** — which is itself the most important finding here. Below, computational-only vs experimentally-confirmed is flagged throughout.
 
 ## Q1. Is "off-target specified site" / "off-specified site binding" / "wrong binding site" a named, documented failure of AF-based sequence optimization? What vocabulary do papers use?
 

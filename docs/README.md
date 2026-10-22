@@ -13,14 +13,14 @@ in [`archive/`](archive/).
 
 | Document | What it is |
 |---|---|
-| **[P17_JN1.md](P17_JN1.md)** | **The project record, §§1–33.** The only document that carries results. Read its front matter, then §19 (framing and the experiment ladder), then §§20–27 in order. **§33 is the newest result**: the budget-7 pair closes the exchange-move confound and relocates the ceiling from the search to the objective -- seeding does not help at either budget, the search spends whatever edit budget it is given, and 20 search seeds produce 20 distinct solutions at one score, so the optimum is a degenerate plateau. §30 is the first section to attribute anything to the gradient: gradient-weighted proposals beat uniform ones on pose at 5.1σ, confidence did not separate, and all 240 structures remain CAPRI-incorrect. §28 is a feasibility audit and §29 is the plan §30 executed. |
+| **[P17_JN1.md](P17_JN1.md)** | **Current assessment: 2026-10-22.** Start with the front matter and **[§36 for next work on CPU and later GPU comparisons](P17_JN1.md#36-next-work-cpu-first-gpu-later--2026-10-22)**. §19 defines scope, §§30–33 report the experiments, §34 audits saved results, and §35 documents joint retention and objective consistency. Results support a computational proof of concept, but not reliable JN1 recovery, a seeding advantage or a fixed performance ceiling. |
 
 ## Live companions
 
 | Document | What it is |
 |---|---|
 | [search_policy_and_pose_literature_review.md](search_policy_and_pose_literature_review.md) | Methodological review of search policy, gradient guidance and what "pose success" can mean. §24 of the record answers from it. |
-| [site_targeting_synthesis.md](site_targeting_synthesis.md) | Full synthesis on reaching a *specified* arrangement: the four layers of site specification, why confidence metrics cannot be made site-aware, and parameter values from released code. ~6,600 words, 48 inline citations. §§22.3–26 draw on it. |
+| [site_targeting_synthesis.md](site_targeting_synthesis.md) | Full synthesis on reaching a *specified* arrangement: the four layers of site specification, why global confidence alone does not establish the specified geometry, and parameter values from released code. ~6,600 words, 48 inline citations. §§22.3–26 draw on it. |
 | [literature_review/](literature_review/README.md) | The eight deep note files behind that synthesis, one per question, each separating cited findings from inference. Start at its README. The newest, `continuous_relaxation_and_the_discretization_gap.md`, covers relaxed-vs-discrete sequence optimization. |
 | [figures/](figures/) | Flow diagram sources and renders used by §12.2. |
 
@@ -31,10 +31,10 @@ by the record, kept because dated claims in §§1–18 point at them:
 
 | Document | Why it is archived |
 |---|---|
-| [p17_status_and_next_steps.md](archive/p17_status_and_next_steps.md) | Status snapshot predating §§20–27. Its launch commands and output layout still stand; its purpose statements and next-step ordering are superseded by §§23.6, 26.5 and 27.7. |
-| [protein_search_policy_review.md](archive/protein_search_policy_review.md) | The first search-policy survey (2026-09-21). Corrected several §8 claims at the time; the live companion above replaces it. |
+| [p17_status_and_next_steps.md](archive/p17_status_and_next_steps.md) | Status snapshot predating §§20–27. Its commands and priorities are historical; use the current record and launcher help. |
+| [search_policy_review.md](archive/search_policy_review.md) | The first search-policy survey (2026-09-21). Corrected several §8 claims at the time; the live companion above replaces it. |
 | [numerical_precision_validation_summary.md](archive/numerical_precision_validation_summary.md) | The fp32/bf16 and aggregation validation work behind §§17.7–17.13. Prerequisite history, not a current result. |
-| [opendde_validation_history.md](archive/opendde_validation_history.md) | Earlier OpenDDE empirical findings, summarized in §3 and §4. |
+| Earlier OpenDDE validation | Summarized in [P17_JN1.md](P17_JN1.md), §§3–4; the formerly linked standalone archive is absent from this checkout. |
 
 ## Conventions
 
@@ -48,6 +48,7 @@ paper's finding is specifically about antibodies, its wording is left as
 published, and the literature notes keep the vocabulary of the papers they
 summarize, including direct quotations.
 
-Sections of the record are dated and append-only: corrections are recorded in
-place with ⚠️ rather than edited away, so a superseded claim and the evidence
-that superseded it both stay visible.
+Historical sections retain their dates. Current summaries are maintained, and
+substantive corrections are dated beside the affected claims. The 2026-10-22
+cleanup corrects metric definitions and overinterpretation while preserving
+the measured results and the distinction between historical plans and findings.

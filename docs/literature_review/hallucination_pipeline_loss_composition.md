@@ -1,5 +1,14 @@
 # Loss composition and specified site-site enforcement in AlphaFold-backpropagation / hallucination sequence-optimization pipelines
 
+**Project-context correction — 2026-10-22.** This is a dated literature
+review, not the current results summary. [P17_JN1.md](../P17_JN1.md), §§25,
+30–34, supersedes its early local diagnosis: a 14–27 Å pose RMSD does not
+mean the designed chain is that far from the specified site. Direct contact
+analysis found a mean closest approach of 2.7 Å, with orientation/registry
+errors. Later runs support gradient attribution on pose and Alpha recovery,
+but do not prove a JN1 performance ceiling. The literature sources were not
+re-audited as part of this documentation cleanup.
+
 Scope note: all code-level claims below were read directly from the named source files (fetched 2026-10-05 from the repositories' `main` branches). Paper-level claims are attributed to the paper URL. Where a claim came from a model-summarized fetch of a long paper rather than from code I read line-by-line, it is marked **[summarized]**.
 
 ---
@@ -45,7 +54,7 @@ AfDesign's only site-targeting mechanism is `opt["hotspot"]`, which does not add
 
 ### Inferences
 - `num_pos` is the single most important and most overlooked knob for site enforcement. With `num_pos = inf` (the default) the loss averages over **all** anchor residue rows, so every anchor residue must acquire `num` designed chain contacts — nominally strict. But because the reduction is `min_k` over the *smallest* (i.e. best-satisfied) values and `cutoff` is large, the term is cheaply satisfied by a designed chain that merely sits in the general vicinity. Setting `num_pos = k < |hotspot|` makes it *looser* (only k anchor residues need engagement), which is the opposite of what one might assume.
-- Because the contact term is a distogram cross-entropy at a 14–22 Å cutoff, it is a **proximity** term, not a docking term. Nothing in AfDesign penalizes contacts made *outside* the anchor residue set. A designed chain can fully satisfy `i_con` while burying most of its surface on a neighbouring patch — which is exactly the 14–27 Å off-specified site failure mode described in the user's project.
+- Because the contact term is a distogram cross-entropy at a 14–22 Å cutoff, it is a **proximity** term, not a docking term. Nothing in AfDesign penalizes contacts made *outside* the anchor residue set. A designed chain can fully satisfy `i_con` while burying most of its surface on a neighbouring patch . This is a possible failure mode; it cannot be identified from the local 14–27 Å pose RMSD alone.
 
 ### Gaps
 - There is no `i_pdae`/`i_pDAE`, center-of-mass, or off-specified site-repulsion term in upstream ColabDesign; those exist only in downstream forks (BindCraft2, Germinal).
@@ -151,7 +160,7 @@ Germinal is the most relevant precedent: it keeps the AfDesign anchor residue ma
 - Experimental throughput and hit rates (designs ordered → screened → confirmed): PD-L1 designed chain 101 → 25 screened → 7 BLI-confirmed, best K_D 170 nM; PD-L1 scFv 48 → 4 SPR hits → 3 confirmed, ~40–60 nM; IL3 designed chain 46 → 11 → 2, 280 nM; IL3 scFv 48 → 1 SPR hit → 1, ~60–70 nM; IL20 designed chain 43 → 11 → 4, 190 nM; BHRF1 designed chain 52 → 20 → 5, 1.2 µM. Headline: **4–22 % experimental success across four targets, testing only 43–101 designs per antigen.** **[summarized]** — [Germinal preprint v3](https://www.biorxiv.org/content/10.1101/2025.09.19.677421v3.full); [PubMed 41040335](https://pubmed.ncbi.nlm.nih.gov/41040335/); [PubMed 42337361 (Nat Biotechnol version)](https://pubmed.ncbi.nlm.nih.gov/42337361/)
 
 ### Inferences
-- The structural pattern in Germinal is: **continuous, weak site pressure in the gradient; discrete, hard site gates in selection.** The gradient term is just AfDesign's anchor residue-masked `i_con` at a 20 Å cutoff (with `inter_contact_number` raised to 10, which demands more designed chain partners per anchor residue but still at 20 Å) — the same weak pressure the user already has. What differs is that `binder_near_hotspot` is a **boolean pass/fail at 5.3 Å with ≥3 contact-face contacts**, applied *before* any confidence metric is consulted in the initial filter. A design 14–27 Å off-specified site fails this immediately regardless of ipTM/ipSAE.
+- The structural pattern in Germinal is: **continuous, weak site pressure in the gradient; discrete, hard site gates in selection.** The gradient term is just AfDesign's anchor residue-masked `i_con` at a 20 Å cutoff (with `inter_contact_number` raised to 10, which demands more designed chain partners per anchor residue but still at 20 Å) ; the local implementation instead uses an 8 Å cutoff, so the scales are not identical. What differs is that `binder_near_hotspot` is a **boolean pass/fail at 5.3 Å with ≥3 contact-face contacts**, applied *before* any confidence metric is consulted in the initial filter. A design without qualifying contacts fails this regardless of confidence. Pose RMSD alone does not determine that outcome.
 - Germinal computes `ipsae` but does **not** list it among the VHH filter thresholds — it relies on `pdockq2`, `external_iptm`, etc. for confidence, and on the anchor residue booleans for site. This is evidence that the authors treated confidence and site as *separate, non-substitutable* axes, which is precisely the diagnosis for the user's pipeline (ipSAE 0.77 with a 14–27 Å offset is not a contradiction — it is the expected outcome of ranking on a site-agnostic metric).
 - `L_paratope ∝ L_CDR − λ·L_framework` is the only *negative* (repulsive) site term in any of these pipelines: the framework CCE is **subtracted**, i.e. framework-to-target proximity is actively penalized. The analogous construction for the user's problem is an off-specified site repulsion term — `L_contact(binder, epitope) − λ·L_contact(binder, non-epitope surface)` — which no other pipeline surveyed implements at gradient time (BindCraft2 does it only as a filter, via `Off_Epitope_Contact_Fraction`).
 
@@ -241,7 +250,10 @@ Additional cross-cutting findings:
   3. **Input-space intervention** — BindCraft2 `forced_targeting` (Lys-scan the exposed target surface outside a 10 Å anchor residue shell during early design, then restore); specified site-fragment-only templates. Requires no loss change and no gradient through a new term.
   4. **Hard site gate in selection** — Germinal's `binder_near_hotspot` boolean + `cdr3_hotspot_contacts > 0`; BindCraft2's `Epitope_Residues_Contacted` / `Off_Epitope_Contact_Fraction`.
 - The published consensus, read across Germinal and BindCraft2, is that mechanism (4) is **not optional**: both pipelines retain the weak gradient term *and* add a hard geometric gate, and in Germinal's initial filter the site gate is the only thing checked besides clashes and shape complementarity — confidence metrics are deferred entirely to the external-predictor stage. The user's configuration (site pressure only in the gradient, selection on site-agnostic ipSAE) is the one combination that none of the surveyed pipelines uses.
-- The weakest link in the user's current loss is likely the cutoff scale, not the weight. A contact term anchored on specified-site residues at weight 0.5 is, if it follows the ColabDesign form, a distogram cross-entropy against sub-cutoff bins; at BindCraft/Germinal's 20 Å cutoff, a designed chain 14–27 Å away can be partially inside the cutoff for some specified-site residues, so the term is already near its floor and provides little gradient toward the correct site. EasyNano's 8 Å ELU set-point and Germinal's 5.3 Å filter threshold bracket the scale at which "on-specified site" is actually being judged.
+- **Local correction:** the implemented contact cutoff is 8 Å, not the
+assumed 20 Å. The local pose error also does not measure distance from the
+site. The earlier cutoff-based diagnosis is therefore unsupported; direct
+measurements of geometry and term contributions are required.
 
 ### Gaps
 - No benchmark or review was found that directly compares these pipelines on **specified site specificity** as a metric. Each paper validates its own site accuracy with its own (mostly non-overlapping) assay, so no apples-to-apples off-specified site rate exists in the literature.

@@ -1,5 +1,14 @@
 # Reference-pose RMSD as a differentiable objective, and restraint-weight scheduling
 
+**Project-context correction — 2026-10-22.** This is a dated literature
+review, not the current results summary. [P17_JN1.md](../P17_JN1.md), §§25,
+30–34, supersedes its early local diagnosis: a 14–27 Å pose RMSD does not
+mean the designed chain is that far from the specified site. Direct contact
+analysis found a mean closest approach of 2.7 Å, with orientation/registry
+errors. Later runs support gradient attribution on pose and Alpha recovery,
+but do not prove a JN1 performance ceiling. The literature sources were not
+re-audited as part of this documentation cleanup.
+
 Scope note: this covers (a) prior art for backpropagating a pose/placement objective through a frozen structure predictor to optimise sequence, and (b) evidence about whether escalating/scheduling a geometric restraint coefficient achieves constraint satisfaction. Current as of 2026-10.
 
 ---
@@ -74,9 +83,11 @@ Yes — but only for **intra-chain** objectives (fixed-backbone and motif recapi
 ### Inferences
 
 - The field's revealed preference is unambiguous: **when a specific pose or specified site must be hit, published pipelines write the restraint in distogram space over named residue pairs** (Germinal's contact face BCE, TorchCraft's contact face/anchor residue terms, the fold-conditioned cmap RMSE, EasyNano's designable region-to-specified site distance loss), and they reserve RMSD for post-hoc evaluation. The project's coordinate pose-RMSD hinge is, as far as I can find, without published precedent in the inter-chain setting.
-- The mechanistic reason is plausibly gradient density, not correctness. A distogram loss over an |specified site| × |designable region| pair set supplies a gradient to every one of those pairs directly from a network *output head*. A global pose RMSD supplies **one scalar per step**, and the Kabsch step deliberately removes exactly the rigid-body component that constitutes most of a 22–25 Å placement error, leaving a residual that is then averaged over all designed chain CA atoms (≈1/N dilution).
-- The ESMFold result is the closest thing to a controlled measurement, and it cuts against the "just raise the weight" hypothesis: at ~10× dominance over the confidence term the RMSD objective still needed ~5× more steps, i.e. **coefficient magnitude bought little or no optimisation speed**. It is, however, an *intra-chain* fixbb-style objective that eventually did converge, so it does not establish that an inter-chain pose RMSD can converge at all.
-- Wang et al.'s choice is informative in the opposite direction: having coordinates available, they used them for a **repulsive** term (keep contacts off non-specified site surface) rather than an attractive pose-RMSD term. A repulsive/exclusion formulation may be better matched to what coordinate gradients can deliver than an attractive global-alignment one.
+- **Correction:** the local pose term aligns the target and measures the
+designed chain under that transform. It preserves relative placement error.
+A scalar output alone says nothing about gradient density; both coordinate
+and distogram losses can have dense gradients. This mechanism requires direct
+measurement rather than an inference from Kabsch alignment.
 
 ### Gaps
 
@@ -91,7 +102,7 @@ Yes — but only for **intra-chain** objectives (fixed-backbone and motif recapi
 
 ### Takeaway
 
-The Kabsch/SVD gradient pathology is real but confined to near-degenerate alignments (coincident or vanishing singular values), and the original authors report **no practical instability**; it is therefore an unlikely explanation for a *weak* (rather than explosive) pose-RMSD gradient. FAPE **is** implemented as a design objective (ColabDesign `get_fape_loss`, including sidechain FAPE) and avoids global alignment by construction — but ColabDesign's default **clamp of 10 Å** means it is fully saturated, hence zero-gradient, at a 22–25 Å placement error.
+The Kabsch/SVD gradient pathology is real but confined to near-degenerate alignments (coincident or vanishing singular values), and the original authors report **no practical instability**; it is therefore an unlikely explanation for a *weak* (rather than explosive) pose-RMSD gradient. FAPE **is** implemented as a design objective (ColabDesign `get_fape_loss`, including sidechain FAPE) and avoids global alignment by construction — but its clamp acts on individual frame errors. A 22–25 Å global pose RMSD alone does not establish saturation of every term.
 
 ### Cited Findings
 
@@ -115,9 +126,13 @@ The Kabsch/SVD gradient pathology is real but confined to near-degenerate alignm
 ### Inferences
 
 - Levinson's degeneracy conditions require coincident or near-zero singular values of the cross-covariance matrix. For a Kabsch fit over the CA atoms of a **folded, globular, three-dimensionally extended target domain**, the cross-covariance is well-conditioned and `κ = (s₁+s₂)/(s₂+s₃)` is modest. The predicted failure mode there is *gradient blow-up*, not *gradient vanishing* — so the SVD pathology is a poor explanation for a term that "does almost nothing." It would become relevant if the alignment set were small, collinear/planar (e.g. a short helical specified site), or if the predicted target were near-mirror-image (`det < 0`).
-- **FAPE is not a drop-in fix at this error scale.** With ColabDesign's `clamp=10.0`, every per-frame error term in a 22–25 Å mis-placement is clipped to 10 and divided by 10, giving a constant 1.0 with **identically zero gradient**. Using FAPE for a gross placement objective would require raising or removing the clamp (and in AF2's own loss the clamp exists precisely to stop distant errors from dominating). Also relevant: sidechain FAPE is unavailable in multimer mode, so the all-atom variant is not an option for complexes in that codebase.
-- FAPE's structural advantage over RMSD for a *pose* objective is real in principle — it scores each residue in every other residue's local frame, so it never needs a single global superposition and it does not let a rigid-body fit absorb the error. The cost is that it changes the objective from "the designed chain sits here" to "every pairwise frame relationship matches," which is a much stiffer, higher-dimensional requirement.
-- A hinge on a global scalar, `relu(rmsd − tol)`, has a further structural weakness independent of Kabsch: its gradient magnitude w.r.t. the scalar is exactly 1 whenever active and 0 otherwise, so it carries **no information about how far off** the pose is. Scaling the weight scales a direction that is already nearly orthogonal to what the predictor's inter-chain machinery responds to.
+- **FAPE clamp correction:** terms whose individual frame errors exceed the
+clamp have zero derivative through the clipping operation. Global pose RMSD
+cannot determine how many terms are clipped; per-frame errors are needed.
+
+- For `relu(rmsd − tol)`, the derivative with respect to RMSD is one when
+  active and zero below the threshold. The sequence gradient still includes
+  the geometry-dependent RMSD Jacobian; its magnitude is not fixed by the hinge.
 
 ### Gaps
 
