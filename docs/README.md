@@ -1,7 +1,6 @@
-# P17 → JN.1 documentation
+# P17 → JN1 documentation
 
-A **proof of concept for sequence gradients**, not a campaign to produce a
-molecule. The question is whether a frozen structure predictor's gradient with
+A **proof of concept for sequence gradients**. The question is whether a frozen structure predictor's gradient with
 respect to the designed chain's sequence carries enough information to move
 that predictor's own two readouts — interface confidence and target-aligned
 pose — from a degraded start toward a reference. Every quantity in these
@@ -14,7 +13,7 @@ in [`archive/`](archive/).
 
 | Document | What it is |
 |---|---|
-| **[P17_JN1.md](P17_JN1.md)** | **The project record, §§1–30.** The only document that carries results. Read its front matter, then §19 (framing and the experiment ladder), then §§20–27 in order. **§30 is the newest result** and the first to attribute anything to the gradient: gradient-weighted proposals beat uniform ones on pose at 5.1σ, confidence did not separate, and all 240 structures remain CAPRI-incorrect. §28 is a feasibility audit and §29 is the plan §30 executed. |
+| **[P17_JN1.md](P17_JN1.md)** | **The project record, §§1–33.** The only document that carries results. Read its front matter, then §19 (framing and the experiment ladder), then §§20–27 in order. **§33 is the newest result**: the budget-7 pair closes the exchange-move confound and relocates the ceiling from the search to the objective -- seeding does not help at either budget, the search spends whatever edit budget it is given, and 20 search seeds produce 20 distinct solutions at one score, so the optimum is a degenerate plateau. §30 is the first section to attribute anything to the gradient: gradient-weighted proposals beat uniform ones on pose at 5.1σ, confidence did not separate, and all 240 structures remain CAPRI-incorrect. §28 is a feasibility audit and §29 is the plan §30 executed. |
 
 ## Live companions
 

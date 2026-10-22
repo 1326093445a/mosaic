@@ -14,24 +14,22 @@ no implementation change or model-validation result.
 ## Objective and baseline comparison
 
 The two baseline complexes contain the **same original P17 designed chain**. The target
-changes from Alpha target domain to JN.1 target domain. In the current validator, “WT” means
-**unmodified P17**, not an ancestral viral target. The project objective is to
-recover binding to JN.1; the computational objectives discussed here are higher
+changes from Alpha target domain to JN1 target domain. In the current validator, “WT” means
+**unmodified P17**. The project objective is the computational objectives discussed here are higher
 predicted interface confidence and lower target-aligned designed-chain pose RMSD to the
-intended arrangement, with valid protein geometry. These metrics alone do not
-establish any measured property.
+intended arrangement, with valid protein geometry for JN1. 
 
 The Alpha complex is the positive reference. The local project record identifies
-`P17_Alpha.pdb` as experimental PDB 8GZ5. `P17_JN1.pdb` is a **modeled reference**:
-the Alpha binding arrangement transferred onto JN.1 and relaxed. It is not an
-experimentally determined P17–JN.1 bound structure. Therefore, its pose RMSD
-measures agreement with an assumed arrangement, not error against a known JN.1
+`P17_Alpha.pdb`. `P17_JN1.pdb` is a **modeled reference**:
+the Alpha binding arrangement transferred onto JN1 and relaxed. It is not an
+experimentally determined P17–JN1 bound structure. Therefore, its pose RMSD
+measures agreement with an assumed arrangement, not error against a known JN1
 experimental structure.
 
 The historical native OpenDDE comparison used the original P17 in both cases,
 three seeds, and no MSA or structural template:
 
-| Recorded metric, range across seeds | P17 + Alpha | P17 + JN.1 |
+| Recorded metric, range across seeds | P17 + Alpha | P17 + JN1 |
 |---|---:|---:|
 | ipTM | 0.9006–0.9017 | 0.2225–0.5794 |
 | ipSAE minimum, PAE cutoff 12 Å | 0.7949–0.7954 | 0–0.1629 |
@@ -41,8 +39,7 @@ three seeds, and no MSA or structural template:
 Sources: [confidence results](../../results/p17_alpha_vs_jn1_native_opendde/comparison.csv)
 and [pose/ipSAE results](../../results/p17_alpha_vs_jn1_native_opendde/rmsd_ipsae.csv).
 These historical results motivate the question; they do not validate the latest
-implementation. Higher confidence can accompany a different pose, and a lower
-RMSD to a modeled reference does not by itself imply better binding.
+implementation. 
 
 **Pose RMSD uses a target-derived alignment:** align the predicted target to the
 reference target, apply that same transform to the predicted designed chain, then compare
@@ -59,8 +56,8 @@ RMSD alone does not diagnose a numerical bug or identify its cause.
 
 | Test layer | Question it addresses | What it does not establish |
 |---|---|---|
-| Historical Alpha/JN.1 comparison | How do confidence and predicted placement differ for the same designed chain against the two targets? | The cause of the discrepancy or current implementation correctness. |
-| Structure and mapping audits | Are chains geometrically valid, and do raw coordinates agree with exported/mapped coordinates? | Correct docking pose or binding. |
+| Historical Alpha/JN1 comparison | How do confidence and predicted placement differ for the same designed chain against the two targets? | The cause of the discrepancy or current implementation correctness. |
+| Structure and mapping audits | Are chains geometrically valid, and do raw coordinates agree with exported/mapped coordinates? | Correct docking pose. |
 | Synthetic numerical checks | Do generic attention calculations agree with an independent reference, and how do precision, compilation and process restarts affect them? | Full-model geometry, pose recovery, gradients or memory requirements. |
 | Current fixed-input forward controls | Do the updated model paths produce valid, consistently mapped structures, and how repeatable are their outputs? | Improved confidence, reduced pose RMSD or successful designed chain redesign. |
 
@@ -294,7 +291,7 @@ bash examples/run_p17_forward_validation.sh
 ```
 
 The default wrapper uses the existing `P17_JN1.pdb`, containing unmodified P17
-and the JN.1 target. Its reference provides sequences and geometry checks; the
+and the JN1 target. Its reference provides sequences and geometry checks; the
 reference coordinates do not constrain the predicted pose or act as a structural
 template. The wrapper runs **10 workers and 20 forward predictions**, with at
 most eight workers at once. It compares Mosaic and direct JAX with original and
@@ -316,7 +313,7 @@ Review `results/p17_forward_validation_*/tables/geometry.csv` together with
 worker reports, raw/mapped CIFs, NPZ arrays, metadata, source hashes and memory
 logs. Maximum raw coordinate displacement is unaligned and is not RMSD.
 Allocator peak memory is a process-lifetime high-water mark, not an isolated
-per-call measurement. This JN.1-only wrapper does not include a paired Alpha
+per-call measurement. This JN1-only wrapper does not include a paired Alpha
 control or reproduce the complete historical confidence/pose comparison above.
 
 ## Model and policy context
@@ -340,7 +337,7 @@ worse experimental agreement; see [OpenDDE validation history](opendde_validatio
 | [Pose geometry tests](../../tests/test_pose_rmsd_geometry.py) | CPU orientation/shape separation and Kabsch alignment-derivative checks |
 | [Pose experiment](../../examples/p17_pose_experiment.py) | Stage barriers, bounded GPU workers and comparison summaries |
 | [Forward review](../../results/forward_p17_review_20261003/REVIEW.md) | Independent verification of the post-fix forward controls |
-| [Default forward launcher](../../examples/run_p17_forward_validation.sh) | Fixed-input JN.1 validation with geometry/mapping exit checks |
+| [Default forward launcher](../../examples/run_p17_forward_validation.sh) | Fixed-input JN1 validation with geometry/mapping exit checks |
 | [Numerical launcher](../../examples/run_p17_numerical_validation.sh) | Underlying forward-only validation preset |
 | [WT validator](../../examples/p17_wt_validation.py) | Forward-path controls, artifact export and repeat comparisons |
 | [Structure audit](../../examples/p17_structure_audit.py) | Named-backbone mapping and geometry checks |

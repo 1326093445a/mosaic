@@ -134,6 +134,61 @@ def relaxed_loss(loss_function, x0, relaxed, key):
     )
 
 
+def rounded_loss(loss_function, parent_tokens, seed_tokens, designable_idx, key):
+    """The objective at the two HARD sequences, which is what the search sees.
+
+    Why this exists. `loss_at_relaxed` is the loss on the SOFT simplex, and a
+    relaxation can descend a long way there and still round to a sequence the
+    discrete search does not value. On 2026-10-15 that is what happened: a
+    hand-off that descended 28.25 in soft space entered the population search
+    scoring 0.0002 against the parent's 0.0000, so the search reverted it and
+    climbed from scratch. The seed cost five edits and bought nothing, and
+    nothing in the record said so before the search had already run.
+
+    The number that predicts whether a seed can help is the loss of the
+    ROUNDED sequence against the parent, under the same loss. Positive gain
+    means the projection kept something worth keeping.
+
+    One key for both points, as in `relaxed_loss`: this is a difference, not
+    two draws. Both evaluations are on the designable rows, which is the space
+    `loss_function` takes. The comparison is only clean while the edit-budget
+    hinge is off (`--weight-edit-budget 0.0`, which the stage pins); with it on,
+    the rounded sequence would be charged for its edits and the parent would
+    not, and the difference would no longer be about sequence quality.
+
+    A diagnostic must not destroy the result it describes.
+    """
+    import jax.numpy as jnp
+
+    def evaluate(tok):
+        rows = np.zeros((len(designable_idx), 20), dtype=np.float32)
+        rows[np.arange(len(designable_idx)), np.asarray(tok)[designable_idx]] = 1.0
+        value, _aux = loss_function(jnp.asarray(rows), key=key)
+        value = float(value)
+        return value if np.isfinite(value) else None
+
+    try:
+        at_parent = evaluate(parent_tokens)
+        at_rounded = evaluate(seed_tokens)
+    except Exception as exc:                       # noqa: BLE001 - diagnostic
+        return dict(loss_at_parent=None, loss_at_rounded=None,
+                    rounded_gain_over_parent=None,
+                    rounded_loss_eval_error=repr(exc)[:200])
+    at_parent = None if at_parent is None else round(at_parent, 6)
+    at_rounded = None if at_rounded is None else round(at_rounded, 6)
+    return dict(
+        loss_at_parent=at_parent,
+        loss_at_rounded=at_rounded,
+        # Positive means the rounded seed beats the parent, since this is a
+        # loss. At or below zero the seed cannot help: it reaches the search
+        # with its whole edit budget already spent and no advantage to show
+        # for it, so the search's best move is to revert it.
+        rounded_gain_over_parent=None if (at_parent is None or at_rounded is None)
+        else round(at_parent - at_rounded, 6),
+        rounded_loss_eval_error=None,
+    )
+
+
 def projection_tie_at_cut(margins, budget):
     """Whether the budget cut falls inside a group of equal margins.
 
@@ -569,6 +624,10 @@ def main(argv=None):
     # points: this measures descent, not a re-draw of the sampling.
     objective = relaxed_loss(variable_only_loss, x0, relaxed,
                              jax.random.fold_in(key, 1_000_003))
+    # The SAME key as the relaxed pair, so all four losses are one comparison
+    # and not four draws of a stochastic objective.
+    rounded = rounded_loss(variable_only_loss, parent, tokens, designable_idx,
+                           jax.random.fold_in(key, 1_000_003))
     sequence = "".join(TOKENS[i] for i in tokens)
     edits = [
         dict(position_1idx=pos + 1, parent=TOKENS[parent[pos]],
@@ -595,6 +654,7 @@ def main(argv=None):
         **concentration,
         **tie,
         **objective,
+        **rounded,
         interpretation=(
             "Discrete start for the population search, projected onto the edit "
             "budget from a continuous stage that does not enforce one. The "
@@ -616,6 +676,18 @@ def main(argv=None):
               f"(descent {objective['loss_descent']})")
     elif objective.get("loss_eval_error"):
         print(f"  loss not evaluated: {objective['loss_eval_error']}")
+    # The soft descent above is not what the discrete search inherits. This is.
+    gain = rounded.get("rounded_gain_over_parent")
+    if gain is not None:
+        verdict = ("the search can use this"
+                   if gain > 0 else
+                   "USELESS TO THE SEARCH: at or below the parent, and it "
+                   "arrives with the whole edit budget already spent")
+        print(f"  rounded {rounded['loss_at_rounded']} vs parent "
+              f"{rounded['loss_at_parent']} (gain {gain:+}) -- {verdict}")
+    elif rounded.get("rounded_loss_eval_error"):
+        print("  rounded loss not evaluated: "
+              f"{rounded['rounded_loss_eval_error']}")
     print(f"  relaxed peak probability {concentration['relaxed_peak_probability_mean']} "
           f"mean, {concentration['relaxed_peak_probability_min']} min; "
           f"{concentration['relaxed_parent_probability_mean']} mean on the parent")

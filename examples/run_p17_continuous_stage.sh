@@ -256,6 +256,7 @@ OUT_ROOT=""
 DRY_RUN=false
 ALLOW_BUSY_GPUS=false
 FAILURES=0
+SEED_WARNINGS=0   # seeds that reach the search with no gain over the parent
 ALL_STAGES="seed search"
 STAGES="$ALL_STAGES"
 ALL_CELLS="parent apgm bindcraft colabdesign"
@@ -943,6 +944,41 @@ if wrong:
                 'import json,sys; print(json.load(open(sys.argv[1]))["hamming_from_parent"])' \
                 "$seed_json")
             echo "  start: $seed_json ($spent of $EDIT_BUDGET edits spent)"
+            # Is the seed worth the edits it spends? A hand-off that does not
+            # beat the parent under the seeder's own loss cannot help: it
+            # arrives with its budget committed and no advantage, so the
+            # search's best move is to revert it and climb from the parent.
+            # That is what happened on 2026-10-15, where a seed that descended
+            # 28.25 in SOFT space entered the search scoring 0.0002 against the
+            # parent's 0.0000. `rounded_loss` in the seed stage records the
+            # hard-sequence number; seeds written before 2026-10-16 lack it.
+            gate=$("$PYTHON_BIN" -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+if "rounded_gain_over_parent" not in d:
+    print("UNRECORDED seed predates the check; rerun --stages seed to record it")
+elif d["rounded_gain_over_parent"] is None:
+    print("UNRECORDED the seed stage could not evaluate it: "
+          + str(d.get("rounded_loss_eval_error") or "no reason recorded"))
+elif d["rounded_gain_over_parent"] > 0:
+    print("OK beats the parent by " + str(d["rounded_gain_over_parent"]))
+else:
+    print("USELESS gain " + str(d["rounded_gain_over_parent"]) + " over the parent")
+' "$seed_json")
+            case "$gate" in
+                OK*)
+                    echo "  seed value: ${gate#OK }" ;;
+                UNRECORDED*)
+                    echo "  seed value: UNKNOWN -- ${gate#UNRECORDED }" ;;
+                *)
+                    echo "  seed value: NO GAIN -- ${gate#USELESS }." >&2
+                    echo "  This seed is at or below the parent under the" >&2
+                    echo "  objective, and spends $spent of $EDIT_BUDGET edits to get" >&2
+                    echo "  there, leaving $((EDIT_BUDGET - spent)) free moves against the" >&2
+                    echo "  control's $EDIT_BUDGET. Expect it to revert and climb from" >&2
+                    echo "  the parent; the cell measures initialisation, not seeding." >&2
+                    SEED_WARNINGS=$((SEED_WARNINGS + 1)) ;;
+            esac
             extra=(--start-sequence "$seq" --budget-anchor reference)
         else
             echo "  start: the parent (control; budget anchor left at its default)"
@@ -965,6 +1001,16 @@ fi
 echo
 echo "################ Done ################"
 if ((${#SUMMARY[@]})); then printf '%s\n' "${SUMMARY[@]/#/  }"; fi
+# A seed with no gain over the parent is not a failure -- the cell ran and its
+# numbers are real -- but it is not the experiment the cell was meant to be, so
+# say so once at the end where it cannot be missed.
+if ((SEED_WARNINGS)); then
+    echo
+    echo "NOTE: $SEED_WARNINGS seeded cell(s) started from a seed that does not beat the"
+    echo "parent under the objective. Those cells measure where the search starts,"
+    echo "not whether seeding helps, because the search can revert the seed and"
+    echo "climb from the parent for free. Read them accordingly."
+fi
 # Exit nonzero on any failure. These used to go into SUMMARY and no further, so
 # a run in which every job died still exited 0 -- and an exit code is what a
 # scheduler, a wrapper script or a tired reader actually checks.

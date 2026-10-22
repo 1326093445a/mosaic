@@ -751,3 +751,76 @@ def test_an_edit_budget_that_is_not_a_positive_integer_is_refused(
                  "--output-dir", str(tmp_path / "bad"))
     assert done.returncode == 2, (bad, done.stdout, done.stderr)
     assert "positive integer" in done.stderr, done.stderr
+
+
+# --- the seed-value gate (2026-10-16) ------------------------------------
+#
+# A hand-off that does not beat the parent cannot help the discrete search: it
+# arrives with its edit budget already spent, so reverting it and climbing from
+# the parent is the search's best move. That is what the 2026-10-15 run did,
+# and nothing in the record said so until the structures came back. The seed
+# stage now writes `rounded_gain_over_parent`; these cover how search reads it.
+
+def _seed_dir(tmp_path, name, extra):
+    seeds = tmp_path / name
+    seeds.mkdir()
+    for method in ("apgm", "bindcraft", "colabdesign"):
+        payload = {"method": method, "seed": 0, "hamming_from_parent": 2,
+                   "candidate_substitutions_considered": 3,
+                   "edit_budget": 5, "seed_sequence": f"QVQL{method}",
+                   "edits": [{"margin": 0.4}]}
+        payload.update(extra)
+        (seeds / f"{method}_r0.json").write_text(json.dumps(payload))
+    return seeds
+
+
+def test_a_seed_that_beats_the_parent_is_reported_as_usable(stage, tmp_path):
+    seeds = _seed_dir(tmp_path, "good", {
+        "loss_at_parent": 12.0, "loss_at_rounded": 9.5,
+        "rounded_gain_over_parent": 2.5, "rounded_loss_eval_error": None})
+    done = stage("--stages", "search", "--cells", "bindcraft",
+                 "--output-dir", str(tmp_path / "out"), "--seed-dir", str(seeds))
+    assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
+    assert "beats the parent by 2.5" in done.stdout
+    assert "NO GAIN" not in done.stdout + done.stderr
+    assert "not whether seeding helps" not in done.stdout
+
+
+@pytest.mark.parametrize("gain", [0, -0.4])
+def test_a_seed_that_does_not_beat_the_parent_is_flagged(stage, tmp_path, gain):
+    """The 2026-10-15 case: five edits spent, nothing bought."""
+    seeds = _seed_dir(tmp_path, "flat", {
+        "loss_at_parent": 12.0, "loss_at_rounded": 12.0 - gain,
+        "rounded_gain_over_parent": gain, "rounded_loss_eval_error": None})
+    done = stage("--stages", "search", "--cells", "bindcraft",
+                 "--output-dir", str(tmp_path / "out"), "--seed-dir", str(seeds))
+    # Not a failed run. The cell ran and its numbers are real; they just do not
+    # answer the question the cell was built to ask.
+    assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
+    assert "NO GAIN" in done.stderr
+    assert "3 free moves" in done.stderr          # 5 budget - 2 spent
+    assert "not whether seeding helps" in done.stdout
+
+
+def test_a_seed_written_before_the_check_is_not_called_useless(stage, tmp_path):
+    """Absent evidence is not evidence of a worthless seed."""
+    seeds = _seed_dir(tmp_path, "legacy", {})
+    done = stage("--stages", "search", "--cells", "bindcraft",
+                 "--output-dir", str(tmp_path / "out"), "--seed-dir", str(seeds))
+    assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
+    assert "UNKNOWN" in done.stdout
+    assert "rerun --stages seed" in done.stdout
+    assert "NO GAIN" not in done.stderr
+
+
+def test_a_seed_whose_loss_failed_to_evaluate_names_the_reason(stage, tmp_path):
+    seeds = _seed_dir(tmp_path, "nulled", {
+        "loss_at_parent": None, "loss_at_rounded": None,
+        "rounded_gain_over_parent": None,
+        "rounded_loss_eval_error": "RuntimeError('cuda oom')"})
+    done = stage("--stages", "search", "--cells", "bindcraft",
+                 "--output-dir", str(tmp_path / "out"), "--seed-dir", str(seeds))
+    assert done.returncode == 0, done.stdout[-2000:] + done.stderr[-2000:]
+    assert "UNKNOWN" in done.stdout
+    assert "cuda oom" in done.stdout
+    assert "NO GAIN" not in done.stderr
